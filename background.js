@@ -96,6 +96,20 @@ async function listSkills() {
       description: "综合评分商品机会：市场容量、竞争度、利润潜力",
       icon: "📊",
     },
+    {
+      id: "tiktok_shop_trend_analyzer",
+      path: "skills/tiktok_shop_trend_analyzer.skill.md",
+      name: "TikTok Shop 爆款视频与产品趋势分析 (Auto)",
+      description: "分析 TikTok 爆款视频与带货达人元素，挖掘快速跟卖贴牌爆品蓝图",
+      icon: "🎵",
+    },
+    {
+      id: "temu_semi_managed_evaluator",
+      path: "skills/temu_semi_managed_evaluator.skill.md",
+      name: "Temu 半托管低毛利风控评估模型",
+      description: "针对半托管备货进行本地末端运费、仓储费与核价线低利润风控审计",
+      icon: "🍊",
+    },
   ];
 
   const available = [];

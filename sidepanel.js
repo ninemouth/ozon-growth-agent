@@ -544,7 +544,7 @@ async function loadLibrary() {
 // ── Settings ──
 async function loadSettings() {
   const s = await new Promise((r) =>
-    chrome.storage.local.get(["apiKey", "llmProvider", "llmModel", "llmBaseUrl", "maxLoopSteps", "temperature"], r)
+    chrome.storage.local.get(["apiKey", "llmProvider", "llmModel", "llmBaseUrl", "maxLoopSteps", "temperature", "helium10ApiKey", "sellerSpriteApiKey"], r)
   );
 
   if (s.llmProvider) $("llmProvider").value = s.llmProvider;
@@ -556,8 +556,25 @@ async function loadSettings() {
     $("temperature").value = s.temperature;
     $("tempValue").textContent = s.temperature;
   }
+  if (s.helium10ApiKey) $("helium10ApiKey").value = s.helium10ApiKey;
+  if (s.sellerSpriteApiKey) $("sellerSpriteApiKey").value = s.sellerSpriteApiKey;
 
   updateProviderUI(s.llmProvider || "openai");
+  updateApiStatusUI(s.helium10ApiKey, s.sellerSpriteApiKey);
+}
+
+function updateApiStatusUI(h10Key, ssKey) {
+  const badge = $("apiStatusBadge");
+  if (!badge) return;
+  if (h10Key || ssKey) {
+    badge.textContent = "三方数据: 已激活";
+    badge.style.background = "#d1fae5";
+    badge.style.color = "#065f46";
+  } else {
+    badge.textContent = "三方数据: 未激活";
+    badge.style.background = "#f1f5f9";
+    badge.style.color = "#64748b";
+  }
 }
 
 function updateProviderUI(provider) {
@@ -590,6 +607,8 @@ async function saveSettings() {
   const llmBaseUrl = $("llmBaseUrl").value.trim();
   const maxLoopSteps = $("maxLoopSteps").value;
   const temperature = $("temperature").value;
+  const helium10ApiKey = $("helium10ApiKey").value.trim();
+  const sellerSpriteApiKey = $("sellerSpriteApiKey").value.trim();
 
   const msg = $("settingsMsg");
 
@@ -601,12 +620,24 @@ async function saveSettings() {
   }
 
   await new Promise((r) =>
-    chrome.storage.local.set({ apiKey, llmProvider, llmModel, llmBaseUrl, maxLoopSteps, temperature }, r)
+    chrome.storage.local.set({ 
+      apiKey, 
+      llmProvider, 
+      llmModel, 
+      llmBaseUrl, 
+      maxLoopSteps, 
+      temperature,
+      helium10ApiKey,
+      sellerSpriteApiKey
+    }, r)
   );
 
   msg.textContent = "✓ 设置已保存";
   msg.className = "settings-msg success";
   msg.classList.remove("hidden");
+  
+  updateApiStatusUI(helium10ApiKey, sellerSpriteApiKey);
+  
   setTimeout(() => msg.classList.add("hidden"), 2000);
 }
 

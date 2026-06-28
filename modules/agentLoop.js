@@ -17,7 +17,13 @@ export async function runAgentLoop({ tabId, skillId, skillMarkdown, userInstruct
   const maxSteps = Math.max(parseInt(settings.maxLoopSteps) || 15, 15);
 
   const systemPrompt = skillMarkdown;
-  const availableTools = Object.keys(tools).join(", ");
+  
+  const isApiActive = !!(settings.helium10ApiKey || settings.sellerSpriteApiKey);
+  const filteredToolList = Object.keys(tools).filter(name => {
+    if (name === "query_market_data") return isApiActive;
+    return true;
+  });
+  const availableTools = filteredToolList.join(", ");
 
   const ctxForPrompt = { ...pageContext };
   const screenshotData = ctxForPrompt.screenshot;

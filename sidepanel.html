@@ -88,7 +88,10 @@
           <span class="run-btn-icon">▶</span>
           <span class="run-btn-text">执行 Skill</span>
         </button>
-        <div id="pageInfo" class="page-info"></div>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 8px; flex-wrap: wrap; gap: 6px;">
+          <div id="pageInfo" class="page-info" style="margin-top: 0; flex: 1; min-width: 150px;"></div>
+          <div id="apiStatusBadge" style="font-size: 10px; padding: 2px 6px; border-radius: 4px; background: #f1f5f9; color: #64748b; font-weight: 600; white-space: nowrap; transition: all 0.3s;">三方数据: 未激活</div>
+        </div>
       </div>
 
       <!-- Progress -->
@@ -173,6 +176,18 @@
         <div class="form-group">
           <label class="form-label">最大循环步数</label>
           <input type="number" id="maxLoopSteps" class="form-input" min="1" max="25" value="15" />
+        </div>
+
+        <div class="settings-section-title" style="margin-top: 20px; font-size: 13px; font-weight: bold; border-bottom: 1px solid var(--border); padding-bottom: 6px; margin-bottom: 12px; color: var(--text);">三方选品数据 API 配置</div>
+        
+        <div class="form-group">
+          <label class="form-label">Helium 10 API Key</label>
+          <input type="password" id="helium10ApiKey" class="form-input" placeholder="用于亚马逊/Etsy数据..." />
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">卖家精灵 API Key</label>
+          <input type="password" id="sellerSpriteApiKey" class="form-input" placeholder="用于国内/跨境选品数据..." />
         </div>
 
         <button id="saveSettings" class="save-settings-btn">保存设置</button>
