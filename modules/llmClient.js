@@ -213,11 +213,19 @@ async function readSSEStream(response, callback, format) {
       const trimmed = line.trim();
       if (!trimmed) continue;
       
+      if (trimmed.startsWith(":")) {
+        continue; // Ignore SSE comments (e.g., :HTTP_STATUS/200, :ping, keep-alive)
+      }
+
       let payload = trimmed;
       if (trimmed.startsWith("data:")) {
         payload = trimmed.slice(5).trim();
       } else if (trimmed.startsWith("id:") || trimmed.startsWith("event:") || trimmed.startsWith("retry:")) {
         continue;
+      }
+
+      if (payload === "[DONE]") {
+        continue; // Cleanly ignore standard EOF marker without logging parsing errors
       }
       
       let json;
