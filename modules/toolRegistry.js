@@ -28,15 +28,34 @@ function checkTabUrl(url) {
 
 function safeEncodeURI(url) {
   if (!url) return "";
+  let encoded = url;
   try {
-    return encodeURI(decodeURI(url));
+    encoded = encodeURI(decodeURI(url));
   } catch (_) {
     try {
-      return encodeURI(url);
+      encoded = encodeURI(url);
     } catch (err) {
-      return url;
+      encoded = url;
     }
   }
+  
+  // Inject input charset params to force search engines to parse parameters as UTF-8 instead of default GBK
+  try {
+    const lower = encoded.toLowerCase();
+    if (lower.includes("taobao.com") || lower.includes("1688.com") || lower.includes("alibaba.com") || lower.includes("aliexpress.com")) {
+      if (encoded.includes("?") && !lower.includes("_input_charset")) {
+        encoded += (encoded.endsWith("&") || encoded.endsWith("?")) ? "_input_charset=utf-8" : "&_input_charset=utf-8";
+      }
+    } else if (lower.includes("jd.com")) {
+      if (encoded.includes("?") && !lower.includes("enc=")) {
+        encoded += (encoded.endsWith("&") || encoded.endsWith("?")) ? "enc=utf-8" : "&enc=utf-8";
+      }
+    }
+  } catch (e) {
+    console.error("Charset injection failed:", e);
+  }
+  
+  return encoded;
 }
 
 async function sendToContentScript(tabId, message) {
@@ -252,8 +271,8 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
       bing: `https://www.bing.com/search?q=${encodeURIComponent(targetQuery)}`,
       amazon: `https://www.amazon.com/s?k=${encodeURIComponent(targetQuery)}`,
       etsy: `https://www.etsy.com/search?q=${encodeURIComponent(targetQuery)}`,
-      taobao: `https://s.taobao.com/search?q=${encodeURIComponent(targetQuery)}`,
-      jd: `https://search.jd.com/Search?keyword=${encodeURIComponent(targetQuery)}`,
+      taobao: `https://s.taobao.com/search?q=${encodeURIComponent(targetQuery)}&_input_charset=utf-8`,
+      jd: `https://search.jd.com/Search?keyword=${encodeURIComponent(targetQuery)}&enc=utf-8`,
       pinduoduo: `https://mobile.yangkeduo.com/search_result.html?search_key=${encodeURIComponent(targetQuery)}`,
     };
     const searchUrl = engines[engine] || engines.google;
