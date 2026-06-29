@@ -877,20 +877,12 @@ function bindEvents() {
   <div class="report-container">
     ${htmlContent}
   </div>
-  <script>
-    window.onload = function() {
-      setTimeout(() => { window.print(); }, 500);
-    };
-  </script>
 </body>
 </html>`;
 
-    const blob = new Blob([printHtml], { type: "text/html" });
-    const url = URL.createObjectURL(blob);
-    window.open(url, '_blank');
-    
-    // Revoke the URL after it opens
-    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    chrome.storage.local.set({ printHtml }, () => {
+      window.open(chrome.runtime.getURL("print.html"), '_blank');
+    });
   });
 
   $("viewReportBtn").addEventListener("click", () => {
