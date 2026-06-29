@@ -868,13 +868,16 @@ function bindEvents() {
       --accent2: #8b5cf6;
     }
     
-    @page { size: portrait; margin: 20mm; }
-    @page landscape-page { size: landscape; margin: 20mm; }
+    @page { size: portrait; margin: 20mm 15mm; }
+    @page landscape-page { size: landscape; margin: 20mm 15mm; }
     
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; color: #1a202c; line-height: 1.7; background: #fff; margin: 0; padding: 0; text-align: left; }
     
     .print-banner { background: #eff6ff; color: #1d4ed8; padding: 15px; text-align: center; font-weight: bold; border-bottom: 1px solid #bfdbfe; margin-bottom: 20px; }
-    @media print { .print-banner { display: none !important; } }
+    @media print { 
+      .print-banner { display: none !important; } 
+      body { -webkit-print-color-adjust: exact; print-color-adjust: exact; margin: 20mm 15mm !important; }
+    }
     
     .cover-page { padding-top: 100px; text-align: center !important; page-break-after: always; box-sizing: border-box; }
     .cover-title { font-size: 2.8em; color: #1e3a8a; font-weight: 800; letter-spacing: -0.02em; max-width: 80%; line-height: 1.3; margin-bottom: 20px; text-align: center !important; margin-left: auto; margin-right: auto; margin-top: 60px; }
@@ -886,8 +889,8 @@ function bindEvents() {
     .report-container p, .report-container li, .report-container td, .report-container div { text-align: left !important; }
     
     h1 { color: #0f172a; font-size: 22pt; border-bottom: 2px solid #1e3a8a; padding-bottom: 10px; margin-top: 30px; margin-bottom: 20px; text-align: center !important; }
-    h2 { color: #1e3a8a; font-size: 16pt; border-bottom: 1px solid #e2e8f0; padding-bottom: 8px; margin-top: 25px; margin-bottom: 15px; page-break-after: avoid; text-align: left !important; }
-    h3 { color: #334155; font-size: 14pt; margin-top: 20px; margin-bottom: 10px; page-break-after: avoid; text-align: left !important; }
+    h2 { color: #1e3a8a; font-size: 16pt; border-bottom: 1px solid #e2e8f0; padding-bottom: 8px; margin-top: 30px; margin-bottom: 15px; padding-top: 15px; page-break-after: avoid; text-align: left !important; }
+    h3 { color: #334155; font-size: 14pt; margin-top: 25px; margin-bottom: 10px; padding-top: 12px; page-break-after: avoid; text-align: left !important; }
     p { margin-bottom: 15px; color: #334155; orphans: 3; widows: 3; }
     strong { color: #0f172a; }
     
@@ -914,7 +917,7 @@ function bindEvents() {
     .empty-text { display: none; }
     
     @media print {
-      body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      body { -webkit-print-color-adjust: exact; print-color-adjust: exact; margin: 20mm 15mm !important; }
     }
   </style>
 </head>
