@@ -293,6 +293,24 @@ function showResult(response) {
       
       let rawData = typeof response.result === "string" ? JSON.parse(response.result) : response.result;
       
+      // Check if there are guide overlays to render in active page
+      if (rawData && Array.isArray(rawData.guides)) {
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+          if (tabs[0]) {
+            chrome.tabs.sendMessage(tabs[0].id, {
+              type: "RENDER_GUIDE_OVERLAYS",
+              guides: rawData.guides
+            }, (res) => {
+              if (chrome.runtime.lastError) {
+                console.warn("Guide overlay injection error:", chrome.runtime.lastError.message);
+              } else if (res && res.ok) {
+                addLog("info", "💡", `已在目标网页对应的 DOM 元素上成功绘制 ${res.count} 个 AI 新手投流引导浮层！`);
+              }
+            });
+          }
+        });
+      }
+      
       // Render Report
       let hasReport = false;
       for (const key in rawData) {

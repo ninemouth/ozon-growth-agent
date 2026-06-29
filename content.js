@@ -193,6 +193,68 @@
       } else if (message.type === "SCROLL_TO_TOP") {
         window.scrollTo({ top: 0, behavior: "smooth" });
         sendResponse({ ok: true });
+      } else if (message.type === "RENDER_GUIDE_OVERLAYS") {
+        // 1. Clean up existing bubbles and highlights
+        document.querySelectorAll(".agent-guide-bubble").forEach(el => el.remove());
+        document.querySelectorAll(".agent-highlighted").forEach(el => {
+          el.style.outline = "";
+          el.style.outlineOffset = "";
+          el.classList.remove("agent-highlighted");
+        });
+        
+        const guides = message.guides || [];
+        let renderedCount = 0;
+        
+        guides.forEach(guide => {
+          if (!guide.selector || !guide.text) return;
+          const target = document.querySelector(guide.selector);
+          if (target) {
+            target.classList.add("agent-highlighted");
+            target.style.outline = "3px solid #6366f1"; // Indigo accent color
+            target.style.outlineOffset = "3px";
+            
+            const rect = target.getBoundingClientRect();
+            
+            // Create tooltip bubble
+            const bubble = document.createElement("div");
+            bubble.className = "agent-guide-bubble";
+            bubble.style.cssText = `
+              position: absolute;
+              top: ${rect.bottom + window.scrollY + 8}px;
+              left: ${rect.left + window.scrollX}px;
+              background: #0f172a;
+              color: #f8fafc;
+              padding: 10px 14px;
+              border-radius: 8px;
+              box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3), 0 8px 10px -6px rgba(0, 0, 0, 0.3);
+              font-size: 12px;
+              z-index: 2147483647;
+              max-width: 260px;
+              line-height: 1.5;
+              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+              border: 1px solid #334155;
+            `;
+            
+            bubble.innerHTML = `
+              <div style="display:flex; justify-content:space-between; align-items:start; gap:8px;">
+                <span style="font-weight:700; color:#818cf8; font-size:11px;">💡 AI 投流引导</span>
+                <span class="close-guide-bubble" style="cursor:pointer; font-size:14px; color:#94a3b8; line-height:1; font-weight:bold;">&times;</span>
+              </div>
+              <div style="margin-top:6px; color:#cbd5e1; font-size:11px;">${guide.text}</div>
+            `;
+            
+            bubble.querySelector(".close-guide-bubble").addEventListener("click", () => {
+              bubble.remove();
+              target.style.outline = "";
+              target.style.outlineOffset = "";
+            });
+            
+            document.body.appendChild(bubble);
+            renderedCount++;
+          }
+        });
+        
+        sendResponse({ ok: true, count: renderedCount });
       } else {
         sendResponse({ ok: false, error: `Unknown message type: ${message.type}` });
       }
