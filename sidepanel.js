@@ -378,39 +378,88 @@ function renderReport(resultObj) {
 function renderGrid(dataArray) {
   if (!dataArray || dataArray.length === 0) return "";
   
-  // Collect all unique keys
-  const keys = new Set();
+  // Group items by their keys signature (sorted list of keys as string) to avoid sparse/misaligned columns
+  const groups = {};
   dataArray.forEach(item => {
     if (item && typeof item === 'object') {
-      Object.keys(item).forEach(k => keys.add(k));
+      const signature = Object.keys(item).sort().join(',');
+      if (!groups[signature]) {
+        groups[signature] = [];
+      }
+      groups[signature].push(item);
     }
   });
-  const columns = Array.from(keys);
   
-  let html = '<table><thead><tr>';
-  columns.forEach(col => {
-    html += `<th>${escapeHtml(col)}</th>`;
-  });
-  html += '</tr></thead><tbody>';
-  
-  dataArray.forEach(item => {
-    html += '<tr>';
+  let html = "";
+  Object.keys(groups).forEach((signature, index) => {
+    const groupItems = groups[signature];
+    const columns = Object.keys(groupItems[0]); // preserve original order of keys of the first item
+    
+    // Deduce a clean title for the sub-table based on key features
+    let tableTitle = `数据列表 ${index + 1}`;
+    if (columns.includes('product_blueprint_id') || columns.includes('name')) {
+      tableTitle = '产品开发蓝图 (Product Blueprints)';
+    } else if (columns.includes('positioning') || columns.includes('competitive_advantage')) {
+      tableTitle = '竞品与市场定位 (Competitor Analysis)';
+    } else if (columns.includes('failure_analysis') || columns.includes('suspected_components')) {
+      tableTitle = '风控与故障评估 (Risk & Failure Analysis)';
+    } else {
+      tableTitle = `${columns[0].replace(/_/g, ' ').toUpperCase()} 相关分析列表`;
+    }
+    
+    html += `<h3 class="grid-subtable-title" style="margin-top:25px;margin-bottom:10px;font-size:1.1em;color:var(--text);border-left:4px solid var(--accent);padding-left:8px;font-weight:600;">📋 ${tableTitle}</h3>`;
+    html += '<div style="overflow-x:auto; margin-bottom: 25px; border:1px solid var(--border); border-radius:6px;"><table style="width:100%; border-collapse:collapse; text-align:left;">';
+    
+    // Render Header
+    html += '<thead><tr style="border-bottom:2px solid var(--border);">';
     columns.forEach(col => {
-      let val = item[col];
-      if (val === undefined || val === null) val = '';
-      else if (typeof val === 'object') val = JSON.stringify(val);
-      else val = String(val);
-      // If the text contains markdown characters (like **), parse it. Otherwise just escape.
-      if (typeof marked !== 'undefined') {
-          html += `<td>${marked.parseInline(val)}</td>`;
-      } else {
-          html += `<td>${escapeHtml(val)}</td>`;
-      }
+      html += `<th style="background:var(--bg2); padding:10px; font-weight:600; color:var(--text2); font-size:11px; white-space:nowrap; text-transform:uppercase;">${escapeHtml(col.replace(/_/g, ' '))}</th>`;
     });
-    html += '</tr>';
+    html += '</tr></thead><tbody>';
+    
+    // Render Rows
+    groupItems.forEach(item => {
+      html += '<tr style="border-bottom:1px solid var(--border);">';
+      columns.forEach(col => {
+        let val = item[col];
+        let cellHtml = '';
+        
+        if (val === undefined || val === null) {
+          cellHtml = '';
+        } else if (Array.isArray(val)) {
+          if (val.length === 0) {
+            cellHtml = '';
+          } else if (typeof val[0] === 'object') {
+            // Render array of objects as a clean key-value block
+            cellHtml = val.map(subItem => {
+              return Object.entries(subItem)
+                .map(([k, v]) => `<span style="font-size:11px;"><strong>${escapeHtml(k)}:</strong> ${escapeHtml(String(v))}</span>`)
+                .join(' | ');
+            }).join('<br/>');
+          } else {
+            cellHtml = val.map(x => escapeHtml(String(x))).join(', ');
+          }
+        } else if (typeof val === 'object') {
+          // Render single object as key-value pairs
+          cellHtml = Object.entries(val)
+            .map(([k, v]) => `<span style="font-size:11px;"><strong>${escapeHtml(k)}:</strong> ${escapeHtml(String(v))}</span>`)
+            .join('<br/>');
+        } else {
+          // Regular text (optionally parse inline markdown if marked is loaded)
+          const textVal = String(val);
+          if (typeof marked !== 'undefined') {
+            cellHtml = marked.parseInline(textVal);
+          } else {
+            cellHtml = escapeHtml(textVal);
+          }
+        }
+        html += `<td style="padding:10px; vertical-align:top; font-size:12px; line-height:1.5;">${cellHtml}</td>`;
+      });
+      html += '</tr>';
+    });
+    html += '</tbody></table></div>';
   });
   
-  html += '</tbody></table>';
   return html;
 }
 
@@ -755,9 +804,13 @@ function bindEvents() {
   <title>Skill_Report_${dateStr}</title>
   <style>
     :root {
+      --bg2: #f1f5f9;
       --bg3: #f8fafc;
       --text: #0f172a;
+      --text2: #475569;
       --border: #cbd5e1;
+      --accent: #6366f1;
+      --accent2: #8b5cf6;
     }
     
     @page { size: portrait; margin: 20mm; }
