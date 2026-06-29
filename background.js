@@ -178,10 +178,21 @@ chrome.runtime.onConnect.addListener((port) => {
 
           if (isCancelled) return;
 
-          // Step 3: Load skill markdown
-          const skillMarkdown = await loadSkill(
+          // Step 3: Load base auditor skill & selected skill markdown
+          let baseMarkdown = "";
+          try {
+            baseMarkdown = await loadSkill("skills/base_report_auditor.skill.md");
+          } catch (err) {
+            console.warn("Could not load base auditor skill:", err.message);
+          }
+          
+          const selectedMarkdown = await loadSkill(
             message.skillPath || "skills/etsy_crossborder_explorer.skill.md"
           );
+          
+          const skillMarkdown = baseMarkdown 
+            ? `${baseMarkdown}\n\n=========================================\n\n${selectedMarkdown}`
+            : selectedMarkdown;
 
           if (isCancelled) return;
 
