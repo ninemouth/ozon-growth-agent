@@ -255,4 +255,60 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
       chrome.tabs.update(tab.id, { url: searchUrl });
     });
   },
+
+  open_new_tab: async (args) => {
+    const { url } = args;
+    if (!url) throw new Error("url is required");
+    
+    return new Promise((resolve, reject) => {
+      chrome.tabs.create({ url, active: false }, (tab) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
+        }
+        
+        const listener = (tabId, info) => {
+          if (tabId === tab.id && info.status === "complete") {
+            chrome.tabs.onUpdated.removeListener(listener);
+            
+            // Wait 1.5s for dynamic content reflow
+            setTimeout(async () => {
+              try {
+                const data = await sendToContentScript(tab.id, { type: "READ_CURRENT_PAGE" });
+                resolve({ ok: true, tabId: tab.id, pageData: data?.data || "" });
+              } catch (err) {
+                // If content script cannot be injected (e.g. system page or not loaded), resolve basic tab info
+                resolve({ ok: true, tabId: tab.id, pageData: "Failed to read DOM (Script injection restricted)" });
+              }
+            }, 1500);
+          }
+        };
+        
+        chrome.tabs.onUpdated.addListener(listener);
+      });
+    });
+  },
+
+  close_tab: async (args) => {
+    const { tabId } = args;
+    if (!tabId) throw new Error("tabId is required");
+    await chrome.tabs.remove(parseInt(tabId));
+    return { ok: true, message: `Tab ${tabId} closed.` };
+  },
+
+  save_ad_plan: async (args) => {
+    const { plan } = args;
+    if (!plan) throw new Error("plan object is required");
+    await new Promise((resolve) =>
+      chrome.storage.local.set({ activeAdPlan: plan }, resolve)
+    );
+    return { ok: true, message: "Ad plan successfully saved in local storage." };
+  },
+
+  get_ad_plan: async () => {
+    const data = await new Promise((resolve) =>
+      chrome.storage.local.get(["activeAdPlan"], resolve)
+    );
+    return data.activeAdPlan || null;
+  },
 };
