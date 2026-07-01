@@ -125,15 +125,27 @@
         }
         
         const lowerHref = href.toLowerCase();
-        const isProductLink = 
-          lowerHref.includes("detail.1688.com/offer/") ||
-          lowerHref.includes("item.taobao.com/") ||
-          lowerHref.includes("detail.tmall.com/") ||
-          lowerHref.includes("/dp/") || 
-          lowerHref.includes("/gp/product/") ||
+        let isProductLink = false;
+        
+        if (lowerHref.includes("1688.com")) {
+          if (lowerHref.includes("offer") || lowerHref.includes("item") || lowerHref.includes("click") || lowerHref.includes("jump") || /\/\d{9,15}\.html/.test(lowerHref) || /[?&](offerid|id)=\d+/i.test(lowerHref)) {
+            isProductLink = true;
+          }
+        } else if (lowerHref.includes("taobao.com") || lowerHref.includes("tmall.com")) {
+          if (lowerHref.includes("item.htm") || lowerHref.includes("/item/") || /[?&]id=\d+/i.test(lowerHref)) {
+            isProductLink = true;
+          }
+        } else if (lowerHref.includes("amazon.com") || lowerHref.includes("amazon.co.jp") || lowerHref.includes("amazon.de") || lowerHref.includes("amazon.co.uk")) {
+          if (lowerHref.includes("/dp/") || lowerHref.includes("/gp/product/")) {
+            isProductLink = true;
+          }
+        } else if (
           lowerHref.includes("etsy.com/listing/") ||
           lowerHref.includes("temu.com/") ||
-          lowerHref.includes("aliexpress.com/item/");
+          lowerHref.includes("aliexpress.com/item/")
+        ) {
+          isProductLink = true;
+        }
           
         if (isProductLink && !processedLinks.has(href)) {
           processedLinks.add(href);
