@@ -2,28 +2,6 @@
 
 import { callLLM } from './llmClient.js';
 
-let automationWindowId = null;
-
-async function getOrCreateAutomationWindow(url) {
-  if (automationWindowId) {
-    try {
-      const win = await chrome.windows.get(automationWindowId);
-      if (win) return win;
-    } catch (_) {
-      automationWindowId = null;
-    }
-  }
-  return new Promise((resolve, reject) => {
-    chrome.windows.create({ url: safeEncodeURI(url), type: "normal", focused: true }, (win) => {
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message));
-      } else {
-        automationWindowId = win.id;
-        resolve(win);
-      }
-    });
-  });
-}
 
 async function getCurrentTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -383,17 +361,15 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
       pinduoduo: `https://mobile.yangkeduo.com/search_result.html?search_key=${encodeURIComponent(targetQuery)}`,
     };
     const searchUrl = engines[engine] || engines.google;
-    const tab = await getCurrentTab();
-    if (!tab) throw new Error("No active tab found");
-    
     return new Promise((resolve) => {
-      chrome.tabs.onUpdated.addListener(function listener(tabId, info) {
-        if (tabId === tab.id && info.status === "complete") {
-          chrome.tabs.onUpdated.removeListener(listener);
-          setTimeout(() => resolve({ ok: true, searchUrl, queryUsed: targetQuery }), 2000);
-        }
+      chrome.tabs.create({ url: safeEncodeURI(searchUrl), active: true }, (newTab) => {
+        chrome.tabs.onUpdated.addListener(function listener(tabId, info) {
+          if (tabId === newTab.id && info.status === "complete") {
+            chrome.tabs.onUpdated.removeListener(listener);
+            setTimeout(() => resolve({ ok: true, tabId: newTab.id, searchUrl, queryUsed: targetQuery }), 2000);
+          }
+        });
       });
-      chrome.tabs.update(tab.id, { url: safeEncodeURI(searchUrl) });
     });
   },
 
@@ -443,34 +419,11 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
     const { url } = args;
     if (!url) throw new Error("url is required");
     
-    return new Promise(async (resolve, reject) => {
-      try {
-        let win = null;
-        let tab = null;
-
-        if (automationWindowId) {
-          try {
-            win = await chrome.windows.get(automationWindowId);
-          } catch (_) {
-            automationWindowId = null;
-          }
-        }
-
-        if (!automationWindowId) {
-          win = await getOrCreateAutomationWindow(url);
-          const tabs = await new Promise((r) => chrome.tabs.query({ windowId: win.id }, r));
-          tab = tabs[0];
-        } else {
-          try {
-            await chrome.windows.update(automationWindowId, { focused: true });
-          } catch (_) {}
-
-          tab = await new Promise((resTab, rejTab) => {
-            chrome.tabs.create({ windowId: automationWindowId, url: safeEncodeURI(url), active: true }, (t) => {
-              if (chrome.runtime.lastError) rejTab(new Error(chrome.runtime.lastError.message));
-              else resTab(t);
-            });
-          });
+    return new Promise((resolve, reject) => {
+      chrome.tabs.create({ url: safeEncodeURI(url), active: true }, (tab) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
         }
         
         const listener = (tabId, info) => {
@@ -520,9 +473,7 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
         };
         
         chrome.tabs.onUpdated.addListener(listener);
-      } catch (err) {
-        reject(err);
-      }
+      });
     });
   },
 
