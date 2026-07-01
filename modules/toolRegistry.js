@@ -363,33 +363,27 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
     const searchUrl = engines[engine] || engines.google;
     return new Promise((resolve) => {
       chrome.tabs.create({ url: safeEncodeURI(searchUrl), active: true }, (newTab) => {
-        chrome.tabs.onUpdated.addListener(function listener(tabId, info) {
-          if (tabId === newTab.id && info.status === "complete") {
-            chrome.tabs.onUpdated.removeListener(listener);
+        // Poll immediately for content script readiness and product links
+        let attempts = 0;
+        const maxAttempts = 20; // up to 10 seconds for new tab load
+        const checkLoad = setInterval(async () => {
+          attempts++;
+          try {
+            const data = await sendToContentScript(newTab.id, { type: "READ_CURRENT_PAGE" });
+            const pageData = data?.data || {};
+            const hasProducts = pageData.productLinks && pageData.productLinks.length > 0;
             
-            // Poll for actual search results in the page DOM
-            let attempts = 0;
-            const maxAttempts = 15; // up to 7.5 seconds
-            const checkLoad = setInterval(async () => {
-              attempts++;
-              try {
-                const data = await sendToContentScript(newTab.id, { type: "READ_CURRENT_PAGE" });
-                const pageData = data?.data || {};
-                const hasProducts = pageData.productLinks && pageData.productLinks.length > 0;
-                
-                if (hasProducts || attempts >= maxAttempts) {
-                  clearInterval(checkLoad);
-                  resolve({ ok: true, tabId: newTab.id, searchUrl, queryUsed: targetQuery, pageData });
-                }
-              } catch (_) {
-                if (attempts >= maxAttempts) {
-                  clearInterval(checkLoad);
-                  resolve({ ok: true, tabId: newTab.id, searchUrl, queryUsed: targetQuery, pageData: {} });
-                }
-              }
-            }, 500);
+            if (hasProducts || attempts >= maxAttempts) {
+              clearInterval(checkLoad);
+              resolve({ ok: true, tabId: newTab.id, searchUrl, queryUsed: targetQuery, pageData });
+            }
+          } catch (_) {
+            if (attempts >= maxAttempts) {
+              clearInterval(checkLoad);
+              resolve({ ok: true, tabId: newTab.id, searchUrl, queryUsed: targetQuery, pageData: {} });
+            }
           }
-        });
+        }, 500);
       });
     });
   },
@@ -406,13 +400,16 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
     }
     
     return new Promise((resolve, reject) => {
-      const listener = (tId, info) => {
-        if (tId === targetTabId && info.status === "complete") {
-          chrome.tabs.onUpdated.removeListener(listener);
+      sendToContentScript(targetTabId, { type: "INPUT_TEXT_AND_SEARCH", keyword, inputSelector, submitSelector })
+        .then(res => {
+          if (!res?.ok) {
+            reject(new Error(res?.error || "Failed to trigger search inside page"));
+            return;
+          }
           
-          // Poll for actual search results in the page DOM
+          // Poll immediately for DOM readiness and product list elements
           let attempts = 0;
-          const maxAttempts = 15; // up to 7.5 seconds
+          const maxAttempts = 20; // up to 10 seconds total
           const checkLoad = setInterval(async () => {
             attempts++;
             try {
@@ -431,20 +428,8 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
               }
             }
           }, 500);
-        }
-      };
-      
-      chrome.tabs.onUpdated.addListener(listener);
-      
-      sendToContentScript(targetTabId, { type: "INPUT_TEXT_AND_SEARCH", keyword, inputSelector, submitSelector })
-        .then(res => {
-          if (!res?.ok) {
-            chrome.tabs.onUpdated.removeListener(listener);
-            reject(new Error(res?.error || "Failed to trigger search inside page"));
-          }
         })
         .catch(err => {
-          chrome.tabs.onUpdated.removeListener(listener);
           reject(err);
         });
     });
@@ -461,53 +446,45 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
           return;
         }
         
-        const listener = (tabId, info) => {
-          if (tabId === tab.id && info.status === "complete") {
-            chrome.tabs.get(tab.id, (t) => {
-              const currentUrl = t?.url || "";
-              if (currentUrl.includes("sec.1688.com") || currentUrl.includes("login") || currentUrl.includes("verify") || currentUrl.includes("passport")) {
-                // Focus tab to foreground so user can login/solve captcha
-                chrome.tabs.update(tab.id, { active: true });
-                
-                const pollInterval = setInterval(() => {
-                  chrome.tabs.get(tab.id, (chkTab) => {
-                    if (chrome.runtime.lastError || !chkTab) {
-                      clearInterval(pollInterval);
-                      resolve({ ok: true, tabId: tab.id, pageData: "Tab closed during verification" });
-                      return;
-                    }
-                    const chkUrl = chkTab.url || "";
-                    if (!chkUrl.includes("sec.1688.com") && !chkUrl.includes("login") && !chkUrl.includes("verify") && !chkUrl.includes("passport")) {
-                      clearInterval(pollInterval);
-                      setTimeout(async () => {
-                        try {
-                          const data = await sendToContentScript(tab.id, { type: "READ_CURRENT_PAGE" });
-                          resolve({ ok: true, tabId: tab.id, pageData: data?.data || "" });
-                        } catch (err) {
-                          resolve({ ok: true, tabId: tab.id, pageData: "Failed to read DOM (Script injection restricted)" });
-                        }
-                      }, 2000);
-                    }
-                  });
-                }, 2000);
-                
-                chrome.tabs.onUpdated.removeListener(listener);
-              } else {
-                chrome.tabs.onUpdated.removeListener(listener);
-                setTimeout(async () => {
-                  try {
-                    const data = await sendToContentScript(tab.id, { type: "READ_CURRENT_PAGE" });
-                    resolve({ ok: true, tabId: tab.id, pageData: data?.data || "" });
-                  } catch (err) {
-                    resolve({ ok: true, tabId: tab.id, pageData: "Failed to read DOM (Script injection restricted)" });
-                  }
-                }, 1500);
+        // Poll for tab load and captcha/verification checks
+        let attempts = 0;
+        const maxAttempts = 20; // up to 10 seconds total
+        const poll = setInterval(() => {
+          attempts++;
+          chrome.tabs.get(tab.id, (t) => {
+            if (chrome.runtime.lastError || !t) {
+              clearInterval(poll);
+              resolve({ ok: true, tabId: tab.id, pageData: "Tab closed or not found" });
+              return;
+            }
+            
+            const currentUrl = t.url || "";
+            const isVerification = currentUrl.includes("sec.1688.com") || currentUrl.includes("login") || currentUrl.includes("verify") || currentUrl.includes("passport");
+            
+            if (isVerification) {
+              // Focus tab to foreground so user can login/solve captcha
+              chrome.tabs.update(tab.id, { active: true });
+              // We do not resolve yet, let the user solve it
+              if (attempts >= maxAttempts) {
+                clearInterval(poll);
+                resolve({ ok: true, tabId: tab.id, pageData: "Verification timeout" });
               }
-            });
-          }
-        };
-        
-        chrome.tabs.onUpdated.addListener(listener);
+              return;
+            }
+            
+            if (t.status === "complete" || attempts >= maxAttempts) {
+              clearInterval(poll);
+              setTimeout(async () => {
+                try {
+                  const data = await sendToContentScript(tab.id, { type: "READ_CURRENT_PAGE" });
+                  resolve({ ok: true, tabId: tab.id, pageData: data?.data || "" });
+                } catch (err) {
+                  resolve({ ok: true, tabId: tab.id, pageData: "Failed to read DOM (Script injection restricted)" });
+                }
+              }, 1500);
+            }
+          });
+        }, 500);
       });
     });
   },
