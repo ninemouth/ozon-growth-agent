@@ -12,11 +12,14 @@ export function clearSessionCache(tabId) {
   }
 }
 
-export async function runAgentLoop({ tabId, skillId, skillMarkdown, userInstruction, pageContext, sendProgress, continueSession, highRandomness }) {
+export async function runAgentLoop({ tabId, skillId, skillMarkdown, userInstruction, pageContext, sendProgress, continueSession, highRandomness, negativeFilter }) {
   const settings = await getSettings();
   const maxSteps = Math.max(parseInt(settings.maxLoopSteps) || 15, 15);
 
-  const systemPrompt = skillMarkdown;
+  let systemPrompt = skillMarkdown;
+  if (negativeFilter === false) {
+    systemPrompt += `\n\n=========================================\n\n⚠️ 【用户已手动关闭“不卖原则”过滤限制】：当前处于国内国内电商或不受限的宽容寻源环境，用户已手动取消了默认的“不卖原则”（Negative Filter）负面过滤。因此，你【无须】过滤服饰、鞋帽、内衣、大件重货、陶瓷玻璃易碎品、本地容易买到的普通日杂标品或医疗/成人等高风险品类。请完全根据当前页面商品的实际销量表现、货源品质以及用户指令，自由挖掘上述常规品类并推荐它们的源头供应商！`;
+  }
   
   const isApiActive = !!(settings.helium10ApiKey || settings.sellerSpriteApiKey);
   const isFastMossActive = !!settings.fastmossApiKey;
@@ -199,6 +202,14 @@ ${highRandomness ? `\n\n## ⚠️ [Anti-Cache] 强制发散与破局指令 (Nonc
       }
 
       sendProgress({ type: "tool_result", step, toolName, toolResult });
+
+      if (toolResult && toolResult.isCaptcha) {
+        sendProgress({
+          type: "captcha_warning",
+          step,
+          message: "【采购平台人机拦截预警】：检测到当前页面被验证码（滑块）或登录限制卡住！请立刻前往打开的浏览器窗口，滑动通过验证或完成登录。操作完成后 Agent 将自动继续。"
+        });
+      }
 
       let nextScreenshot = null;
       const pageModifyingTools = ["open_new_tab", "navigate_to", "search_in_browser", "click_by_text", "input_text_and_search", "click_by_selector"];

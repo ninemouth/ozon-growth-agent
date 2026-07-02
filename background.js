@@ -240,7 +240,8 @@ chrome.runtime.onConnect.addListener((port) => {
             pageContext,
             sendProgress,
             continueSession: message.continueSession,
-            highRandomness: message.highRandomness
+            highRandomness: message.highRandomness,
+            negativeFilter: message.negativeFilter
           });
 
           if (!isCancelled) {

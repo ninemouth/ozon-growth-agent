@@ -271,6 +271,7 @@ async function runSkill() {
       userInstruction: userInstruction,
       continueSession: $("continueSessionCheckbox").checked,
       highRandomness: $("highRandomnessCheckbox").checked,
+      negativeFilter: $("negativeFilterCheckbox").checked,
     });
 
   } catch (err) {
