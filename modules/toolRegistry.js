@@ -1,6 +1,6 @@
 // modules/toolRegistry.js — Tool registry and content script bridge
 
-import { callLLM } from './llmClient.js';
+import { callLLM, getSettings } from './llmClient.js';
 
 
 async function getCurrentTab() {
@@ -239,6 +239,43 @@ export const tools = {
     
     console.log(`Performing silent background agentic web search for: "${query}"`);
     let results = [];
+    
+    // 0. Prioritize using the large model's native built-in search tool via callLLM
+    try {
+      const settings = await getSettings();
+      const { llmProvider, llmModel, llmBaseUrl } = settings;
+      const provider = llmProvider || "openai";
+      
+      const isQwenModel = provider === "qwen" || llmModel.toLowerCase().includes("qwen") || (llmBaseUrl && llmBaseUrl.includes("dashscope"));
+      const isGeminiModel = llmModel.toLowerCase().includes("gemini") || (llmBaseUrl && llmBaseUrl.includes("google"));
+      const isGlmModel = llmModel.toLowerCase().includes("glm") || provider === "zhipu" || (llmBaseUrl && llmBaseUrl.includes("zhipu"));
+      const isBaichuan = llmModel.toLowerCase().includes("baichuan") || provider === "baichuan";
+      
+      if (isQwenModel || isGeminiModel || isGlmModel || isBaichuan) {
+        console.log("Using large model's built-in web search via callLLM...");
+        const searchPrompt = `你是一个网络搜索代理。请直接利用你的【内置网络搜索工具/Google Search Grounding】检索以下关键词最新的网络真实信息，并简明扼要地列出前 5 条相关结果（包含标题、链接和简短内容摘要）。
+关键词: "${query}"`;
+        
+        const responseText = await callLLM([
+          { role: "user", content: searchPrompt }
+        ]);
+        
+        if (responseText && responseText.trim().length > 0) {
+          return {
+            ok: true,
+            query,
+            provider: "Model Built-in Search",
+            results: [{
+              title: "模型内置检索结果",
+              link: "Built-in Search",
+              snippet: responseText.trim()
+            }]
+          };
+        }
+      }
+    } catch (e) {
+      console.warn("Failed to perform built-in search, falling back...", e);
+    }
     
     // 1. Try silent background fetch to Bing (with 4s timeout)
     try {
