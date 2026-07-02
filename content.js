@@ -454,10 +454,51 @@
 
             const dataTransfer = new DataTransfer();
             dataTransfer.items.add(file);
-            fileInput.files = dataTransfer.files;
             
-            fileInput.dispatchEvent(new Event('change', { bubbles: true }));
-            sendResponse({ ok: true, message: "Successfully triggered image search upload" });
+            // Method 1: Populate file input and trigger change & input events
+            try {
+              fileInput.files = dataTransfer.files;
+              fileInput.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+              fileInput.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+              if (typeof fileInput.onchange === 'function') {
+                fileInput.onchange();
+              }
+            } catch (e) {
+              console.warn("Method 1 (File Input Change) failed or was ignored:", e.message);
+            }
+
+            // Method 2: Simulate Ctrl+V Clipboard paste event on the main text search input box (essential backup)
+            try {
+              let searchInputEl = null;
+              const commonInputs = [
+                'input#q', 'input#alisearch-keywords', 'input#key',
+                'input[name="q"]', 'input[name="keywords"]', 'input[name="keyword"]',
+                'input[type="search"]', 'input[placeholder*="搜索"]', 'input[placeholder*="Search"]',
+                'input.search-input', 'input.alisearch-input'
+              ];
+              for (const sel of commonInputs) {
+                const el = document.querySelector(sel);
+                if (el && el.offsetWidth > 0 && el.offsetHeight > 0) {
+                  searchInputEl = el;
+                  break;
+                }
+              }
+              if (searchInputEl) {
+                searchInputEl.focus();
+                const pasteData = new DataTransfer();
+                pasteData.items.add(file);
+                const pasteEvent = new ClipboardEvent('paste', {
+                  bubbles: true,
+                  cancelable: true,
+                  clipboardData: pasteData
+                });
+                searchInputEl.dispatchEvent(pasteEvent);
+              }
+            } catch (e) {
+              console.warn("Method 2 (Clipboard Paste) failed:", e.message);
+            }
+            
+            sendResponse({ ok: true, message: "Successfully dispatched image search upload events (Change & Paste)" });
           } catch (err) {
             sendResponse({ ok: false, error: err.message });
           }
