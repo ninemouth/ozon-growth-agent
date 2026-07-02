@@ -3,6 +3,15 @@
 import { runAgentLoop } from './modules/agentLoop.js';
 import { tools } from './modules/toolRegistry.js';
 
+// ── Keep Service Worker Alive in MV3 ──
+// Calling any Chrome API resets the 30-second idle timer in Manifest V3.
+// We query storage every 10 seconds to keep the background service worker alive during long tasks.
+setInterval(() => {
+  chrome.storage.local.get(["keepAlive"], () => {
+    if (chrome.runtime.lastError) {} // ignore
+  });
+}, 10000);
+
 // ── Open side panel when toolbar icon is clicked ──
 chrome.action.onClicked.addListener((tab) => {
   chrome.sidePanel.open({ tabId: tab.id });
