@@ -33,14 +33,43 @@ function validateReport(parsed, userInstruction, skillId) {
     }
   }
 
-  // 3. Sourcing-specific details check (1688 / Taobao links)
+  // 3. Sourcing-specific details check (1688 / Taobao links, profiling, spec alignment, profit ledger)
   if ((skillId || "").includes("domestic_sourcing_finder")) {
     out.data.forEach((item, idx) => {
+      const title = item.title || item.name || `商品 #${idx + 1}`;
+      
+      // A. Detail links check
       const link = item.product_link || item.link || "";
       if (!link) {
-        errors.push(`商品列表第 ${idx + 1} 项没有提供采购直达链接！`);
+        errors.push(`商品列表第 ${idx + 1} 项 (${title}) 没有提供采购直达链接！`);
       } else if (link.includes("s.1688.com") || link.includes("search?") || link.includes("offer_search")) {
-        errors.push(`商品列表第 ${idx + 1} 项提供的链接是搜索列表页，必须替换为具体的单品详情页直达链接（格式如 detail.1688.com/offer/XXXX.html）！`);
+        errors.push(`商品列表第 ${idx + 1} 项 (${title}) 提供的链接是搜索列表页，必须替换为具体的单品详情页直达链接（格式如 detail.1688.com/offer/XXXX.html）！`);
+      }
+
+      // B. Category profiling check (target_profile)
+      const profile = item.target_profile;
+      if (!profile || typeof profile !== "object" || Object.keys(profile).length === 0) {
+        errors.push(`商品列表第 ${idx + 1} 项 (${title}) 缺少分类特征画像属性（target_profile 属性对象）！`);
+      }
+
+      // C. Spec alignment check (spec_audit)
+      const spec = item.spec_audit;
+      if (!spec || typeof spec !== "object" || !spec.target_spec || !spec.sourced_spec || !spec.status) {
+        errors.push(`商品列表第 ${idx + 1} 项 (${title}) 缺少规格审计比对参数（spec_audit 必须包含 target_spec、sourced_spec 和 status）！`);
+      }
+
+      // D. Profit ledger check (financial_ledger)
+      const ledger = item.financial_ledger;
+      if (!ledger || typeof ledger !== "object") {
+        errors.push(`商品列表第 ${idx + 1} 项 (${title}) 缺少财务账本字段（financial_ledger 属性对象）！`);
+      } else {
+        const cost = ledger.sourcing_cost || ledger.cost || "";
+        const shipping = ledger.shipping_cost || ledger.shipping || "";
+        const price = ledger.target_price || ledger.price || "";
+        const margin = ledger.margin_rate || ledger.margin || "";
+        if (!cost || !shipping || !price || !margin) {
+          errors.push(`商品列表第 ${idx + 1} 项 (${title}) 的财务账本不完整（financial_ledger 必须包含 sourcing_cost, shipping_cost, target_price 和 margin_rate）！`);
+        }
       }
     });
   }
@@ -49,7 +78,7 @@ function validateReport(parsed, userInstruction, skillId) {
   out.data.forEach((item, idx) => {
     const evidence = item.trend_evidence || item.selection_rationale || "";
     if (!evidence || evidence.trim().length < 20) {
-      errors.push(`商品列表第 ${idx + 1} 项 (${item.title || "未命名商品"}) 缺少充分的选品逻辑和证据链（trend_evidence 字段长度必须大于 20 字，需包含真实销量、竞品痛点数据或具体市场溢价依据作为选品证据）！`);
+      errors.push(`商品列表第 ${idx + 1} 项 (${item.title || "未命名商品"}) 缺少充分的选品逻辑和证据链（trend_evidence 字段长度必须大于 20 字，需包含真实销量、竞品差评痛点或明确的利润率优势作为选品证据）！`);
     }
   });
 
