@@ -158,12 +158,18 @@ export async function callLLM(messages, streamCallback, isHighRandomness = false
 
     const isQwenModel = provider === "qwen" || llmModel.toLowerCase().includes("qwen") || (llmBaseUrl && llmBaseUrl.includes("dashscope"));
     const isGeminiModel = llmModel.toLowerCase().includes("gemini") || (llmBaseUrl && llmBaseUrl.includes("google"));
+    const isGlmModel = llmModel.toLowerCase().includes("glm") || provider === "zhipu" || (llmBaseUrl && llmBaseUrl.includes("zhipu"));
+    const isBaichuan = llmModel.toLowerCase().includes("baichuan") || provider === "baichuan";
 
     if (isQwenModel) {
       body.enable_search = true;
       body.tools = [{ type: "web_search" }];
     } else if (isGeminiModel) {
       body.tools = [{ googleSearch: {} }];
+    } else if (isGlmModel) {
+      body.tools = [{ type: "web_search", web_search: { enable: true } }];
+    } else if (isBaichuan) {
+      body.tools = [{ type: "web_search" }];
     }
   }
 
