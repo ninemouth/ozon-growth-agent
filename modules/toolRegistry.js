@@ -261,7 +261,7 @@ export const tools = {
         
         const responseText = await Promise.race([
           callLLM([{ role: "user", content: searchPrompt }]),
-          new Promise((_, reject) => setTimeout(() => reject(new Error("LLM Built-in Search Timeout")), 6000))
+          new Promise((_, reject) => setTimeout(() => reject(new Error("LLM Built-in Search Timeout")), 15000))
         ]);
         
         if (responseText && responseText.trim().length > 0) {
@@ -315,39 +315,7 @@ export const tools = {
       }
     } catch (_) {}
     
-    // 2. If Bing silent failed, try DuckDuckGo silent (with 4s timeout)
-    if (results.length === 0) {
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 4000);
-        const ddgUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-        const response = await fetch(ddgUrl, { signal: controller.signal });
-        clearTimeout(timeoutId);
-        if (response.ok) {
-          const html = await response.text();
-          const regex = /<div class="result__body">([\s\S]*?)<\/div>\s*<\/div>/g;
-          let match;
-          let count = 0;
-          while ((match = regex.exec(html)) !== null && count < 5) {
-            const body = match[1];
-            const titleMatch = body.match(/<a class="result__url"[^>]*>([\s\S]*?)<\/a>/) || body.match(/<a class="result__snippet"[^>]*>([\s\S]*?)<\/a>/);
-            const linkMatch = body.match(/href="([^"]+)"/);
-            const snippetMatch = body.match(/<a class="result__snippet"[^>]*>([\s\S]*?)<\/a>/) || body.match(/<div class="result__snippet">([\s\S]*?)<\/div>/);
-            
-            const title = titleMatch ? titleMatch[1].replace(/<[^>]*>/g, "").trim() : "Result";
-            const link = linkMatch ? linkMatch[1] : "";
-            const snippet = snippetMatch ? snippetMatch[1].replace(/<[^>]*>/g, "").trim() : "";
-            
-            if (link) {
-              results.push({ title, link, snippet });
-              count++;
-            }
-          }
-        }
-      } catch (_) {}
-    }
-    
-    // 3. ULTIMATE FALLBACK: Create a temporary background Bing tab (with strict 3s read timeout and guaranteed removal)
+    // 2. ULTIMATE FALLBACK: Create a temporary background Bing tab (with strict 3s read timeout and guaranteed removal)
     if (results.length === 0) {
       console.log(`Silent search blocked. Falling back to real browser tab search for: "${query}"`);
       const searchUrl = `https://www.bing.com/search?q=${encodeURIComponent(query)}`;
