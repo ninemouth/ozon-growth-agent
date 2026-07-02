@@ -24,7 +24,7 @@ ecommerce-growth-agent/
 │   ├── toolRegistry.js        # 自动化工具箱注册 (含系统页面脚本注入安全校验与搜索校准)
 │   └── agentLoop.js           # Agent 自主思考-动作-反思状态机循环 (含智能 JSON 修复)
 └── skills/                    # 专家 Skill 提示词目录 (可根据业务场景自定义)
-    ├── taobao_homepage_explorer.skill.md
+    ├── china_ecommerce_trend_explorer.skill.md # [New] 国内电商全自动宏观爆品探索
     ├── etsy_crossborder_explorer.skill.md
     ├── ecommerce_page_analyzer.skill.md
     ├── global_shop_optimizer.skill.md
@@ -57,6 +57,18 @@ ecommerce-growth-agent/
 
 ### 📶 5. 指数退避 API 重试
 调用外部大模型 API 时，如果遭遇短期网络波动或 `HTTP 429` 频率限制，系统会自动启动简易的指数退避重试逻辑（最长重试 3 次，等待间隔 1s, 2s, 4s），大幅提升长任务的成功率。
+
+### 🔗 6. 双阶段链式工作流调度 (2-Stage Chained Workflow)
+当用户选择寻源 Skill 且指令中包含选品字样（如在店铺/类目大盘页搜索销量爆款并寻源时），系统智能重路由并进入链式工作流。首先静默调用 `china_ecommerce_trend_explorer` 扫盘（Stage 1 选品），成功提取商品后继承记忆上下文，无缝切换至 `domestic_sourcing_finder`（Stage 2 寻源），完成“从大盘选品到 1688 货源起批比价”的全自动闭环。侧边栏会以亮黄和绿色的圆角 Badge（`选品阶段` / `寻源阶段`）实时高亮指示当前所处状态。
+
+### 🌍 7. 全域市场 Agentic 自主感知校准 (Agentic Market Calibration)
+数字大盘和受众校准摒弃了脆弱的硬编码 `if/else` 域名匹配方式。Harness 引擎会结合当前网页上下文（URL 域名如 `.ru`、`.pl`、`.jp`，结算货币符号，页面文本语言，以及平台标志）自主推理锁定销售目的地市场。若完全没有海外特征，则自动判定并默认兜底为“中国大陆/国内电商”；若涉及 Ozon 平台则自动判定在“俄罗斯及独联体市场”销售。所有的消费者痛点、运费计算和毛利推算均随判定市场完全自适应。
+
+### 🛡️ 8. 选品证据 Critic 强程序审计 (Strict Evidence Critic Audit)
+为防止大模型糊弄输出，我们在 `validateReport` 自动校验器中内置了程序化硬性拦截规则：
+- **选品证据自检**：强制遍历报告中的商品卡片，如果 `trend_evidence`（选品证据）少于 20 个字或内容空泛，直接予以拦截打回重做。
+- **直达详情页链接校验**：在寻源阶段，如发现匹配到的货源不是具体的单品详情页链接（如填入 s.1688.com 搜索列表），Critic 会直接打回。
+- **步骤限制自适应**：为防止多商品并行比对导致步骤溢出，大盘选品时系统强制限制 12 步，而寻源时自动扩展至 45 步超大容量，同时新规约束在多商品寻源时对单个商品仅穿透审计 1 个最优详情页。
 
 ---
 
