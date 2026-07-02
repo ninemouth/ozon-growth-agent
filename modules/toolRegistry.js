@@ -240,14 +240,18 @@ export const tools = {
     console.log(`Performing silent background agentic web search for: "${query}"`);
     let results = [];
     
-    // 1. Try silent background fetch to Bing
+    // 1. Try silent background fetch to Bing (with 4s timeout)
     try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 4000);
       const searchUrl = `https://www.bing.com/search?q=${encodeURIComponent(query)}`;
       const response = await fetch(searchUrl, {
+        signal: controller.signal,
         headers: {
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
       });
+      clearTimeout(timeoutId);
       if (response.ok) {
         const html = await response.text();
         const regex = /<li class="b_algo">([\s\S]*?)<\/li>/g;
@@ -270,11 +274,14 @@ export const tools = {
       }
     } catch (_) {}
     
-    // 2. If Bing silent failed, try DuckDuckGo silent
+    // 2. If Bing silent failed, try DuckDuckGo silent (with 4s timeout)
     if (results.length === 0) {
       try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 4000);
         const ddgUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-        const response = await fetch(ddgUrl);
+        const response = await fetch(ddgUrl, { signal: controller.signal });
+        clearTimeout(timeoutId);
         if (response.ok) {
           const html = await response.text();
           const regex = /<div class="result__body">([\s\S]*?)<\/div>\s*<\/div>/g;
@@ -299,7 +306,7 @@ export const tools = {
       } catch (_) {}
     }
     
-    // 3. ULTIMATE FALLBACK: Create a temporary background Bing tab to parse search results
+    // 3. ULTIMATE FALLBACK: Create a temporary background Bing tab (with strict 3s read timeout and guaranteed removal)
     if (results.length === 0) {
       console.log(`Silent search blocked. Falling back to real browser tab search for: "${query}"`);
       const searchUrl = `https://www.bing.com/search?q=${encodeURIComponent(query)}`;
@@ -320,7 +327,10 @@ export const tools = {
                 setTimeout(async () => {
                   let tabResults = [];
                   try {
-                    const data = await sendToContentScript(newTab.id, { type: "READ_CURRENT_PAGE" });
+                    const data = await Promise.race([
+                      sendToContentScript(newTab.id, { type: "READ_CURRENT_PAGE" }),
+                      new Promise((_, rej) => setTimeout(() => rej(new Error("Timeout")), 3000))
+                    ]);
                     const pageData = data?.data || {};
                     if (pageData.productLinks && pageData.productLinks.length > 0) {
                       tabResults = pageData.productLinks.slice(0, 5).map(l => ({
@@ -329,10 +339,14 @@ export const tools = {
                         snippet: "Bing search result entry"
                       }));
                     }
-                  } catch (_) {}
-                  
-                  chrome.tabs.remove(newTab.id);
-                  resolve(tabResults);
+                  } catch (_) {
+                    console.warn("Tab search failed to read content script or timed out.");
+                  } finally {
+                    chrome.tabs.remove(newTab.id, () => {
+                      if (chrome.runtime.lastError) {} // ignore
+                    });
+                    resolve(tabResults);
+                  }
                 }, 1500);
               }
             });
