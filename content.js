@@ -526,6 +526,38 @@
             return;
           }
 
+          // Proactively detect file inputs and labels associated with file inputs to prevent native browser exceptions
+          let isFileInput = false;
+          if (element.tagName === 'INPUT' && element.type === 'file') {
+            isFileInput = true;
+          } else if (element.tagName === 'LABEL' && element.htmlFor) {
+            const target = document.getElementById(element.htmlFor);
+            if (target && target.tagName === 'INPUT' && target.type === 'file') {
+              isFileInput = true;
+            }
+          } else if (element.querySelector('input[type="file"]') || element.closest('input[type="file"]')) {
+            isFileInput = true;
+          } else {
+            const iden = (element.className + ' ' + element.id + ' ' + element.tagName).toLowerCase();
+            if (iden.includes('upload') || iden.includes('camera') || iden.includes('imgupload') || iden.includes('pic')) {
+              const fileInputs = document.querySelectorAll('input[type="file"]');
+              for (const fi of fileInputs) {
+                if (element.contains(fi) || fi.contains(element) || (element.parentElement && element.parentElement.contains(fi))) {
+                  isFileInput = true;
+                  break;
+                }
+              }
+            }
+          }
+
+          if (isFileInput) {
+            sendResponse({ 
+              ok: false, 
+              error: "Proactively blocked click_by_coordinate on file upload/camera elements to avoid Chrome security exceptions. Please use the dedicated 'image_search_in_browser' tool instead." 
+            });
+            return;
+          }
+
           // Simulate full human hover and mouse click event chain
           const mouseOptions = {
             bubbles: true,
