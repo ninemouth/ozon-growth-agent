@@ -424,7 +424,11 @@
                 }
               }
               if (cameraBtn) {
-                cameraBtn.click();
+                try {
+                  cameraBtn.click();
+                } catch (e) {
+                  console.warn("Clicking cameraBtn failed due to browser security policy:", e.message);
+                }
                 await new Promise(r => setTimeout(r, 600)); // wait for dynamically loaded input
                 // Look again
                 for (const sel of commonFileInputs) {
@@ -539,12 +543,25 @@
             element.focus();
           }
           
-          element.dispatchEvent(new MouseEvent('mouseup', mouseOptions));
-          element.dispatchEvent(new MouseEvent('click', mouseOptions));
+          try {
+            element.dispatchEvent(new MouseEvent('mouseup', mouseOptions));
+          } catch (e) {}
+
+          let clickAttempted = false;
+          try {
+            element.dispatchEvent(new MouseEvent('click', mouseOptions));
+            clickAttempted = true;
+          } catch (e) {
+            console.warn("Simulated coordinate click threw error:", e.message);
+          }
           
-          // Also invoke native HTML element click to ensure standard handlers run
-          if (typeof element.click === 'function') {
-            element.click();
+          try {
+            if (typeof element.click === 'function') {
+              element.click();
+              clickAttempted = true;
+            }
+          } catch (e) {
+            console.warn("Native element click at coordinate threw error:", e.message);
           }
 
           sendResponse({ 

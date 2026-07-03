@@ -32,6 +32,7 @@
 
 1. **脑海相对坐标测算**：不依赖 DOM 代码。通过阅读最近一步截取的浏览器屏幕截图，找出你想要点击的目标按钮或元素（如“以图搜图相机按钮”、“实力商家”勾选框、“回头率”排序按钮），推算出它在视口中的百分比坐标 (x, y)。x, y 为 0.0 ~ 1.0 的浮点数。
 2. **派发全链鼠标事件**：调用 `click_by_coordinate`，传入 x, y 坐标。内容脚本会自动获取该位置上的 DOM 并派发 mouseover -> mousemove -> mousedown -> mouseup -> click 模拟物理点击，彻底免疫混淆类名，保证操作 100% 成功。
+   * ⚠️ **【绝对安全警告】**：**严禁**使用 `click_by_coordinate` 或 `click_by_selector` 强行点击以图搜图的相机图标或隐藏的文件上传框！这会因没有真实的“人类物理手势激活”而触发浏览器的安全策略，抛出 `File chooser dialog can only be shown with a user activation` 致命拦截。**进行图片搜索时，你必须有且仅能调用 `image_search_in_browser` 工具传入主图 URL。该工具内部会利用内存 DataTransfer 机制直接对文件句柄赋值并派发 Change 消息，无缝避开该人机拦截。**
 
 ---
 
