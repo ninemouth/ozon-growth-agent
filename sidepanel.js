@@ -5,6 +5,7 @@ let selectedSkill = null;
 let isRunning = false;
 let currentResultObj = null;
 let currentExcelData = null;
+let pastedTargetImageDataUrl = "";
 
 const MODEL_HINTS = {
   openai: ["gpt-5.2-omni", "gpt-4o", "gpt-4o-mini", "o1-mini", "o3-mini"],
@@ -13,6 +14,13 @@ const MODEL_HINTS = {
   siliconflow: ["Qwen/Qwen2.5-VL-72B-Instruct", "Pro/deepseek-ai/DeepSeek-R1"],
   groq: ["llama-3.2-90b-vision-preview", "llama-3.3-70b-versatile"],
   custom: [],
+};
+
+const IMAGE_MODEL_HINTS = {
+  openai: ["gpt-image-1"],
+  qwen: ["wanx2.1-t2i-turbo", "wanx2.1-i2i-turbo"],
+  siliconflow: ["black-forest-labs/FLUX.1-schnell"],
+  custom: ["gpt-image-1"],
 };
 
 const PROVIDER_LINKS = {
@@ -110,8 +118,76 @@ function selectSkill(skill, cardEl) {
     $("trafficPlannerInputs").classList.add("hidden");
     $("instruction").classList.remove("hidden");
   }
+
+  const imageInputs = $("targetImageInputs");
+  if (imageInputs) {
+    imageInputs.classList.toggle("hidden", !isImageSourcingSkill(skill));
+  }
   
   $("runBtn").disabled = false;
+}
+
+function isImageSourcingSkill(skill) {
+  return !!skill && [
+    "domestic_sourcing_finder",
+    "tiktok_shop_fastmoss_analyzer"
+  ].includes(skill.id);
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error || new Error("图片读取失败"));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function getTargetImageUrlForRun() {
+  if (!isImageSourcingSkill(selectedSkill)) return "";
+
+  const urlInput = $("targetImageUrl");
+  const fileInput = $("targetImageFile");
+  const status = $("targetImageStatus");
+  const pastedUrl = urlInput?.value?.trim() || "";
+  const file = fileInput?.files?.[0];
+
+  if (pastedUrl) return pastedUrl;
+  if (pastedTargetImageDataUrl) return pastedTargetImageDataUrl;
+  if (!file) return "";
+
+  if (status) {
+    status.textContent = "已读取本地商品图，将优先用于以图搜源。";
+    status.classList.remove("hidden");
+  }
+  return await readFileAsDataUrl(file);
+}
+
+function handleTargetImagePaste(event) {
+  if (!isImageSourcingSkill(selectedSkill)) return;
+  const items = Array.from(event.clipboardData?.items || []);
+  const imageItem = items.find((item) => item.type && item.type.startsWith("image/"));
+  if (!imageItem) return;
+
+  const file = imageItem.getAsFile();
+  if (!file) return;
+
+  readFileAsDataUrl(file)
+    .then((dataUrl) => {
+      pastedTargetImageDataUrl = dataUrl;
+      const status = $("targetImageStatus");
+      if (status) {
+        status.textContent = "已接收剪贴板商品图，将作为以图搜源兜底图。";
+        status.classList.remove("hidden");
+      }
+    })
+    .catch((err) => {
+      const status = $("targetImageStatus");
+      if (status) {
+        status.textContent = `剪贴板图片读取失败：${err.message}`;
+        status.classList.remove("hidden");
+      }
+    });
 }
 
 function toggleDropdown(forceState) {
@@ -265,10 +341,13 @@ async function runSkill() {
       userInstruction = $("instruction").value.trim();
     }
 
+    const targetImageUrl = await getTargetImageUrlForRun();
+
     activePort.postMessage({
       type: "RUN_SKILL",
       skillPath: selectedSkill.path,
       userInstruction: userInstruction,
+      targetImageUrl,
       continueSession: $("continueSessionCheckbox").checked,
       highRandomness: $("highRandomnessCheckbox").checked,
       negativeFilter: $("negativeFilterCheckbox").checked,
@@ -804,11 +883,12 @@ async function loadLibrary() {
 // ── Settings ──
 async function loadSettings() {
   const s = await new Promise((r) =>
-    chrome.storage.local.get(["apiKey", "llmProvider", "llmModel", "llmBaseUrl", "maxLoopSteps", "temperature", "helium10ApiKey", "sellerSpriteApiKey", "fastmossApiKey"], r)
+    chrome.storage.local.get(["apiKey", "llmProvider", "llmModel", "imageGenerationModel", "llmBaseUrl", "maxLoopSteps", "temperature", "helium10ApiKey", "sellerSpriteApiKey", "fastmossApiKey"], r)
   );
 
   if (s.llmProvider) $("llmProvider").value = s.llmProvider;
   if (s.llmModel) $("llmModel").value = s.llmModel;
+  if (s.imageGenerationModel) $("imageGenerationModel").value = s.imageGenerationModel;
   if (s.apiKey) $("apiKey").value = s.apiKey;
   if (s.llmBaseUrl) $("llmBaseUrl").value = s.llmBaseUrl;
   if (s.maxLoopSteps) $("maxLoopSteps").value = s.maxLoopSteps;
@@ -859,12 +939,26 @@ function updateProviderUI(provider) {
       $("llmModel").value = chip.dataset.model;
     });
   });
+
+  const imageHints = IMAGE_MODEL_HINTS[provider] || [];
+  const imageHintContainer = $("imageModelHints");
+  if (imageHintContainer) {
+    imageHintContainer.innerHTML = imageHints
+      .map((m) => `<span class="model-hint-chip" data-model="${m}">${m}</span>`)
+      .join("");
+    imageHintContainer.querySelectorAll(".model-hint-chip").forEach((chip) => {
+      chip.addEventListener("click", () => {
+        $("imageGenerationModel").value = chip.dataset.model;
+      });
+    });
+  }
 }
 
 async function saveSettings() {
   const apiKey = $("apiKey").value.trim();
   const llmProvider = $("llmProvider").value;
   const llmModel = $("llmModel").value.trim();
+  const imageGenerationModel = $("imageGenerationModel").value.trim();
   const llmBaseUrl = $("llmBaseUrl").value.trim();
   const maxLoopSteps = $("maxLoopSteps").value;
   const temperature = $("temperature").value;
@@ -886,6 +980,7 @@ async function saveSettings() {
       apiKey, 
       llmProvider, 
       llmModel, 
+      imageGenerationModel,
       llmBaseUrl, 
       maxLoopSteps, 
       temperature,
@@ -928,6 +1023,23 @@ function bindEvents() {
   $("saveSettings").addEventListener("click", saveSettings);
 
   $("llmProvider").addEventListener("change", (e) => updateProviderUI(e.target.value));
+
+  if ($("targetImageFile")) {
+    $("targetImageFile").addEventListener("change", () => {
+      const status = $("targetImageStatus");
+      const file = $("targetImageFile").files?.[0];
+      if (!status) return;
+      if (file) {
+        pastedTargetImageDataUrl = "";
+        status.textContent = `已选择：${file.name}`;
+        status.classList.remove("hidden");
+      } else {
+        status.classList.add("hidden");
+      }
+    });
+  }
+
+  document.addEventListener("paste", handleTargetImagePaste);
 
   $("temperature").addEventListener("input", (e) => {
     $("tempValue").textContent = e.target.value;

@@ -3,7 +3,7 @@
 export async function getSettings() {
   return new Promise((resolve) => {
     chrome.storage.local.get(
-      ["apiKey", "llmProvider", "llmModel", "llmBaseUrl", "maxLoopSteps", "temperature", "helium10ApiKey", "sellerSpriteApiKey"],
+      ["apiKey", "llmProvider", "llmModel", "imageGenerationModel", "llmBaseUrl", "maxLoopSteps", "temperature", "helium10ApiKey", "sellerSpriteApiKey", "fastmossApiKey"],
       resolve
     );
   });
@@ -29,6 +29,107 @@ async function fetchWithRetry(url, options, maxRetries = 3) {
       delay *= 2;
     }
   }
+}
+
+function resolveImageEditUrl(settings) {
+  const provider = settings.llmProvider || "openai";
+  if (provider === "openai") return "https://api.openai.com/v1/images/edits";
+  if (provider === "custom") {
+    if (!settings.llmBaseUrl) throw new Error("未配置自定义 API 地址，无法调用生图模型。");
+    const raw = settings.llmBaseUrl.replace(/\/+$/, "");
+    if (raw.endsWith("/images/edits") || raw.endsWith("/images/generations")) return raw;
+    if (raw.endsWith("/v1")) return `${raw}/images/edits`;
+    return `${raw}/v1/images/edits`;
+  }
+  if (provider === "siliconflow") return "https://api.siliconflow.cn/v1/images/edits";
+  if (provider === "qwen") return "https://dashscope.aliyuncs.com/compatible-mode/v1/images/edits";
+  throw new Error(`当前 Provider (${provider}) 暂未接入通用图片编辑接口，请使用 OpenAI、SiliconFlow 或自定义 OpenAI-compatible 图片接口。`);
+}
+
+function dataUrlToBlob(dataUrl) {
+  const match = String(dataUrl || "").match(/^data:([^;,]+)?(;base64)?,(.*)$/);
+  if (!match) return null;
+  const mime = match[1] || "image/jpeg";
+  const isBase64 = !!match[2];
+  const raw = isBase64 ? atob(match[3]) : decodeURIComponent(match[3]);
+  const bytes = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+  return new Blob([bytes], { type: mime });
+}
+
+export async function prepareCleanProductImage(imageUrl, promptOverride = "") {
+  const settings = await getSettings();
+  const { apiKey, imageGenerationModel } = settings;
+  if (!imageGenerationModel) {
+    return {
+      ok: false,
+      skipped: true,
+      reason: "image_generation_model_not_configured",
+      cleanedImageUrl: imageUrl,
+      message: "未配置生图模型，继续使用原始目标图进行以图搜图。",
+    };
+  }
+  if (!apiKey) throw new Error("未配置 API Key，无法调用生图模型。");
+  if (!imageUrl) throw new Error("imageUrl is required");
+
+  let sourceBlob;
+  if (String(imageUrl).startsWith("data:")) {
+    sourceBlob = dataUrlToBlob(imageUrl);
+  } else {
+    const sourceResponse = await fetch(imageUrl);
+    if (!sourceResponse.ok) {
+      throw new Error(`目标商品图下载失败 (${sourceResponse.status})`);
+    }
+    sourceBlob = await sourceResponse.blob();
+  }
+  if (!sourceBlob) throw new Error("目标商品图解析失败，无法准备干净搜图图。");
+
+  const endpoint = resolveImageEditUrl(settings);
+  const prompt = promptOverride || [
+    "Create a clean product-search reference image from the provided product photo.",
+    "Keep the exact product shape, proportions, color, material, decorative details, and distinctive silhouette.",
+    "Remove busy background, lifestyle props, text, watermarks, hands, packaging, and irrelevant objects.",
+    "Center the complete product subject on a plain light background with all edges visible.",
+    "Do not redesign, stylize, add parts, crop the product, or change the product identity.",
+  ].join(" ");
+
+  const form = new FormData();
+  form.append("model", imageGenerationModel);
+  form.append("prompt", prompt);
+  form.append("image", sourceBlob, "target-product.png");
+  form.append("size", "1024x1024");
+
+  const response = await fetchWithRetry(endpoint, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: form,
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`生图模型调用失败 (${response.status}) [${endpoint}]: ${text}`);
+  }
+
+  const data = await response.json();
+  const first = data.data?.[0] || {};
+  const cleanedImageUrl = first.b64_json
+    ? `data:image/png;base64,${first.b64_json}`
+    : first.url;
+
+  if (!cleanedImageUrl) {
+    throw new Error("生图模型未返回可用于搜图的图片。");
+  }
+
+  return {
+    ok: true,
+    model: imageGenerationModel,
+    cleanedImageUrl,
+    sourceImageUrl: imageUrl,
+    prompt,
+    message: "已生成背景干净、主体完整的搜图参考图。",
+  };
 }
 
 export async function callLLM(messages, streamCallback, isHighRandomness = false) {

@@ -1,11 +1,22 @@
 // modules/toolRegistry.js — Tool registry and content script bridge
 
-import { callLLM, getSettings } from './llmClient.js';
+import { callLLM, getSettings, prepareCleanProductImage } from './llmClient.js';
 
+const preparedImageCache = new Map();
 
 async function getCurrentTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   return tab;
+}
+
+function cachePreparedImage(dataUrl) {
+  const ref = `__CLEAN_PRODUCT_IMAGE_${Date.now()}_${Math.random().toString(36).slice(2, 8)}__`;
+  preparedImageCache.set(ref, dataUrl);
+  return ref;
+}
+
+function resolvePreparedImageUrl(imageUrl) {
+  return preparedImageCache.get(imageUrl) || imageUrl;
 }
 
 function checkTabUrl(url) {
@@ -88,6 +99,169 @@ async function sendToContentScript(tabId, message) {
       }
     });
   });
+}
+
+async function captureTabScreenshot(tabId) {
+  const tab = await chrome.tabs.get(tabId);
+  if (!tab?.windowId) throw new Error("Unable to resolve tab window for screenshot");
+  return await new Promise((resolve, reject) => {
+    chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" }, (dataUrl) => {
+      if (chrome.runtime.lastError || !dataUrl) {
+        reject(new Error(chrome.runtime.lastError?.message || "Failed to capture tab screenshot"));
+      } else {
+        resolve(dataUrl);
+      }
+    });
+  });
+}
+
+function isWarmCtaPixel(r, g, b, a) {
+  return a > 180 && r >= 210 && g >= 50 && g <= 190 && b <= 125 && r > g + 35;
+}
+
+function isCoolPrimaryPixel(r, g, b, a) {
+  return a > 180 && b >= 150 && r <= 110 && g >= 75 && g <= 185 && b > r + 55;
+}
+
+function isPrimaryActionPixel(r, g, b, a) {
+  return isWarmCtaPixel(r, g, b, a) || isCoolPrimaryPixel(r, g, b, a);
+}
+
+function normalizedPointInRegion(x, y, region, padding = 0.03) {
+  if (!region) return true;
+  const left = Math.max(0, (region.normalizedLeft ?? 0) - padding);
+  const top = Math.max(0, (region.normalizedTop ?? 0) - padding);
+  const right = Math.min(1, (region.normalizedRight ?? 1) + padding);
+  const bottom = Math.min(1, (region.normalizedBottom ?? 1) + padding);
+  return x >= left && x <= right && y >= top && y <= bottom;
+}
+
+function normalizedPointInAnyRegion(x, y, regions = []) {
+  if (!regions.length) return true;
+  return regions.some((region) => normalizedPointInRegion(x, y, region));
+}
+
+async function locateImageSearchActionInScreenshot(dataUrl, regions = []) {
+  if (typeof createImageBitmap !== "function" || typeof OffscreenCanvas === "undefined") {
+    return null;
+  }
+
+  const blob = await (await fetch(dataUrl)).blob();
+  const bitmap = await createImageBitmap(blob);
+  const maxWidth = 900;
+  const scale = Math.min(1, maxWidth / bitmap.width);
+  const width = Math.max(1, Math.round(bitmap.width * scale));
+  const height = Math.max(1, Math.round(bitmap.height * scale));
+  const canvas = new OffscreenCanvas(width, height);
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(bitmap, 0, 0, width, height);
+  const data = ctx.getImageData(0, 0, width, height).data;
+  const visited = new Uint8Array(width * height);
+  const stride = 2;
+  const candidates = [];
+
+  const isMask = (x, y) => {
+    if (x < 0 || y < 0 || x >= width || y >= height) return false;
+    const idx = (y * width + x) * 4;
+    return isPrimaryActionPixel(data[idx], data[idx + 1], data[idx + 2], data[idx + 3]);
+  };
+
+  for (let y = 0; y < height; y += stride) {
+    for (let x = 0; x < width; x += stride) {
+      const start = y * width + x;
+      if (visited[start] || !isMask(x, y)) continue;
+
+      let minX = x;
+      let maxX = x;
+      let minY = y;
+      let maxY = y;
+      let count = 0;
+      const stack = [[x, y]];
+      visited[start] = 1;
+
+      while (stack.length) {
+        const [cx, cy] = stack.pop();
+        count++;
+        minX = Math.min(minX, cx);
+        maxX = Math.max(maxX, cx);
+        minY = Math.min(minY, cy);
+        maxY = Math.max(maxY, cy);
+
+        const neighbors = [
+          [cx + stride, cy],
+          [cx - stride, cy],
+          [cx, cy + stride],
+          [cx, cy - stride],
+        ];
+        for (const [nx, ny] of neighbors) {
+          if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+          const nIdx = ny * width + nx;
+          if (visited[nIdx] || !isMask(nx, ny)) continue;
+          visited[nIdx] = 1;
+          stack.push([nx, ny]);
+        }
+      }
+
+      const boxWidth = maxX - minX + stride;
+      const boxHeight = maxY - minY + stride;
+      const centerX = (minX + maxX) / 2;
+      const centerY = (minY + maxY) / 2;
+      const normalizedY = centerY / height;
+      const normalizedX = centerX / width;
+      if (count < 80 || boxWidth < 45 || boxHeight < 24 || boxWidth > 420 || boxHeight > 150) continue;
+      if (!normalizedPointInAnyRegion(normalizedX, normalizedY, regions)) continue;
+
+      let score = count + Math.min(boxWidth * boxHeight / 10, 2000);
+      if (normalizedY > 0.18 && normalizedY < 0.9) score += 900;
+      if (normalizedY < 0.16) score -= 1800;
+      if (normalizedX > 0.22 && normalizedX < 0.92) score += 350;
+      if (normalizedX > 0.35 && normalizedX < 0.78 && normalizedY > 0.32 && normalizedY < 0.78) score += 500;
+      if (boxHeight >= 34 && boxHeight <= 85) score += 260;
+      candidates.push({ normalizedX, normalizedY, score, boxWidth, boxHeight, count });
+    }
+  }
+
+  candidates.sort((a, b) => b.score - a.score);
+  return candidates[0] || null;
+}
+
+async function getImageSearchUiState(tabId) {
+  try {
+    const res = await sendToContentScript(tabId, { type: "GET_IMAGE_SEARCH_UI_STATE" });
+    return res?.data || { containers: [], candidates: [] };
+  } catch (err) {
+    return { containers: [], candidates: [], error: err.message };
+  }
+}
+
+async function visualClickImageSearchSubmit(tabId) {
+  try {
+    const uiState = await getImageSearchUiState(tabId);
+    const domCandidate = Array.isArray(uiState.candidates) ? uiState.candidates[0] : null;
+    if (domCandidate?.exactTextOnly && domCandidate?.rect?.normalizedCenterX !== undefined && domCandidate?.rect?.normalizedCenterY !== undefined) {
+      const clickResult = await sendToContentScript(tabId, {
+        type: "CLICK_BY_COORDINATE",
+        x: domCandidate.rect.normalizedCenterX,
+        y: domCandidate.rect.normalizedCenterY,
+        learnKind: "image_search_submit",
+      });
+      return {
+        ok: !!clickResult?.ok,
+        source: "dom_image_search_candidate",
+        uiState,
+        target: domCandidate,
+        clickResult,
+      };
+    }
+
+    return {
+      ok: false,
+      reason: "Exact visible 搜索图片 text was not detected; skipped unsafe screenshot/color click because this 1688 overlay closes on any other click.",
+      uiState,
+    };
+  } catch (err) {
+    return { ok: false, reason: err.message };
+  }
 }
 
 export const tools = {
@@ -434,7 +608,7 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
                 clearInterval(checkLoad);
                 setTimeout(async () => {
                   try {
-                    const searchRes = await module.exports.input_text_and_search({
+                    const searchRes = await tools.input_text_and_search({
                       keyword: targetQuery,
                       tabId: newTab.id
                     });
@@ -461,7 +635,8 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
           try {
             const data = await sendToContentScript(newTab.id, { type: "READ_CURRENT_PAGE" });
             const pageData = data?.data || {};
-            const hasProducts = pageData.productLinks && pageData.productLinks.length > 0;
+            const hasProducts = (pageData.productLinks && pageData.productLinks.length > 0) ||
+              (pageData.productCards && pageData.productCards.length > 0);
             
             if (hasProducts || attempts >= maxAttempts) {
               clearInterval(checkLoad);
@@ -479,7 +654,8 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
   },
 
   input_text_and_search: async (args) => {
-    const { keyword, inputSelector, submitSelector, tabId } = args;
+    const { inputSelector, submitSelector, tabId } = args;
+    const keyword = args.keyword || args.search || args.query || args.text;
     if (!keyword) throw new Error("keyword is required");
     
     let targetTabId = tabId;
@@ -524,7 +700,8 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
               try {
                 const data = await sendToContentScript(targetTabId, { type: "READ_CURRENT_PAGE" });
                 const pageData = data?.data || {};
-                const hasProducts = pageData.productLinks && pageData.productLinks.length > 0;
+                const hasProducts = (pageData.productLinks && pageData.productLinks.length > 0) ||
+                  (pageData.productCards && pageData.productCards.length > 0);
                 
                 if (hasProducts || attempts >= maxAttempts) {
                   clearInterval(checkLoad);
@@ -545,8 +722,93 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
     });
   },
 
+  prepare_clean_product_image: async (args) => {
+    const { imageUrl, prompt } = args;
+    if (!imageUrl) throw new Error("imageUrl is required");
+
+    try {
+      const result = await prepareCleanProductImage(resolvePreparedImageUrl(imageUrl), prompt);
+      const cleaned = result.cleanedImageUrl || imageUrl;
+      if (cleaned && String(cleaned).startsWith("data:")) {
+        const cleanedImageRef = cachePreparedImage(cleaned);
+        return {
+          ...result,
+          sourceImageUrl: String(result.sourceImageUrl || imageUrl).startsWith("data:") ? "__SOURCE_IMAGE_DATA__" : (result.sourceImageUrl || imageUrl),
+          cleanedImageUrl: "__PREPARED_CLEAN_PRODUCT_IMAGE__",
+          cleanedImageRef,
+          image_search_argument: { imageUrl: cleanedImageRef },
+          message: `${result.message || "已准备搜图图"} 请将 image_search_argument.imageUrl 传给 image_search_1688 或 image_search_taobao。`,
+        };
+      }
+      return {
+        ...result,
+        sourceImageUrl: String(result.sourceImageUrl || imageUrl).startsWith("data:") ? "__SOURCE_IMAGE_DATA__" : (result.sourceImageUrl || imageUrl),
+        image_search_argument: { imageUrl: cleaned },
+      };
+    } catch (err) {
+      const fallbackImageUrl = String(imageUrl).startsWith("data:") ? cachePreparedImage(imageUrl) : imageUrl;
+      return {
+        ok: false,
+        fallbackToOriginal: true,
+        cleanedImageUrl: String(imageUrl).startsWith("data:") ? "__ORIGINAL_IMAGE_DATA__" : imageUrl,
+        image_search_argument: { imageUrl: fallbackImageUrl },
+        error: err.message,
+        message: "干净搜图图准备失败，继续使用原始目标主图，禁止因此改走文本搜索。",
+      };
+    }
+  },
+
+  image_search_1688: async (args) => {
+    const { engine = "1688" } = args;
+    const imageUrl = resolvePreparedImageUrl(args.imageUrl);
+    if (!imageUrl) throw new Error("imageUrl is required");
+
+    const normalizedEngine = String(engine).toLowerCase();
+    const searchUrl = normalizedEngine === "taobao"
+      ? "https://s.taobao.com/search"
+      : "https://s.1688.com/";
+    return new Promise((resolve, reject) => {
+      chrome.tabs.create({ url: safeEncodeURI(searchUrl), active: true }, (newTab) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
+        }
+
+        let attempts = 0;
+        const maxAttempts = 20;
+        const checkLoad = setInterval(() => {
+          attempts++;
+          chrome.tabs.get(newTab.id, (t) => {
+            if (chrome.runtime.lastError || !t) {
+              clearInterval(checkLoad);
+              resolve({ ok: true, tabId: newTab?.id, searchUrl, pageData: {}, message: "1688 tab closed or not found" });
+              return;
+            }
+
+            if (t.status === "complete" || attempts >= maxAttempts) {
+              clearInterval(checkLoad);
+              setTimeout(async () => {
+                try {
+                  const result = await tools.image_search_in_browser({ imageUrl, tabId: newTab.id });
+                  resolve({ ...result, searchUrl, imageSearchEntry: normalizedEngine === "taobao" ? "taobao" : "1688" });
+                } catch (err) {
+                  resolve({ ok: false, tabId: newTab.id, searchUrl, pageData: {}, error: err.message });
+                }
+              }, 1500);
+            }
+          });
+        }, 500);
+      });
+    });
+  },
+
+  image_search_taobao: async (args) => {
+    return tools.image_search_1688({ ...args, engine: "taobao" });
+  },
+
   image_search_in_browser: async (args) => {
-    const { imageUrl, tabId } = args;
+    const imageUrl = resolvePreparedImageUrl(args.imageUrl);
+    const { tabId } = args;
     if (!imageUrl) throw new Error("imageUrl is required");
 
     let targetTabId = tabId;
@@ -571,53 +833,99 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
       throw new Error(`Failed to fetch and convert image to base64: ${err.message}`);
     }
 
-    return new Promise((resolve, reject) => {
-      sendToContentScript(targetTabId, { type: "IMAGE_SEARCH_IN_BROWSER", base64 })
-        .then(res => {
-          if (!res?.ok) {
-            reject(new Error(res?.error || "Failed to upload image for search"));
-            return;
-          }
+	    return new Promise((resolve, reject) => {
+	      sendToContentScript(targetTabId, { type: "IMAGE_SEARCH_IN_BROWSER", base64 })
+	        .then(async res => {
+	          if (!res?.ok) {
+	            reject(new Error(res?.error || "Failed to upload image for search"));
+	            return;
+	          }
+          let uploadResult = res;
 
-          // Poll immediately for DOM readiness and product list elements
+          const runVisualSubmitFallback = async () => {
+            if (uploadResult.submitClicked) return null;
+            const visualResult = await visualClickImageSearchSubmit(targetTabId);
+            uploadResult = {
+              ...uploadResult,
+              visualSubmitFallback: visualResult,
+              submitClicked: !!visualResult.ok,
+            };
+            return visualResult;
+          };
+
+          // If DOM/text based submission missed the button, fall back to screenshot-based recognition once.
+          await runVisualSubmitFallback();
+
+	          // Poll immediately for DOM readiness and product list elements
           let attempts = 0;
+          let retriedVisualSubmitAfterNoResults = false;
           const maxAttempts = 20; // up to 10 seconds total
           const checkLoad = setInterval(async () => {
             attempts++;
             chrome.tabs.get(targetTabId, async (t) => {
-              if (chrome.runtime.lastError || !t) {
-                clearInterval(checkLoad);
-                resolve({ ok: true, tabId: targetTabId, pageData: {}, message: "Tab closed or not found" });
-                return;
-              }
+	              if (chrome.runtime.lastError || !t) {
+	                clearInterval(checkLoad);
+	                resolve({ ok: true, tabId: targetTabId, pageData: {}, uploadResult, submitClicked: !!uploadResult.submitClicked, message: "Tab closed or not found" });
+	                return;
+	              }
 
               const currentUrl = t.url || "";
               const isVerification = currentUrl.includes("sec.1688.com") || currentUrl.includes("login") || currentUrl.includes("verify") || currentUrl.includes("passport");
               if (isVerification) {
                 chrome.tabs.update(targetTabId, { active: true });
                 chrome.runtime.sendMessage({ type: "CAPTCHA_DETECTED", url: currentUrl });
-                if (attempts >= maxAttempts) {
-                  clearInterval(checkLoad);
-                  resolve({ ok: true, tabId: targetTabId, isCaptcha: true, pageData: {}, message: "Image search redirected to verification wall." });
-                }
+	                if (attempts >= maxAttempts) {
+	                  clearInterval(checkLoad);
+	                  resolve({ ok: true, tabId: targetTabId, isCaptcha: true, pageData: {}, uploadResult, submitClicked: !!uploadResult.submitClicked, message: "Image search redirected to verification wall." });
+	                }
                 return;
               }
 
               try {
                 const data = await sendToContentScript(targetTabId, { type: "READ_CURRENT_PAGE" });
                 const pageData = data?.data || {};
-                const hasProducts = pageData.productLinks && pageData.productLinks.length > 0;
+                const hasProducts = (pageData.productLinks && pageData.productLinks.length > 0) ||
+                  (pageData.productCards && pageData.productCards.length > 0);
 
-                if (hasProducts || attempts >= maxAttempts) {
-                  clearInterval(checkLoad);
-                  resolve({ ok: true, tabId: targetTabId, pageData, message: hasProducts ? "Image search performed and results loaded." : "Image search completed but timeout waiting for product links." });
+                if (!hasProducts && !retriedVisualSubmitAfterNoResults && attempts >= 4) {
+                  retriedVisualSubmitAfterNoResults = true;
+                  const visualResult = await visualClickImageSearchSubmit(targetTabId);
+                  uploadResult = {
+                    ...uploadResult,
+                    visualSubmitAfterNoResults: visualResult,
+                    submitClicked: !!uploadResult.submitClicked || !!visualResult.ok,
+                  };
+                  if (visualResult.ok) return;
                 }
-              } catch (err) {
-                if (attempts >= maxAttempts) {
-                  clearInterval(checkLoad);
-                  resolve({ ok: true, tabId: targetTabId, pageData: {}, message: "Image search performed but failed to read result page DOM" });
-                }
-              }
+
+	                if (hasProducts || attempts >= maxAttempts) {
+	                  clearInterval(checkLoad);
+	                  resolve({
+                      ok: !!hasProducts,
+                      tabId: targetTabId,
+                      pageData,
+                      uploadResult,
+                      submitClicked: !!uploadResult.submitClicked,
+                      imageSearchIncomplete: !hasProducts,
+                      requiresImageSearchRetry: !hasProducts,
+                      message: hasProducts ? "Image search performed and results loaded." : "Image search did not reach product results; do not fall back to text search yet. Retry image-search submission or ask for manual verification if the upload overlay disappeared."
+                    });
+	                }
+	              } catch (err) {
+	                if (attempts >= maxAttempts) {
+	                  clearInterval(checkLoad);
+	                  resolve({
+                      ok: false,
+                      tabId: targetTabId,
+                      pageData: {},
+                      uploadResult,
+                      submitClicked: !!uploadResult.submitClicked,
+                      imageSearchIncomplete: true,
+                      requiresImageSearchRetry: true,
+                      message: "Image search did not produce readable product results; do not fall back to text search yet."
+                    });
+	                }
+	              }
             });
           }, 500);
         })
@@ -628,7 +936,7 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
   },
 
   click_by_coordinate: async (args) => {
-    const { x, y, tabId } = args;
+    const { x, y, tabId, learnKind } = args;
     if (x === undefined || y === undefined) throw new Error("x and y coordinates are required");
 
     let targetTabId = tabId;
@@ -638,7 +946,7 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
       targetTabId = tab.id;
     }
 
-    const result = await sendToContentScript(targetTabId, { type: "CLICK_BY_COORDINATE", x, y });
+    const result = await sendToContentScript(targetTabId, { type: "CLICK_BY_COORDINATE", x, y, learnKind });
     if (!result?.ok) throw new Error(result?.error || `Failed to click visually at coordinate (${x}, ${y})`);
     return result;
   },

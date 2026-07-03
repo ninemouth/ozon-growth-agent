@@ -116,6 +116,12 @@
           </div>
         </div>
         <textarea id="instruction" class="textarea" rows="3" placeholder="描述你想要分析的内容，或留空使用 skill 默认流程..."></textarea>
+        <div id="targetImageInputs" class="target-image-inputs hidden">
+          <div class="target-image-label">目标商品图兜底 <span class="optional">(默认自动读取当前页主图)</span></div>
+          <input type="url" id="targetImageUrl" class="form-input compact-input" placeholder="自动识别失败时，可粘贴商品主图 URL" />
+          <input type="file" id="targetImageFile" class="file-input" accept="image/*" />
+          <div id="targetImageStatus" class="target-image-status hidden"></div>
+        </div>
         <div class="continue-session-wrapper">
           <label class="checkbox-label">
             <input type="checkbox" id="continueSessionCheckbox" />
@@ -209,6 +215,15 @@
             <input type="text" id="llmModel" class="form-input" placeholder="gpt-4o-mini" />
             <div id="modelHints" class="model-hints"></div>
           </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">生图模型 <span class="optional">(同 Provider / API Key)</span></label>
+          <div class="input-with-hint">
+            <input type="text" id="imageGenerationModel" class="form-input" placeholder="如 gpt-image-1，可留空禁用" />
+            <div id="imageModelHints" class="model-hints"></div>
+          </div>
+          <div class="form-help">用于把目标商品主图处理成背景更干净、主体更完整的搜图图，减少 1688 自动框选偏差。</div>
         </div>
 
         <div class="form-group">

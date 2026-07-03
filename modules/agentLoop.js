@@ -5,7 +5,69 @@ import { tools } from './toolRegistry.js';
 
 const globalSessionCache = {};
 
-function validateReport(parsed, userInstruction, skillId) {
+function hasConcreteVisualTerms(text) {
+  return /颜色|配色|材质|金属|铁艺|铜|铝|钢|塑料|木|硅胶|玻璃|陶瓷|布|皮革|亚克力|轮廓|造型|形状|结构|弧形|圆形|方形|边缘|纹理|表面|光泽|磨砂|透明|图案|花纹|主体|比例|开孔|把手|支架|外观|细节|同模|相似|差异/i.test(String(text || ""));
+}
+
+function hasVisualScore(value) {
+  if (value === undefined || value === null || value === "") return false;
+  if (typeof value === "number") return Number.isFinite(value);
+  return /\d/.test(String(value));
+}
+
+function summarizeProductCards(cards = []) {
+  return cards.slice(0, 12).map((card) => ({
+    index: card.index,
+    title: card.title,
+    price: card.price,
+    href: card.href,
+    imageSrc: card.imageSrc,
+    cardRect: card.cardRect,
+    imageRect: card.imageRect,
+    extractionConfidence: card.extractionConfidence,
+  }));
+}
+
+function lastIncompleteImageSearch(toolHistory = []) {
+  for (let i = toolHistory.length - 1; i >= 0; i--) {
+    const entry = toolHistory[i];
+    if (!["image_search_1688", "image_search_taobao", "image_search_in_browser"].includes(entry.tool)) continue;
+    const result = entry.result || {};
+    const hasProducts = (result.pageData?.productLinks || []).length > 0 || (result.pageData?.productCards || []).length > 0;
+    if (result.imageSearchIncomplete || result.requiresImageSearchRetry || (!result.ok && !hasProducts && !result.isCaptcha)) {
+      return entry;
+    }
+    return null;
+  }
+  return null;
+}
+
+function hasImageSearchAttempt(toolHistory = []) {
+  return toolHistory.some((entry) => ["image_search_1688", "image_search_taobao", "image_search_in_browser"].includes(entry.tool));
+}
+
+function hasPreparedCleanImageAttempt(toolHistory = []) {
+  return toolHistory.some((entry) => entry.tool === "prepare_clean_product_image");
+}
+
+function countToolCalls(toolHistory = [], toolName) {
+  return toolHistory.filter((entry) => entry.tool === toolName).length;
+}
+
+function isExplicitTextFallbackAllowed(userInstruction = "") {
+  return /允许文本|文本兜底|关键词兜底|文字搜索|文本搜索|标品|standard/i.test(String(userInstruction || ""));
+}
+
+function isLogisticsOrPolicySearchQuery(query = "") {
+  return /运费|物流|空派|海运|快递|货代|FBA|配送费|佣金|费率|关税|税率|清关|政策|认证|合规|freight|shipping|logistics|fulfillment|tariff|customs|duty|fee|commission|policy/i.test(String(query || ""));
+}
+
+function domesticVisualRouteActive(skillId, pageContext, toolHistory) {
+  if (!(skillId || "").includes("domestic_sourcing_finder")) return false;
+  return hasImageSearchAttempt(toolHistory) || hasPreparedCleanImageAttempt(toolHistory);
+}
+
+function validateReport(parsed, userInstruction, skillId, toolHistory = []) {
   const errors = [];
   if (!parsed || parsed.type !== "final" || !parsed.output) {
     errors.push("未输出符合格式的 final 报告 JSON 结构");
@@ -35,6 +97,22 @@ function validateReport(parsed, userInstruction, skillId) {
 
   // 3. Sourcing-specific details check (1688 / Taobao links, profiling, spec alignment, profit ledger)
   if ((skillId || "").includes("domestic_sourcing_finder")) {
+    if (out.data.length < 1) {
+      errors.push("供应链寻源报告至少必须返回 1 个真实采购候选。请继续通过 1688/淘宝完成对应路径的真实检索、视觉筛选或详情页穿透补足；只有找到 1 个合格货源也可以交付，但不能输出空 data。");
+    }
+
+    const hasSuccessfulImageSearch = toolHistory.some((entry) => {
+      if (!["image_search_1688", "image_search_taobao", "image_search_in_browser"].includes(entry.tool)) return false;
+      const result = entry.result || {};
+      const links = result.pageData?.productLinks || [];
+      const cards = result.pageData?.productCards || [];
+      return result.ok && !result.error && !result.isCaptcha && (links.length > 0 || cards.length > 0);
+    });
+    const hasVisualCandidateExtraction = toolHistory.some((entry) => {
+      const cards = entry.result?.pageData?.productCards || entry.result?.productCards || [];
+      return Array.isArray(cards) && cards.length > 0;
+    });
+
     out.data.forEach((item, idx) => {
       const title = item.title || item.name || `商品 #${idx + 1}`;
       
@@ -59,6 +137,37 @@ function validateReport(parsed, userInstruction, skillId) {
         }
         if (!profile.routing_decision || !["标品(文本检索)", "非标品(图片检索)"].includes(profile.routing_decision)) {
           errors.push(`商品列表第 ${idx + 1} 项 (${title}) 的 target_profile 必须包含检索方式分流决策（routing_decision，取值必须为："标品(文本检索)" 或 "非标品(图片检索)"）！`);
+        }
+        if (profile.routing_decision === "非标品(图片检索)" && !hasSuccessfulImageSearch) {
+          errors.push(`商品列表第 ${idx + 1} 项 (${title}) 标记为非标品图片检索，但本轮没有成功执行 1688/淘宝以图搜图并返回商品结果。请继续使用 image_search_1688 或 image_search_taobao 获取真实视觉候选；若平台图片检索被验证码/登录墙/无结果阻断，只能如实申报视觉寻源受阻或无合格货源，禁止改回文本关键词凑结果。`);
+        }
+        if (profile.routing_decision === "非标品(图片检索)" && !hasVisualCandidateExtraction) {
+          errors.push(`商品列表第 ${idx + 1} 项 (${title}) 标记为非标品图片检索，但本轮未抽取到带候选主图和屏幕坐标的 productCards。请重新读取/刷新搜索结果页，先基于列表页商品卡片主图完成视觉相似度排序，再打开详情页。`);
+        }
+      }
+
+      // B2. Visual list-page screening proof. This prevents keyword-only supplier picks.
+      const routingDecision = profile?.routing_decision || "";
+      const requiresVisualGate = routingDecision === "非标品(图片检索)" || hasVisualCandidateExtraction;
+      if (requiresVisualGate) {
+        const candidateImage = item.candidate_image_url || item.source_candidate_image || item.source_image || item.product_image || item.image_url || "";
+        const visualScore = item.list_page_visual_score ?? item.visual_match_score ?? item.visual_score;
+        const visualEvidence = [
+          item.visual_match_evidence,
+          item.list_page_visual_screening,
+          item.audit_comment,
+        ].filter(Boolean).join(" ");
+
+        if (!candidateImage || !/^https?:\/\//i.test(String(candidateImage))) {
+          errors.push(`商品列表第 ${idx + 1} 项 (${title}) 缺少列表页候选主图字段（candidate_image_url 或 source_candidate_image）。必须把 productCards 中被选中卡片的 imageSrc 写入报告，证明不是只按标题关键词选择。`);
+        }
+        if (!hasVisualScore(visualScore)) {
+          errors.push(`商品列表第 ${idx + 1} 项 (${title}) 缺少列表页视觉相似度评分（list_page_visual_score 或 visual_match_score）。请先在搜索结果页按目标主图进行视觉排序后再推荐。`);
+        }
+        if (!visualEvidence || visualEvidence.trim().length < 20) {
+          errors.push(`商品列表第 ${idx + 1} 项 (${title}) 缺少列表页视觉筛选证据（visual_match_evidence 或 list_page_visual_screening）。必须具体说明颜色、材质、轮廓、结构或图案为何与目标主图一致。`);
+        } else if (!hasConcreteVisualTerms(visualEvidence)) {
+          errors.push(`商品列表第 ${idx + 1} 项 (${title}) 的视觉证据过于文本化，未说明具体外观/材质/结构相似点。禁止只依据标题、关键词、价格或销量推荐货源。`);
         }
       }
 
@@ -116,6 +225,20 @@ export function clearSessionCache(tabId) {
   }
 }
 
+function buildPromptContext(pageContext = {}) {
+  const ctx = { ...pageContext };
+  if (ctx.targetImageUrl && String(ctx.targetImageUrl).startsWith("data:")) {
+    ctx.targetImageUrl = "__TARGET_IMAGE_URL__";
+    ctx.targetImageInputType = "uploaded_image";
+  }
+  if (Array.isArray(ctx.targetImageCandidates)) {
+    ctx.targetImageCandidates = ctx.targetImageCandidates.map((url, idx) => (
+      String(url).startsWith("data:") ? `__TARGET_IMAGE_CANDIDATE_${idx + 1}__` : url
+    ));
+  }
+  return ctx;
+}
+
 export async function runAgentLoop({ tabId, skillId, skillMarkdown, userInstruction, pageContext, sendProgress, continueSession, highRandomness, negativeFilter, maxLoopSteps }) {
   const settings = await getSettings();
   const maxSteps = maxLoopSteps || Math.max(parseInt(settings.maxLoopSteps) || 25, 25);
@@ -133,8 +256,10 @@ export async function runAgentLoop({ tabId, skillId, skillMarkdown, userInstruct
     return true;
   });
   const availableTools = filteredToolList.join(", ");
+  const toolHistory = [];
 
-  const ctxForPrompt = { ...pageContext };
+  const actualTargetImageUrl = pageContext?.targetImageUrl || "";
+  const ctxForPrompt = buildPromptContext(pageContext);
   const screenshotData = ctxForPrompt.screenshot;
   delete ctxForPrompt.screenshot;
 
@@ -171,6 +296,8 @@ ${JSON.stringify(ctxForPrompt, null, 2)}
 ${userInstruction ? `用户补充了以下核心探索方向。这是你的**最高优先级探索目标**。请你**必须将第一步的动作（search_web 或 click），以及后续的所有推演，全部紧紧围绕该主题展开**。但同时，仍需遵守 Skill 中定义的所有避坑与打分原则。\n用户的核心方向是：\n"${userInstruction}"` : "（无额外焦点。请严格按 skill 流程自主探索。）"}
 
 ${highRandomness ? `\n\n## ⚠️ [Anti-Cache] 强制发散与破局指令 (Nonce: ${Date.now()})\n用户要求进行**【全新视角的探索】**。请你**完全抛弃最常规、最容易想到的思路**。如果之前的方向是 A，这次请尝试 B 甚至是冷门的 C。突破固有套路，给我极具差异化的答案！` : ""}
+
+${(skillId || "").includes("domestic_sourcing_finder") ? `\n\n## 国内供应链寻源运行硬约束\n- 如果目标是非标外观/造型/模具商品且存在 targetImageUrl，优先调用 image_search_1688 或 image_search_taobao。若已配置生图模型、且平台自动框选主体不完整，可先调用 prepare_clean_product_image，并把返回的 image_search_argument.imageUrl 用作图片搜索输入。\n- 非标品一旦启动图片搜索或干净搜图图准备流程，后续 Critic 打回也严禁调用 input_text_and_search 文本框搜索；必须继续用 productCards 候选主图、截图和视觉相似度证据筛选。\n- agentic_web_search 最多调用 1 次，且只用于物流、费率、政策或认证核算；严禁用它寻找 1688/淘宝货源或替代站内图片搜索。` : ""}
 `;
 
   let userContent = userText;
@@ -190,7 +317,7 @@ ${highRandomness ? `\n\n## ⚠️ [Anti-Cache] 强制发散与破局指令 (Nonc
       messages[0].content = systemPrompt;
     }
 
-    const newCtx = { ...pageContext };
+    const newCtx = buildPromptContext(pageContext);
     delete newCtx.screenshot;
     const ctxString = JSON.stringify(newCtx, null, 2);
 
@@ -198,7 +325,7 @@ ${highRandomness ? `\n\n## ⚠️ [Anti-Cache] 强制发散与破局指令 (Nonc
         ? `[追加指令] 用户对刚才的执行结果提出了新的要求或调整。请严格基于以上的上下文记忆，重新推演并输出最终的 JSON 报告。\n用户的最新要求是：\n"${userInstruction}"` 
         : `[追加指令] 请结合你最新的 System Prompt（你的目标任务可能已经发生了改变），并基于最新的页面上下文进行深度推演。`;
     
-    instructionText += `\n\n【⚠️ 极其重要：禁止直接生成/必须调用浏览器工具真实寻源】\n如果你的最新 System Prompt 包含寻源任务（例如需要去 1688、淘宝等平台寻找货源或对比价格），**你绝对禁止直接从历史记忆中复制或凭空捏造虚假的 1688/淘宝 详情页链接！**\n你必须在第一步立即调用 'open_new_tab' 或 'input_text_and_search' 真实地在浏览器中打开 1688 或淘宝进行检索和详情页穿透审计！只有在通过工具真实获取并校验了详情页内容、价格和起批量后，才被允许在最后的报告中写入真实的 1688 详情页链接（格式如 'https://detail.1688.com/offer/XXXX.html'）并输出 final 报告！`;
+    instructionText += `\n\n【⚠️ 极其重要：禁止直接生成/必须调用浏览器工具真实寻源】\n如果你的最新 System Prompt 包含寻源任务（例如需要去 1688、淘宝等平台寻找货源或对比价格），**你绝对禁止直接从历史记忆中复制或凭空捏造虚假的 1688/淘宝 详情页链接！**\n如果最新页面上下文中存在 targetImageUrl，且目标商品属于非标外观/模具/造型商品，你必须在第一步调用 'image_search_1688'（优先）或 'image_search_taobao' 执行供应商平台以图搜源；如果已配置生图模型且平台自动框选主体不完整，可先调用 'prepare_clean_product_image' 准备干净主体图，再把返回的 image_search_argument.imageUrl 传给图片搜索工具。非标品一旦进入图片检索路径，Critic 打回后也严禁切回 'input_text_and_search' 关键词搜索；只有目标明确为标品或用户明确要求文本兜底，才允许文本搜索。只有在通过工具真实获取并校验了详情页内容、价格和起批量后，才被允许在最后的报告中写入真实的 1688/淘宝详情页链接并输出 final 报告！`;
 
     instructionText += `\n\n【极其重要：强制输出格式】\n无论你进行了多少轮推演，**你最后一次的输出必须，且只能是如下 JSON 格式**（请包裹在 \`\`\`json 中）：\n\`\`\`json\n{\n  "type": "final",\n  "output": {\n    "overview": "...",\n    "analysis": "...",\n    "summary": "...",\n    "data": [] \n  }\n}\n\`\`\`\n严禁把上述指令文字直接暴露在最终报告中！`;
     instructionText += `\n\n【注意：以下是你当前所处的最新页面上下文数据】\n${ctxString}`;
@@ -252,7 +379,7 @@ ${highRandomness ? `\n\n## ⚠️ [Anti-Cache] 强制发散与破局指令 (Nonc
     }
 
     if (parsed.type === "final") {
-      const validationErrors = validateReport(parsed, userInstruction, skillId);
+      const validationErrors = validateReport(parsed, userInstruction, skillId, toolHistory);
       if (validationErrors.length > 0) {
         const reflectionsCount = ctxForPrompt.__reflectionsCount || 0;
         if (reflectionsCount < 2 && step < maxSteps - 1) {
@@ -260,9 +387,10 @@ ${highRandomness ? `\n\n## ⚠️ [Anti-Cache] 强制发散与破局指令 (Nonc
           sendProgress({ type: "reflection", step, message: `Critic 自动审计拒绝：${validationErrors[0]} 正在打回重做...` });
           
           messages.push({ role: "assistant", content: assistantContent });
+          const domesticVisualActive = domesticVisualRouteActive(skillId, pageContext, toolHistory);
           messages.push({
             role: "user",
-            content: `【Critic Agent 报告质量审计拒绝】\n你的报告未能通过系统的自动合规自检，发现了以下问题：\n${validationErrors.map((err, i) => `${i + 1}. ${err}`).join("\n")}\n\n请严格对照系统提示词规范，在脑海中进行深度反思（如补充筛选数量、使用真实详情单页链接、清除技术黑话等），并重新调用工具或重新输出一份完美修正了以上所有问题的 \`{"type":"final", "output": {...}}\` 报告！`
+            content: `【Critic Agent 报告质量审计拒绝】\n你的报告未能通过系统的自动合规自检，发现了以下问题：\n${validationErrors.map((err, i) => `${i + 1}. ${err}`).join("\n")}\n\n${domesticVisualActive ? "【非标视觉寻源硬约束】本轮已经启动目标主图/以图搜图路径。请继续基于图片搜索结果页 productCards 和截图做视觉相似度修正，补齐 candidate_image_url、list_page_visual_score、visual_match_evidence；严禁回到 1688/淘宝文本框关键词搜索来凑结果。\n\n" : ""}请严格对照系统提示词规范，在脑海中进行深度反思（如补充筛选数量、使用真实详情单页链接、清除技术黑话等），并重新调用工具或重新输出一份完美修正了以上所有问题的 \`{"type":"final", "output": {...}}\` 报告！`
           });
           continue;
         }
@@ -294,7 +422,76 @@ ${highRandomness ? `\n\n## ⚠️ [Anti-Cache] 强制发散与破局指令 (Nonc
       const toolName = parsed.tool;
       const toolArgs = parsed.arguments || {};
 
-      sendProgress({ type: "tool_call", step, toolName, toolArgs });
+      if (toolName === "prepare_clean_product_image") {
+        if ((!toolArgs.imageUrl || toolArgs.imageUrl === "__TARGET_IMAGE_URL__") && actualTargetImageUrl) {
+          toolArgs.imageUrl = actualTargetImageUrl;
+        }
+      }
+
+      if (["image_search_1688", "image_search_taobao", "image_search_in_browser"].includes(toolName)) {
+        if ((!toolArgs.imageUrl || toolArgs.imageUrl === "__TARGET_IMAGE_URL__") && actualTargetImageUrl) {
+          toolArgs.imageUrl = actualTargetImageUrl;
+        }
+      }
+
+      if ((skillId || "").includes("domestic_sourcing_finder") && toolName === "input_text_and_search") {
+        const incompleteImageSearch = lastIncompleteImageSearch(toolHistory);
+        if (incompleteImageSearch) {
+          messages.push({ role: "assistant", content: assistantContent });
+          messages.push({
+            role: "user",
+            content: JSON.stringify({
+              type: "tool_error",
+              tool: toolName,
+              error: "刚刚的以图搜图流程尚未真正进入商品结果页，禁止立即切换到文本搜索。请先继续完成图片检索动作：优先重新调用 image_search_1688/image_search_taobao；如果页面仍停留在上传浮层，请读取页面或使用截图坐标点击明确的“搜索图片/以图搜款/找同款”按钮；只有平台明确无图搜结果、验证码/登录墙阻断，或用户要求文本兜底时，才允许文本搜索。",
+              previousImageSearch: {
+                tool: incompleteImageSearch.tool,
+                result: incompleteImageSearch.result,
+              },
+            }),
+          });
+          continue;
+        }
+
+        if (domesticVisualRouteActive(skillId, pageContext, toolHistory) && !isExplicitTextFallbackAllowed(userInstruction)) {
+          messages.push({ role: "assistant", content: assistantContent });
+          messages.push({
+            role: "user",
+            content: JSON.stringify({
+              type: "tool_error",
+              tool: toolName,
+              error: "本轮国内寻源已经进入非标视觉/以图搜图路径。对于非标外观、模具、造型类商品，Critic 打回后也严格禁止回到文本框关键词搜索。请继续使用 productCards、截图和候选主图做视觉相似度筛选；如 1688 自动框选主体不完整且已配置生图模型，请先调用 prepare_clean_product_image，再把返回的 image_search_argument.imageUrl 传给 image_search_1688/image_search_taobao。",
+            }),
+          });
+          continue;
+        }
+      }
+
+      if ((skillId || "").includes("domestic_sourcing_finder") && toolName === "agentic_web_search") {
+        const query = toolArgs.query || "";
+        const previousSearches = countToolCalls(toolHistory, "agentic_web_search");
+        if (previousSearches >= 1 || !isLogisticsOrPolicySearchQuery(query)) {
+          messages.push({ role: "assistant", content: assistantContent });
+          messages.push({
+            role: "user",
+            content: JSON.stringify({
+              type: "tool_error",
+              tool: toolName,
+              error: previousSearches >= 1
+                ? "国内供应链寻源流程中 agentic_web_search 最多允许调用 1 次，仅用于物流、费率、政策或认证核算。请不要重复静默联网搜索；继续使用当前 1688/淘宝视觉候选、详情页数据和已获得的物流估算完成报告。"
+                : "agentic_web_search 只允许用于物流、费率、政策、认证等纯信息核算，不能用于寻找 1688/淘宝货源或替代图片搜索。请回到 image_search_1688/image_search_taobao、productCards 视觉筛选或详情页审计。",
+              query,
+            }),
+          });
+          continue;
+        }
+      }
+
+      const progressToolArgs = { ...toolArgs };
+      if (progressToolArgs.imageUrl && String(progressToolArgs.imageUrl).startsWith("data:")) {
+        progressToolArgs.imageUrl = "__UPLOADED_IMAGE_DATA__";
+      }
+      sendProgress({ type: "tool_call", step, toolName, toolArgs: progressToolArgs });
 
       if (!tools[toolName]) {
         const errMsg = `Unknown tool: ${toolName}. Available: ${availableTools}`;
@@ -312,6 +509,7 @@ ${highRandomness ? `\n\n## ⚠️ [Anti-Cache] 强制发散与破局指令 (Nonc
       } catch (err) {
         toolResult = { error: err.message };
       }
+      toolHistory.push({ tool: toolName, arguments: toolArgs, result: toolResult });
 
       sendProgress({ type: "tool_result", step, toolName, toolResult });
 
@@ -324,7 +522,7 @@ ${highRandomness ? `\n\n## ⚠️ [Anti-Cache] 强制发散与破局指令 (Nonc
       }
 
       let nextScreenshot = null;
-      const pageModifyingTools = ["open_new_tab", "navigate_to", "search_in_browser", "click_by_text", "input_text_and_search", "click_by_selector", "image_search_in_browser", "click_by_coordinate"];
+      const pageModifyingTools = ["open_new_tab", "navigate_to", "search_in_browser", "click_by_text", "input_text_and_search", "click_by_selector", "image_search_1688", "image_search_taobao", "image_search_in_browser", "click_by_coordinate"];
       if (pageModifyingTools.includes(toolName)) {
         try {
           const tId = (toolResult && toolResult.tabId) ? toolResult.tabId : tabId;
@@ -354,6 +552,11 @@ ${highRandomness ? `\n\n## ⚠️ [Anti-Cache] 强制发散与破局指令 (Nonc
         tool: toolName,
         result: toolResult,
       };
+      const productCards = toolResult?.pageData?.productCards || [];
+      if (Array.isArray(productCards) && productCards.length > 0) {
+        userResultObj.visual_candidate_summary = summarizeProductCards(productCards);
+        userResultObj.next_step_instruction = "当前页面已经抽取到带主图与屏幕坐标的 productCards。下一步必须先对照目标商品主图和最新截图，把这些卡片按外观/材质/结构视觉相似度排序；只允许打开视觉排名最高且未触发材质/造型红线的详情页。最终 data 每项必须写入 candidate_image_url、list_page_visual_score、visual_match_evidence，禁止只按标题关键词选择。";
+      }
 
       let userMsgContent;
       if (nextScreenshot) {

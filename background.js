@@ -194,6 +194,30 @@ chrome.runtime.onConnect.addListener((port) => {
             }
           }
 
+          if (message.targetImageUrl) {
+            pageContext.targetImageUrl = message.targetImageUrl;
+          }
+          if (Array.isArray(pageContext.images) && pageContext.images.length > 0) {
+            pageContext.targetImageCandidates = pageContext.images
+              .map((img) => img.src)
+              .filter(Boolean)
+              .slice(0, 8);
+            pageContext.targetImageCandidateDetails = pageContext.images
+              .filter((img) => img.src)
+              .slice(0, 8)
+              .map((img) => ({
+                src: img.src,
+                alt: img.alt || "",
+                roleHint: img.roleHint || "",
+                searchScore: img.searchScore,
+                displayScore: img.score,
+                rect: img.rect,
+              }));
+            if (!pageContext.targetImageUrl) {
+              pageContext.targetImageUrl = pageContext.targetImageCandidates[0];
+            }
+          }
+
           if (isCancelled) return;
 
           // Step 2: Capture screenshot for Vision models
