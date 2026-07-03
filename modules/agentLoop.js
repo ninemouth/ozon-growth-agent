@@ -66,6 +66,12 @@ function validateReport(parsed, userInstruction, skillId) {
       const spec = item.spec_audit;
       if (!spec || typeof spec !== "object" || !spec.target_spec || !spec.sourced_spec || !spec.status) {
         errors.push(`商品列表第 ${idx + 1} 项 (${title}) 缺少规格审计比对参数（spec_audit 必须包含 target_spec、sourced_spec 和 status）！`);
+      } else {
+        const isRejected = ["一票否决淘汰", "材质缩水", "严重偏离"].includes(spec.status) || 
+                           (spec.status.includes("淘汰") || spec.status.includes("缩水") || spec.status.includes("偏离"));
+        if (isRejected) {
+          errors.push(`商品列表第 ${idx + 1} 项 (${title}) 的规格对比状态判定为一票否决或材质/外观不符 (${spec.status})，绝对禁止列为有效的采购货源推荐方案！请通过多轮检索（以图搜图、精确词、筛选项）重新搜寻合格同款；若确属无货，请在报告中如实申报无货，严禁妥协拼凑！`);
+        }
       }
 
       // D. Profit ledger check (financial_ledger)
