@@ -535,12 +535,22 @@
             clientY: clientY
           };
 
-          element.dispatchEvent(new MouseEvent('mouseover', mouseOptions));
-          element.dispatchEvent(new MouseEvent('mousemove', mouseOptions));
-          element.dispatchEvent(new MouseEvent('mousedown', mouseOptions));
+          try {
+            element.dispatchEvent(new MouseEvent('mouseover', mouseOptions));
+          } catch (e) {}
+          try {
+            element.dispatchEvent(new MouseEvent('mousemove', mouseOptions));
+          } catch (e) {}
+          try {
+            element.dispatchEvent(new MouseEvent('mousedown', mouseOptions));
+          } catch (e) {}
           
-          if (typeof element.focus === 'function') {
-            element.focus();
+          try {
+            if (typeof element.focus === 'function') {
+              element.focus();
+            }
+          } catch (e) {
+            console.warn("Focusing element failed due to browser security policy:", e.message);
           }
           
           try {
