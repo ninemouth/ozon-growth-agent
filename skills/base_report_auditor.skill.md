@@ -23,7 +23,7 @@
 4. **数据结构化列表 (Data)**:
    - **元素卡片化**：`data` 字段必须是对象数组，其中每个对象代表一个独立的分析实体。
    - **必须包含以下标准商业与规格子属性**：
-     - `target_profile`: 对象结构，包含目标商品的分类描述特征画像（根据 3C/日用/服装/玩具大类属性对齐），且必须包含 `visual_descriptors`（多模态提炼的外观/材质/隐喻特征）与 `refined_query`（最终构建用于 1688 的中文复合检索词）。
+     - `target_profile`: 对象结构，包含目标商品的分类描述特征画像（根据 3C/日用/服装/玩具大类属性对齐），且必须包含 `visual_descriptors`（多模态提炼的外观/材质特征）、`refined_query`（复合检索词）与 `routing_decision`（检索决策分流，取值必须为："标品(文本检索)" 或 "非标品(图片检索)"）。
      - `spec_audit`: 对象结构，包含 `target_spec`（目标规格如尺寸、材质）、`sourced_spec`（货源规格）与 `status`（规格对比状态: "完全一致"/"规格偏差"/"材质缩水"/"一票否决淘汰"）。
      - `financial_ledger`: 对象结构，包含 `sourcing_cost`（采购价格/起批量）、`shipping_cost`（国内+跨境物流估算费用）、`target_price`（建议零售价）、`margin_rate`（预估毛利率）。
      - `trend_evidence`: 字符串，融合了商业收益与市场数据的选品理由与大盘证据（必须大于 20 字，拒绝敷衍词汇）。

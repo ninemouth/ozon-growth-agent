@@ -627,6 +627,22 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
     });
   },
 
+  click_by_coordinate: async (args) => {
+    const { x, y, tabId } = args;
+    if (x === undefined || y === undefined) throw new Error("x and y coordinates are required");
+
+    let targetTabId = tabId;
+    if (!targetTabId) {
+      const tab = await getCurrentTab();
+      if (!tab) throw new Error("No active tab found");
+      targetTabId = tab.id;
+    }
+
+    const result = await sendToContentScript(targetTabId, { type: "CLICK_BY_COORDINATE", x, y });
+    if (!result?.ok) throw new Error(result?.error || `Failed to click visually at coordinate (${x}, ${y})`);
+    return result;
+  },
+
   open_new_tab: async (args) => {
     const { url } = args;
     if (!url) throw new Error("url is required");

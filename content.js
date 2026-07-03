@@ -504,6 +504,59 @@
           }
         })();
         return true; // Keep channel open
+      } else if (message.type === "CLICK_BY_COORDINATE") {
+        const { x, y } = message;
+        if (x === undefined || y === undefined) {
+          sendResponse({ ok: false, error: "x and y coordinates are required" });
+          return;
+        }
+
+        // Convert percentage coordinates (e.g. 0.0 - 1.0) to absolute pixel coordinates
+        const clientX = x <= 1.0 ? x * window.innerWidth : x;
+        const clientY = y <= 1.0 ? y * window.innerHeight : y;
+
+        try {
+          const element = document.elementFromPoint(clientX, clientY);
+          if (!element) {
+            sendResponse({ ok: false, error: `No element found at coordinate (${clientX}, ${clientY})` });
+            return;
+          }
+
+          // Simulate full human hover and mouse click event chain
+          const mouseOptions = {
+            bubbles: true,
+            cancelable: true,
+            view: window,
+            clientX: clientX,
+            clientY: clientY
+          };
+
+          element.dispatchEvent(new MouseEvent('mouseover', mouseOptions));
+          element.dispatchEvent(new MouseEvent('mousemove', mouseOptions));
+          element.dispatchEvent(new MouseEvent('mousedown', mouseOptions));
+          
+          if (typeof element.focus === 'function') {
+            element.focus();
+          }
+          
+          element.dispatchEvent(new MouseEvent('mouseup', mouseOptions));
+          element.dispatchEvent(new MouseEvent('click', mouseOptions));
+          
+          // Also invoke native HTML element click to ensure standard handlers run
+          if (typeof element.click === 'function') {
+            element.click();
+          }
+
+          sendResponse({ 
+            ok: true, 
+            message: `Successfully clicked visually at (${clientX}, ${clientY})`, 
+            tagName: element.tagName,
+            className: element.className,
+            id: element.id
+          });
+        } catch (err) {
+          sendResponse({ ok: false, error: err.message });
+        }
       } else if (message.type === "SCROLL_TO_TOP") {
         window.scrollTo({ top: 0, behavior: "smooth" });
         sendResponse({ ok: true });
