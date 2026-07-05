@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "lint": "eslint .",
+    "test:security": "node scripts/security-smoke.mjs",
     "format": "prettier --write ."
   },
   "keywords": [
@@ -22,6 +23,10 @@
   "license": "MIT",
   "devDependencies": {
     "eslint": "^9.0.0",
+    "jsdom": "^26.1.0",
     "prettier": "^3.2.5"
+  },
+  "dependencies": {
+    "dompurify": "^3.4.11"
   }
 }

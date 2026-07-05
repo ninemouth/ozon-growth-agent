@@ -1,8 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "电商增长 Agent",
+  "name": "__MSG_extName__",
   "version": "1.1.0",
-  "description": "基于大模型的 AI 电商增长引擎。支持全自动选品挖掘、竞品痛点分析、跨平台趋势监控与 Listing 智能生成。",
+  "description": "__MSG_extDescription__",
+  "default_locale": "zh_CN",
   "permissions": [
     "activeTab",
     "scripting",
@@ -19,7 +20,7 @@
     "default_path": "sidepanel.html"
   },
   "action": {
-    "default_title": "Open Skill Runner",
+    "default_title": "__MSG_actionTitle__",
     "default_icon": {
       "16": "icons/icon16.png",
       "48": "icons/icon48.png",

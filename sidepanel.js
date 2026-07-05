@@ -40,6 +40,66 @@ const views = {
   library: $("view-library"),
 };
 
+const SANITIZE_ALLOWED_TAGS = ['H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'P', 'SPAN', 'DIV', 'UL', 'OL', 'LI', 'STRONG', 'EM', 'CODE', 'PRE', 'TABLE', 'THEAD', 'TBODY', 'TR', 'TH', 'TD', 'BR', 'A', 'HR'];
+const SANITIZE_ALLOWED_ATTR = ['href', 'class', 'target', 'rel', 'title', 'style'];
+const SANITIZE_FORBID_TAGS = ['SCRIPT', 'STYLE', 'IFRAME', 'OBJECT', 'EMBED', 'LINK', 'META', 'FORM', 'INPUT', 'BUTTON', 'SELECT', 'TEXTAREA', 'SVG', 'MATH', 'TEMPLATE'];
+
+function t(messageName, fallback = "") {
+  try {
+    return chrome.i18n?.getMessage(messageName) || fallback || messageName;
+  } catch (_) {
+    return fallback || messageName;
+  }
+}
+
+function setElementText(selector, messageName, fallback) {
+  const el = document.querySelector(selector);
+  if (el) el.textContent = t(messageName, fallback);
+}
+
+function setButtonTextPreservingIcon(selector, messageName, fallback) {
+  const el = document.querySelector(selector);
+  if (!el) return;
+  const label = t(messageName, fallback);
+  const textNode = Array.from(el.childNodes).find((node) => node.nodeType === Node.TEXT_NODE && node.textContent.trim());
+  if (textNode) {
+    textNode.textContent = ` ${label}`;
+  } else {
+    el.append(document.createTextNode(label));
+  }
+}
+
+function applyI18n() {
+  document.documentElement.lang = chrome.i18n?.getUILanguage?.() || "zh-CN";
+  document.title = t("extName", "电商增长 Agent");
+  setElementText(".brand-name", "extName", "电商增长 Agent");
+  setElementText("#view-main > .section:nth-of-type(1) .section-label", "chooseSkill", "选择 Skill");
+  setButtonTextPreservingIcon("#tipsBtn", "advancedTips", "高级玩法");
+  const tipsBtn = $("tipsBtn");
+  if (tipsBtn) tipsBtn.title = t("advancedTipsTitle", "指令高级玩法");
+  const libraryBtn = $("libraryBtn");
+  if (libraryBtn) libraryBtn.title = t("libraryTitle", "结果库");
+  const settingsBtn = $("settingsBtn");
+  if (settingsBtn) settingsBtn.title = t("settingsTitle", "LLM 配置");
+  setElementText(".run-btn-text", "runSkill", "执行 Skill");
+  setElementText(".progress-title", "progressTitle", "Agent 运行中");
+  setElementText("#cancelBtn", "cancel", "取消");
+  setElementText(".result-title", "resultTitle", "执行结果");
+  setElementText("#viewReportBtn", "report", "报告");
+  setElementText("#viewDataBtn", "dataView", "数据视图");
+  setElementText("#downloadBtn", "downloadPdf", "下载报告 (PDF)");
+  setElementText("#downloadMdBtn", "exportMarkdown", "导出 Markdown");
+  setElementText("#exportExcelBtn", "exportExcel", "导出 Excel");
+  setElementText("#copyBtn", "copy", "复制");
+  setElementText("#saveBtn", "save", "保存");
+  setElementText("#clearBtn", "clear", "清除");
+  setElementText("#backFromSettings", "back", "← 返回");
+  setElementText("#backFromLibrary", "back", "← 返回");
+  setElementText("#view-settings .view-title", "settingsTitle", "LLM 配置");
+  setElementText("#view-library .view-title", "libraryTitle", "结果库");
+  setElementText("#exportBtn", "exportJson", "导出 JSON");
+}
+
 function showView(name) {
   Object.entries(views).forEach(([k, el]) => {
     el.classList.toggle("active", k === name);
@@ -49,6 +109,7 @@ function showView(name) {
 // ── Init ──
 document.addEventListener("DOMContentLoaded", async () => {
   showView("main");
+  applyI18n();
   await loadSkills();
   await updatePageInfo();
   await loadSettings();
@@ -232,7 +293,7 @@ function cleanupPort() {
   }
   isRunning = false;
   const runBtn = $("runBtn");
-  runBtn.innerHTML = `<span class="run-btn-icon">▶</span><span class="run-btn-text">执行 Skill</span>`;
+  runBtn.innerHTML = `<span class="run-btn-icon">▶</span><span class="run-btn-text">${escapeHtml(t("runSkill", "执行 Skill"))}</span>`;
   runBtn.classList.remove("running");
   runBtn.disabled = false;
 }
@@ -789,7 +850,7 @@ async function saveCurrentResult() {
       skillName: selectedSkill?.name || "Unknown Skill",
       url: tab?.url || "",
       pageTitle: tab?.title || "",
-      result: content.textContent,
+      result: maskApiKeys(content.textContent),
     });
     await new Promise((r) => chrome.storage.local.set({ savedResults: savedResults.slice(0, 100) }, r));
 
@@ -798,7 +859,7 @@ async function saveCurrentResult() {
     saveBtn.style.background = "var(--success)";
     saveBtn.style.color = "white";
     setTimeout(() => {
-      saveBtn.textContent = "保存";
+      saveBtn.textContent = t("save", "保存");
       saveBtn.style.background = "";
       saveBtn.style.color = "";
     }, 2000);
@@ -990,6 +1051,12 @@ async function saveSettings() {
     }, r)
   );
 
+  $("apiKey").type = "password";
+  $("helium10ApiKey").type = "password";
+  $("sellerSpriteApiKey").type = "password";
+  $("fastmossApiKey").type = "password";
+  document.activeElement?.blur?.();
+
   msg.textContent = "✓ 设置已保存";
   msg.className = "settings-msg success";
   msg.classList.remove("hidden");
@@ -1051,10 +1118,10 @@ function bindEvents() {
   });
 
   $("copyBtn").addEventListener("click", () => {
-    const text = $("resultContent").textContent;
+    const text = maskApiKeys($("resultContent").textContent);
     navigator.clipboard.writeText(text);
     $("copyBtn").textContent = "已复制 ✓";
-    setTimeout(() => { $("copyBtn").textContent = "复制"; }, 1500);
+    setTimeout(() => { $("copyBtn").textContent = t("copy", "复制"); }, 1500);
   });
 
   $("saveBtn").addEventListener("click", saveCurrentResult);
@@ -1146,7 +1213,7 @@ function bindEvents() {
 
   $("downloadMdBtn").addEventListener("click", () => {
     if (!currentResultObj) return;
-    const mdContent = convertResultToMarkdown(currentResultObj);
+    const mdContent = convertResultToMarkdown(maskSensitiveData(currentResultObj));
     const blob = new Blob([mdContent], { type: "text/markdown;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -1287,7 +1354,7 @@ function bindEvents() {
 
   $("exportBtn").addEventListener("click", async () => {
     const response = await chrome.runtime.sendMessage({ type: "EXPORT_RESULTS" });
-    const data = response.data || [];
+    const data = maskSensitiveData(response.data || []);
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -1318,18 +1385,39 @@ function escapeHtml(str) {
 
 function sanitizeHtml(htmlString) {
   if (!htmlString) return "";
+  const purifiedHtml = window.DOMPurify?.sanitize
+    ? window.DOMPurify.sanitize(htmlString, {
+      ALLOWED_TAGS: SANITIZE_ALLOWED_TAGS.map((tag) => tag.toLowerCase()),
+      ALLOWED_ATTR: SANITIZE_ALLOWED_ATTR,
+      FORBID_TAGS: SANITIZE_FORBID_TAGS.map((tag) => tag.toLowerCase()),
+      ALLOW_DATA_ATTR: false,
+      ALLOW_ARIA_ATTR: true,
+      RETURN_TRUSTED_TYPE: false,
+      SANITIZE_DOM: true,
+    })
+    : htmlString;
+
+  return sanitizeHtmlFallback(purifiedHtml);
+}
+
+function sanitizeHtmlFallback(htmlString) {
+  if (window.DOMPurify?.sanitize) {
+    htmlString = String(htmlString || "");
+  }
+
   const parser = new DOMParser();
   const doc = parser.parseFromString(htmlString, 'text/html');
-  const allowedTags = ['H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'P', 'SPAN', 'DIV', 'UL', 'OL', 'LI', 'STRONG', 'EM', 'CODE', 'PRE', 'TABLE', 'THEAD', 'TBODY', 'TR', 'TH', 'TD', 'BR', 'A', 'HR'];
-  const allowedAttrs = ['href', 'style', 'class', 'target'];
+  const dropContentTags = new Set(SANITIZE_FORBID_TAGS);
   
   function sanitizeNode(node) {
     if (node.nodeType === Node.TEXT_NODE) return;
     if (node.nodeType === Node.ELEMENT_NODE) {
       const tagName = node.tagName.toUpperCase();
-      if (!allowedTags.includes(tagName)) {
+      if (!SANITIZE_ALLOWED_TAGS.includes(tagName)) {
         const parent = node.parentNode;
-        if (parent) {
+        if (parent && dropContentTags.has(tagName)) {
+          parent.removeChild(node);
+        } else if (parent) {
           while (node.firstChild) {
             parent.insertBefore(node.firstChild, node);
           }
@@ -1340,14 +1428,27 @@ function sanitizeHtml(htmlString) {
       
       const attrs = Array.from(node.attributes);
       for (const attr of attrs) {
-        if (!allowedAttrs.includes(attr.name.toLowerCase())) {
+        if (!SANITIZE_ALLOWED_ATTR.includes(attr.name.toLowerCase())) {
           node.removeAttribute(attr.name);
         } else if (attr.name.toLowerCase() === 'href') {
           const val = attr.value.trim().toLowerCase();
-          if (val.startsWith('javascript:') || val.startsWith('data:')) {
+          if (!val.startsWith('http://') && !val.startsWith('https://') && !val.startsWith('#') && !val.startsWith('/')) {
             node.removeAttribute('href');
           }
+        } else if (attr.name.toLowerCase() === 'target' && attr.value !== '_blank') {
+          node.removeAttribute('target');
+        } else if (attr.name.toLowerCase() === 'style') {
+          const safeStyle = sanitizeStyleAttr(attr.value);
+          if (safeStyle) {
+            node.setAttribute('style', safeStyle);
+          } else {
+            node.removeAttribute('style');
+          }
         }
+      }
+
+      if (tagName === 'A' && node.getAttribute('target') === '_blank') {
+        node.setAttribute('rel', 'noopener noreferrer');
       }
       
       const children = Array.from(node.childNodes);
@@ -1359,12 +1460,58 @@ function sanitizeHtml(htmlString) {
   return doc.body.innerHTML;
 }
 
+function sanitizeStyleAttr(styleValue) {
+  if (!styleValue || /url\s*\(|expression\s*\(|javascript:|data:|@import|-moz-binding/i.test(styleValue)) return "";
+  const allowedProps = new Set([
+    'align-items', 'background', 'background-color', 'border', 'border-bottom', 'border-collapse', 'border-color',
+    'border-left', 'border-radius', 'border-right', 'border-top', 'box-shadow', 'box-sizing', 'break-inside',
+    'color', 'display', 'flex', 'font-family', 'font-size', 'font-style', 'font-weight', 'gap', 'height',
+    'justify-content', 'letter-spacing', 'line-height', 'list-style-type', 'margin', 'margin-bottom',
+    'margin-left', 'margin-right', 'margin-top', 'max-width', 'min-width', 'overflow', 'overflow-wrap',
+    'padding', 'padding-bottom', 'padding-left', 'padding-right', 'padding-top', 'page-break-inside',
+    'text-align', 'text-decoration', 'text-transform', 'vertical-align', 'white-space', 'width',
+    'word-break', 'word-wrap'
+  ]);
+
+  return styleValue
+    .split(';')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => {
+      const separatorIndex = part.indexOf(':');
+      if (separatorIndex <= 0) return "";
+      const prop = part.slice(0, separatorIndex).trim().toLowerCase();
+      const value = part.slice(separatorIndex + 1).trim();
+      if (!allowedProps.has(prop) || !value || /[<>]/.test(value)) return "";
+      return `${prop}: ${value}`;
+    })
+    .filter(Boolean)
+    .join('; ');
+}
+
 function maskApiKeys(str) {
   if (!str || typeof str !== "string") return str;
   return str
     .replace(/(Bearer\s+)[a-zA-Z0-9\-_\.\~]+/gi, "$1sk-...****")
-    .replace(/\b(sk-[a-zA-Z0-9]{12})[a-zA-Z0-9]+/g, "$1****")
-    .replace(/(x-api-key["'\s:]+)[a-zA-Z0-9\-]+/gi, "$1****");
+    .replace(/\b(sk-[a-zA-Z0-9]{8,})[a-zA-Z0-9_\-]+/g, "$1****")
+    .replace(/\b(gho_[a-zA-Z0-9_]{8,})[a-zA-Z0-9_]+/g, "$1****")
+    .replace(/\b(github_pat_[a-zA-Z0-9_]{8,})[a-zA-Z0-9_]+/g, "$1****")
+    .replace(/((?:api[_-]?key|x-api-key|authorization|token|secret|password)["'\s:=]+)(["']?)[^"'\s,}]+/gi, "$1$2****");
+}
+
+function maskSensitiveData(value, depth = 0) {
+  if (depth > 20) return "[Max depth]";
+  if (typeof value === "string") return maskApiKeys(value);
+  if (Array.isArray(value)) return value.map((item) => maskSensitiveData(item, depth + 1));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, val]) => {
+      if (/api[_-]?key|authorization|token|secret|password/i.test(key)) {
+        return [key, val ? "****" : val];
+      }
+      return [key, maskSensitiveData(val, depth + 1)];
+    }));
+  }
+  return value;
 }
 
 function convertResultToMarkdown(obj) {

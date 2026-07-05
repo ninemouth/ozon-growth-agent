@@ -1,0 +1,77 @@
+{
+  "extName": {
+    "message": "电商增长 Agent",
+    "description": "Chrome extension name"
+  },
+  "extDescription": {
+    "message": "基于大模型的 AI 电商增长引擎。支持全自动选品挖掘、竞品痛点分析、跨平台趋势监控与 Listing 智能生成。",
+    "description": "Chrome extension description"
+  },
+  "actionTitle": {
+    "message": "打开电商增长 Agent",
+    "description": "Toolbar action title"
+  },
+  "chooseSkill": {
+    "message": "选择 Skill"
+  },
+  "userInstruction": {
+    "message": "用户指令"
+  },
+  "optional": {
+    "message": "可选"
+  },
+  "advancedTips": {
+    "message": "高级玩法"
+  },
+  "advancedTipsTitle": {
+    "message": "指令高级玩法"
+  },
+  "runSkill": {
+    "message": "执行 Skill"
+  },
+  "progressTitle": {
+    "message": "Agent 运行中"
+  },
+  "cancel": {
+    "message": "取消"
+  },
+  "resultTitle": {
+    "message": "执行结果"
+  },
+  "report": {
+    "message": "报告"
+  },
+  "dataView": {
+    "message": "数据视图"
+  },
+  "downloadPdf": {
+    "message": "下载报告 (PDF)"
+  },
+  "exportMarkdown": {
+    "message": "导出 Markdown"
+  },
+  "exportExcel": {
+    "message": "导出 Excel"
+  },
+  "copy": {
+    "message": "复制"
+  },
+  "save": {
+    "message": "保存"
+  },
+  "clear": {
+    "message": "清除"
+  },
+  "settingsTitle": {
+    "message": "LLM 配置"
+  },
+  "libraryTitle": {
+    "message": "结果库"
+  },
+  "exportJson": {
+    "message": "导出 JSON"
+  },
+  "back": {
+    "message": "返回"
+  }
+}

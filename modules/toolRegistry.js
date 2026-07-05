@@ -101,7 +101,7 @@ async function sendToContentScript(tabId, message) {
   });
 }
 
-async function captureTabScreenshot(tabId) {
+async function _captureTabScreenshot(tabId) {
   const tab = await chrome.tabs.get(tabId);
   if (!tab?.windowId) throw new Error("Unable to resolve tab window for screenshot");
   return await new Promise((resolve, reject) => {
@@ -141,7 +141,7 @@ function normalizedPointInAnyRegion(x, y, regions = []) {
   return regions.some((region) => normalizedPointInRegion(x, y, region));
 }
 
-async function locateImageSearchActionInScreenshot(dataUrl, regions = []) {
+async function _locateImageSearchActionInScreenshot(dataUrl, regions = []) {
   if (typeof createImageBitmap !== "function" || typeof OffscreenCanvas === "undefined") {
     return null;
   }
@@ -360,7 +360,7 @@ export const tools = {
   },
 
   query_market_data: async (args) => {
-    const { keyword, platform = "amazon", asin = "" } = args;
+    const { keyword } = args;
     if (!keyword) throw new Error("keyword is required");
 
     const settings = await new Promise((resolve) =>

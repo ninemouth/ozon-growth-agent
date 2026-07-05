@@ -185,7 +185,7 @@
     return await storageSet(interactionMemoryKey(kind), memory);
   }
 
-  async function clickRememberedInteraction(kind) {
+  async function _clickRememberedInteraction(kind) {
     const memory = await storageGet(interactionMemoryKey(kind));
     if (!memory) return false;
 
@@ -854,7 +854,6 @@
       const combinedLabel = `${label} ${rawLabel}`;
       const text = normalizeText(el.innerText || el.value || el.title || el.getAttribute?.("aria-label") || "", 80);
       const inImageUi = elementInsideAny(el, containers) || elementInsideAny(rawEl, containers);
-      const explicitImageSearch = /搜索图片|图片搜索|以图搜索|以图搜款|找同款|搜图|开始搜索|确认搜索/i.test(label);
       const rawExplicitImageSearch = /搜索图片|图片搜索|以图搜索|以图搜款|找同款|搜图|开始搜索|确认搜索/i.test(combinedLabel);
       const safeConfirmInImageUi = inImageUi && /确认|确定|上传|开始|搜索/i.test(combinedLabel) && !/^搜索$/i.test(text);
       const reject = /取消|关闭|返回|重置|清空|删除|delete|remove|close|cancel|reset|back/i.test(combinedLabel);
@@ -1098,16 +1097,49 @@
               }
             }
 
-            if (!fileInput) {
-              sendResponse({ ok: false, error: "Could not find image search upload input element on the page" });
-              return;
-            }
-
             const response = await fetch(`data:image/jpeg;base64,${base64}`);
             const blob = await response.blob();
             const file = new File([blob], "image_search.jpg", { type: "image/jpeg" });
             const dataTransfer = new DataTransfer();
             dataTransfer.items.add(file);
+
+            let dispatchedFallbackEvents = 0;
+
+            if (!fileInput) {
+              const fallbackTargets = getSafeImagePasteTargets(null);
+              if (fallbackTargets.length === 0) {
+                sendResponse({ ok: false, error: "Could not find image search upload input or safe image-search paste/drop target on the page" });
+                return;
+              }
+
+              for (const target of fallbackTargets) {
+                try {
+                  target.dispatchEvent(new DragEvent('dragenter', { bubbles: true, cancelable: true, dataTransfer }));
+                  target.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer }));
+                  target.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer }));
+                  const pasteEvent = new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: dataTransfer });
+                  target.dispatchEvent(pasteEvent);
+                  dispatchedFallbackEvents++;
+                } catch (e) {
+                  console.warn("Safe image-search paste/drop fallback failed:", e.message);
+                }
+              }
+
+              await new Promise(r => setTimeout(r, 900));
+              const submitResult = await clickImageSearchSubmitButton();
+              sendResponse({
+                ok: dispatchedFallbackEvents > 0,
+                message: dispatchedFallbackEvents > 0
+                  ? "Dispatched safe image-search paste/drop fallback events"
+                  : "Could not dispatch image-search fallback events",
+                fallbackOnly: true,
+                fallbackTargets: fallbackTargets.length,
+                submitClicked: !!submitResult.clicked,
+                submitMethod: submitResult.method,
+                submitText: submitResult.text || "",
+              });
+              return;
+            }
 
             try {
               fileInput.files = dataTransfer.files;

@@ -1,0 +1,77 @@
+{
+  "extName": {
+    "message": "Ecommerce Growth Agent",
+    "description": "Chrome extension name"
+  },
+  "extDescription": {
+    "message": "An AI ecommerce growth engine powered by large language models. It supports automated product discovery, competitor insight analysis, cross-platform trend monitoring, and listing generation.",
+    "description": "Chrome extension description"
+  },
+  "actionTitle": {
+    "message": "Open Ecommerce Growth Agent",
+    "description": "Toolbar action title"
+  },
+  "chooseSkill": {
+    "message": "Choose Skill"
+  },
+  "userInstruction": {
+    "message": "Instruction"
+  },
+  "optional": {
+    "message": "Optional"
+  },
+  "advancedTips": {
+    "message": "Advanced Tips"
+  },
+  "advancedTipsTitle": {
+    "message": "Advanced instruction tips"
+  },
+  "runSkill": {
+    "message": "Run Skill"
+  },
+  "progressTitle": {
+    "message": "Agent Running"
+  },
+  "cancel": {
+    "message": "Cancel"
+  },
+  "resultTitle": {
+    "message": "Result"
+  },
+  "report": {
+    "message": "Report"
+  },
+  "dataView": {
+    "message": "Data View"
+  },
+  "downloadPdf": {
+    "message": "Download PDF"
+  },
+  "exportMarkdown": {
+    "message": "Export Markdown"
+  },
+  "exportExcel": {
+    "message": "Export Excel"
+  },
+  "copy": {
+    "message": "Copy"
+  },
+  "save": {
+    "message": "Save"
+  },
+  "clear": {
+    "message": "Clear"
+  },
+  "settingsTitle": {
+    "message": "LLM Settings"
+  },
+  "libraryTitle": {
+    "message": "Library"
+  },
+  "exportJson": {
+    "message": "Export JSON"
+  },
+  "back": {
+    "message": "Back"
+  }
+}
