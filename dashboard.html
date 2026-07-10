@@ -1,0 +1,748 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ozon AI 运营与选品增长大盘</title>
+  <link rel="stylesheet" href="dashboard.css">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div id="app">
+    <!-- Sidebar Navigation -->
+    <aside class="sidebar">
+      <div class="sidebar-brand">
+        <span class="brand-icon">🇷🇺</span>
+        <div class="brand-info">
+          <span class="brand-name">Ozon Growth OS</span>
+          <span class="brand-sub">销售增长指挥台</span>
+        </div>
+      </div>
+      <nav class="nav-menu">
+        <button class="nav-item active" data-tab="workflow">
+          <span class="nav-icon">🧩</span> 增长工作流
+        </button>
+        <button class="nav-item" data-tab="store">
+          <span class="nav-icon">🏪</span> API 数据
+        </button>
+        <button class="nav-item" data-tab="reports">
+          <span class="nav-icon">📝</span> 报告中心
+        </button>
+        <button class="nav-item" data-tab="tasks">
+          <span class="nav-icon">⚙️</span> 系统任务
+        </button>
+      </nav>
+      <div class="sidebar-footer">
+        <span class="status-indicator"></span> Ozon API 桥接正常
+      </div>
+    </aside>
+
+    <!-- Main Content Area -->
+    <main class="main-content">
+      <!-- Top header bar -->
+      <header class="topbar">
+        <h1 id="page-title">增长工作流</h1>
+        <div class="topbar-actions">
+          <select id="global-shop-selector" class="form-select" style="min-width:180px; padding:6px 12px; border-radius:6px; border:1px solid var(--border); background:var(--bg-input); color:var(--text-primary); font-size:12px; font-weight:600; cursor:pointer; margin-right:8px;"></select>
+          <button id="refresh-all-btn" class="btn btn-outline">🔄 刷新数据</button>
+          <button id="clear-db-btn" class="btn btn-danger">🗑️ 重置所有</button>
+        </div>
+      </header>
+
+      <!-- View: Workflow Canvas -->
+      <section id="view-workflow" class="view-pane active">
+        <div class="workflow-canvas-space">
+          <div class="canvas-command-bar">
+            <div>
+              <div class="hero-kicker">工作流画布</div>
+              <h2>增长工作流画布</h2>
+              <p>这里是运营动作空间，不是数据看板。根节点会随店铺诊断结果变化：有的店铺先重构定位，有的店铺直接进入商品、页面转化、竞品、利润和复盘工作流。</p>
+            </div>
+          </div>
+          <div class="workflow-board-canvas" id="workflow-canvas-board"></div>
+          <div class="workflow-pip hidden" id="workflow-pip" aria-live="polite"></div>
+          <div class="workflow-zoom-dock" aria-label="画布缩放">
+            <button class="btn btn-outline btn-xs" id="workflow-zoom-out">缩小</button>
+            <span id="workflow-zoom-label">100%</span>
+            <button class="btn btn-outline btn-xs" id="workflow-zoom-in">放大</button>
+            <button class="btn btn-outline btn-xs" id="workflow-zoom-reset">重置</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- View: Data Dashboard -->
+      <section id="view-overview" class="view-pane">
+        <div class="growth-hero">
+          <div>
+            <div class="hero-kicker">数据看板</div>
+            <h2>店铺经营数据总览</h2>
+            <p>这里保留传统数据看板能力：Seller API、本地报告、监控事件、SKU 指标和实验状态。需要推进动作时进入“增长工作流”。</p>
+          </div>
+          <div class="hero-actions">
+            <button class="btn btn-primary" id="go-to-workflow-canvas">进入工作流</button>
+            <button class="btn btn-outline growth-action-btn" data-action="diagnose_sku_funnel">诊断低转化 SKU</button>
+            <button class="btn btn-outline growth-action-btn" data-action="scan_competitor_changes">扫描竞品变化</button>
+          </div>
+        </div>
+
+        <div class="source-ledger" id="growth-source-ledger">
+          <div class="source-ledger-item">
+            <span class="source-dot mock"></span>
+            <strong>示例数据</strong>
+            <p>未绑定 API 或无历史时只用于界面预览</p>
+          </div>
+          <div class="source-ledger-item">
+            <span class="source-dot local"></span>
+            <strong>本地历史</strong>
+            <p>来自已保存报告、监控事件和实验记录</p>
+          </div>
+          <div class="source-ledger-item">
+            <span class="source-dot live"></span>
+            <strong>Seller API</strong>
+            <p>店铺看板成功同步后作为真实经营证据</p>
+          </div>
+          <div class="source-ledger-item">
+            <span class="source-dot ai"></span>
+            <strong>AI 推断</strong>
+            <p>必须在报告 evidence_ledger 中标注</p>
+          </div>
+        </div>
+
+        <div class="growth-work-grid">
+          <div class="growth-panel">
+            <div class="growth-panel-header">
+              <div>
+                <h3>今日必须处理</h3>
+                <span>履约、库存、转化和评分风险优先</span>
+              </div>
+              <button class="text-btn" id="go-to-sku-workbench">进入作战台</button>
+            </div>
+            <div class="growth-task-list" id="today-growth-tasks"></div>
+          </div>
+          <div class="growth-panel">
+            <div class="growth-panel-header">
+              <div>
+                <h3>今日增长机会</h3>
+                <span>可放大、可改图、可降本、可扩品</span>
+              </div>
+              <button class="text-btn" id="go-to-opportunities">查看机会</button>
+            </div>
+            <div class="growth-task-list" id="today-growth-opportunities"></div>
+          </div>
+        </div>
+
+        <div class="funnel-strip">
+          <div class="funnel-step">
+            <span>曝光</span>
+            <strong id="funnel-exposure">--</strong>
+            <button class="mini-action growth-action-btn" data-action="diagnose_sku_funnel">诊断</button>
+          </div>
+          <div class="funnel-step">
+            <span>点击/浏览</span>
+            <strong id="funnel-views">--</strong>
+            <button class="mini-action growth-action-btn" data-action="diagnose_visual_conversion">改图</button>
+          </div>
+          <div class="funnel-step">
+            <span>加购</span>
+            <strong id="funnel-cart">--</strong>
+            <button class="mini-action growth-action-btn" data-action="rewrite_listing">改页面</button>
+          </div>
+          <div class="funnel-step">
+            <span>付款</span>
+            <strong id="funnel-order">--</strong>
+            <button class="mini-action growth-action-btn" data-action="calculate_profit_guardrail">利润线</button>
+          </div>
+          <div class="funnel-step">
+            <span>履约</span>
+            <strong id="funnel-fulfillment">--</strong>
+            <button class="mini-action growth-action-btn" data-action="detect_fulfillment_risk">扫描</button>
+          </div>
+        </div>
+
+        <!-- Stats Row -->
+        <div class="stats-grid">
+          <div class="stat-card">
+            <div class="stat-header">
+              <span class="stat-title">已绑定跟踪商品</span>
+              <span class="stat-icon">📈</span>
+            </div>
+            <div class="stat-value" id="stat-tracked-count">0</div>
+            <div class="stat-footer">优化迭代阶段持续监控中</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-header">
+              <span class="stat-title">选品库采购商机</span>
+              <span class="stat-icon">💵</span>
+            </div>
+            <div class="stat-value" id="stat-sourcing-count">0</div>
+            <div class="stat-footer">已对齐1688供应链的候选</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-header">
+              <span class="stat-title">实时警报感知</span>
+              <span class="stat-icon" style="color:var(--danger);">📉</span>
+            </div>
+            <div class="stat-value" id="stat-alert-events">0</div>
+            <div class="stat-footer">今日竞品变价/低评分预警</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-header">
+              <span class="stat-title">AI 诊断报告</span>
+              <span class="stat-icon" style="color:var(--accent);">🤖</span>
+            </div>
+            <div class="stat-value" id="stat-reports-count">0</div>
+            <div class="stat-footer">Ozon 类目与供应链诊断报告</div>
+          </div>
+        </div>
+
+        <div class="content-grid">
+          <!-- Recent Events Feed -->
+          <div class="grid-card col-span-2">
+            <div class="card-header">
+              <h3>⚡ 跨境运营变化感知流 (Recent Events)</h3>
+              <button class="text-btn" id="go-to-events">查看全部</button>
+            </div>
+            <div class="card-body">
+              <div class="event-feed-list" id="recent-events-feed">
+                <div class="empty-state">暂无最新感知变化事件</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Quick Calculator -->
+          <div class="grid-card">
+            <div class="card-header">
+              <h3>🧮 Ozon 卢布跨境套利测算</h3>
+            </div>
+            <div class="card-body">
+              <div class="quick-calc-form" style="display:flex; flex-direction:column; gap:10px;">
+                <div class="form-group">
+                  <label class="form-label" style="font-size:11px;">1688 采购成本 (CNY)</label>
+                  <input type="number" id="calc-cost" class="form-input" value="30">
+                </div>
+                <div class="form-group">
+                  <label class="form-label" style="font-size:11px;">商品打包重量 (kg)</label>
+                  <input type="number" id="calc-weight" class="form-input" value="0.5" step="0.1">
+                </div>
+                <div class="form-group">
+                  <label class="form-label" style="font-size:11px;">Ozon 卢布售价 (RUB)</label>
+                  <input type="number" id="calc-price" class="form-input" value="1200">
+                </div>
+                <button id="quick-calc-btn" class="btn btn-primary" style="margin-top:10px;">测算利润率</button>
+                <div id="calc-result" style="margin-top:10px; font-size:12px; line-height:1.5;"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- View: SKU Growth Workbench -->
+      <section id="view-sku" class="view-pane">
+        <div class="workbench-toolbar">
+          <div>
+            <h2>SKU 作战台</h2>
+            <p>把商品从“列表”升级成按销售瓶颈排序的运营队列。</p>
+          </div>
+          <div class="toolbar-actions">
+            <select id="sku-filter" class="form-select">
+              <option value="all">全部问题</option>
+              <option value="exposure">曝光弱</option>
+              <option value="conversion">转化弱</option>
+              <option value="profit">利润弱</option>
+              <option value="fulfillment">履约风险</option>
+              <option value="scale">可放大</option>
+            </select>
+            <button class="btn btn-outline" id="sync-sku-api-btn">同步 Seller API SKU</button>
+            <button class="btn btn-primary growth-action-btn" data-action="diagnose_sku_funnel">批量诊断</button>
+          </div>
+        </div>
+        <div class="grid-card">
+          <div class="card-header">
+            <h3>销售增长 SKU 队列</h3>
+            <span class="chart-tip">每一行都可以直接触发 AI 动作或加入 7 天实验</span>
+          </div>
+          <div class="card-body scrollable">
+            <table class="data-table sku-war-table">
+              <thead>
+                <tr>
+                  <th>SKU / 商品</th>
+                  <th>漏斗诊断</th>
+                  <th>销售额</th>
+                  <th>曝光</th>
+                  <th>加购率</th>
+                  <th>付款率</th>
+                  <th>毛利线</th>
+                  <th>AI 下一步</th>
+                  <th>动作</th>
+                </tr>
+              </thead>
+              <tbody id="sku-war-table-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- View: Opportunity Center -->
+      <section id="view-opportunities" class="view-pane">
+        <div class="workbench-toolbar">
+          <div>
+            <h2>机会中心</h2>
+            <p>把选品、竞品、差评、季节趋势和寻源套利统一成可执行机会卡。</p>
+          </div>
+          <div class="toolbar-actions">
+            <button class="btn btn-primary growth-action-btn" data-action="find_expansion_opportunities">发现扩品机会</button>
+            <button class="btn btn-outline growth-action-btn" data-action="scan_competitor_changes">扫描竞品机会</button>
+          </div>
+        </div>
+        <div class="opportunity-grid" id="opportunity-card-grid"></div>
+      </section>
+
+      <!-- View: Growth Experiments -->
+      <section id="view-experiments" class="view-pane">
+        <div class="workbench-toolbar">
+          <div>
+            <h2>增长实验</h2>
+            <p>所有 AI 建议都进入观察周期，用数据复盘是否真的提升销售。</p>
+          </div>
+          <div class="toolbar-actions">
+            <button class="btn btn-primary" id="create-manual-experiment-btn">新增实验</button>
+            <button class="btn btn-outline growth-action-btn" data-action="review_experiment_result">一键复盘</button>
+          </div>
+        </div>
+        <div class="experiment-board">
+          <div class="experiment-column">
+            <h3>待执行</h3>
+            <div id="experiment-todo" class="experiment-list"></div>
+          </div>
+          <div class="experiment-column">
+            <h3>执行中</h3>
+            <div id="experiment-running" class="experiment-list"></div>
+          </div>
+          <div class="experiment-column">
+            <h3>观察中</h3>
+            <div id="experiment-observing" class="experiment-list"></div>
+          </div>
+          <div class="experiment-column">
+            <h3>已复盘</h3>
+            <div id="experiment-reviewed" class="experiment-list"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- View: Pipeline (Sourcing & Arbitrage) -->
+      <section id="view-pipeline" class="view-pane">
+        <div class="grid-card">
+          <div class="card-header filters-bar">
+            <div style="font-weight: 600; font-size: 15px; color: var(--text1);">1688 跨境寻源与卢布财务套利库</div>
+            <input type="text" id="pipeline-search" class="form-input search-input" style="max-width: 250px;" placeholder="搜索商品名称...">
+          </div>
+          <div class="card-body scrollable">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>商品图</th>
+                  <th>Ozon 对标商品</th>
+                  <th>1688 供应商货源</th>
+                  <th>采购价 (CNY)</th>
+                  <th>预估运费+关税 (RUB)</th>
+                  <th>Ozon 建议售价 (RUB)</th>
+                  <th>预估净利率</th>
+                  <th>规格审计</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="pipeline-table-body">
+                <tr>
+                  <td colspan="9" class="empty-cell">
+                    <div class="empty-state">暂无对齐货源，请在 Ozon 详情页开启“1688寻源与套利测算”AI技能。</div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- View: Tracker (Optimization Phases Tracker) -->
+      <section id="view-tracker" class="view-pane">
+        <div class="tracker-layout">
+          <!-- Left side list of tracked products -->
+          <div class="tracker-list-card">
+            <div class="sidebar-title">已绑定跟踪商品</div>
+            <div class="tracked-list" id="tracked-products-list">
+              <div class="empty-state">暂无跟踪商品，请在商品页浮窗点击“追踪此商品”</div>
+            </div>
+          </div>
+          
+          <!-- Right side phase timeline & chart comparison -->
+          <div class="tracker-detail-card scrollable">
+            <div id="tracker-detail-placeholder" class="empty-state" style="padding-top: 100px;">
+              请在左侧选择已绑定的商品，以查看优化阶段追踪及成效对比。
+            </div>
+            <div id="tracker-detail-content" class="hidden">
+              <div class="detail-header-block">
+                <h2 id="tracked-item-title">商品名称</h2>
+                <div class="meta-row">
+                  <span id="tracked-item-date">注册日期: --</span>
+                  <a href="#" id="tracked-item-url" target="_blank">🔗 前往 Ozon 详情页</a>
+                </div>
+              </div>
+
+              <!-- Phase Timeline Section -->
+              <div class="chart-section-card" style="margin-bottom:20px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                  <h3 style="margin:0;">📈 运营优化阶段时间轴</h3>
+                  <button class="btn btn-primary btn-xs" id="add-phase-btn">➕ 新增优化阶段标记</button>
+                </div>
+                <div class="timeline-container" id="phases-timeline-list" style="margin-top:10px; max-height:220px; overflow-y:auto; padding-right:4px;">
+                  <!-- Timeline items injected dynamically via JS -->
+                </div>
+              </div>
+
+              <!-- Metrics Graphs -->
+              <div class="chart-section-card">
+                <h3>📊 卖家 API 多阶段数据对比 (曝光/转化/销量)</h3>
+                <div style="display:flex; justify-content:space-between; margin-bottom:12px; gap:8px;">
+                  <span class="chart-tip">折线时间轴将自动合并您的运营阶段标记，评估边际增长</span>
+                  <button class="btn btn-outline btn-xs" id="mock-api-data-btn">✨ 录入/更新 API 数据</button>
+                </div>
+                <div class="chart-container-row">
+                  <div class="chart-box">
+                    <span class="chart-title-lbl">月销量波动与优化事件点</span>
+                    <canvas id="tracker-sales-chart" style="width: 100%; height: 180px; background:var(--bg3); border-radius:8px;"></canvas>
+                  </div>
+                  <div class="chart-box">
+                    <span class="chart-title-lbl">加购转化率 (Conv to Cart %)</span>
+                    <canvas id="tracker-conv-chart" style="width: 100%; height: 180px; background:var(--bg3); border-radius:8px;"></canvas>
+                  </div>
+                </div>
+              </div>
+              <div class="ai-audit-card">
+                <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:12px;">
+                  <h3 style="margin:0; font-size:13px;">AI 阶段复盘</h3>
+                  <button class="btn btn-primary btn-xs" id="run-tracker-ai-btn">一键复盘本轮优化</button>
+                </div>
+                <div class="ai-report-body" id="tracker-ai-report-text">选择商品后可复盘曝光、加购、订单和干扰项，生成下一轮实验建议。</div>
+              </div>
+            </div> <!-- tracker-detail-content -->
+          </div> <!-- tracker-detail-card -->
+        </div> <!-- tracker-layout -->
+      </section> <!-- view-tracker -->
+
+      <!-- View: Store Performance (Ozon Seller API) -->
+      <section id="view-store" class="view-pane">
+        <div class="store-grid">
+          <!-- Left side Store Stats -->
+          <div class="store-main-column col-span-2">
+            <div class="grid-card" style="margin-bottom:20px;">
+              <div class="card-header">
+                <h3>📦 卖家订单待履约雷达 (FBS / FBO)</h3>
+                <div class="store-date-toolbar">
+                  <label>查询日期</label>
+                  <input type="date" id="store-api-date-from" class="form-input">
+                  <span>至</span>
+                  <input type="date" id="store-api-date-to" class="form-input">
+                  <button id="store-api-query-btn" class="btn btn-outline">查询</button>
+                </div>
+              </div>
+              <div class="card-body store-orders-body">
+                <table class="data-table store-orders-table">
+                  <thead>
+                    <tr>
+                      <th>订单号</th>
+                      <th>商品 SKU</th>
+                      <th>数量</th>
+                      <th>支付金额 (RUB)</th>
+                      <th>物流方式</th>
+                      <th>订单状态</th>
+                      <th>发货倒计时</th>
+                    </tr>
+                  </thead>
+                  <tbody id="store-orders-table">
+                    <tr>
+                      <td colspan="7" class="empty-cell">
+                        <div class="empty-state">暂无待发货订单，请绑定 Ozon 官方卖家 API 凭证以同步实时订单。</div>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            
+            <div class="grid-card" style="margin-bottom:20px;">
+              <div class="card-header">
+                <h3>📊 官方 API 店铺流量与加购转化看板 (Real-time Analytics)</h3>
+              </div>
+              <div class="card-body">
+                <div class="stats-row" style="display:flex; justify-content:space-around; gap:15px; flex-wrap:wrap; padding:5px 0;">
+                  <div class="stat-card" style="flex:1; min-width:130px; background:var(--bg-input); padding:12px; border-radius:8px; border:1px solid var(--border); text-align:center;">
+                    <div style="font-size:11px; color:var(--text-secondary); margin-bottom:5px;">店铺总访客 (Sessions)</div>
+                    <div style="font-size:18px; font-weight:bold; color:var(--text-primary);" id="api-sessions">8,420</div>
+                    <div style="font-size:10px; color:#10b981; margin-top:4px;">▲ 18.4% (上周环比)</div>
+                  </div>
+                  <div class="stat-card" style="flex:1; min-width:130px; background:var(--bg-input); padding:12px; border-radius:8px; border:1px solid var(--border); text-align:center;">
+                    <div style="font-size:11px; color:var(--text-secondary); margin-bottom:5px;">商品总浏览 (Views)</div>
+                    <div style="font-size:18px; font-weight:bold; color:var(--text-primary);" id="api-views">32,490</div>
+                    <div style="font-size:10px; color:#10b981; margin-top:4px;">▲ 12.1% (上周环比)</div>
+                  </div>
+                  <div class="stat-card" style="flex:1; min-width:130px; background:var(--bg-input); padding:12px; border-radius:8px; border:1px solid var(--border); text-align:center;">
+                    <div style="font-size:11px; color:var(--text-secondary); margin-bottom:5px;">加购转化率 (Cart Rate)</div>
+                    <div style="font-size:18px; font-weight:bold; color:#005bff;" id="api-cart-rate">3.8%</div>
+                    <div style="font-size:10px; color:var(--text-secondary); margin-top:4px;">处于行业均值</div>
+                  </div>
+                  <div class="stat-card" style="flex:1; min-width:130px; background:var(--bg-input); padding:12px; border-radius:8px; border:1px solid var(--border); text-align:center;">
+                    <div style="font-size:11px; color:var(--text-secondary); margin-bottom:5px;">买家付款率 (Order Rate)</div>
+                    <div style="font-size:18px; font-weight:bold; color:#10b981;" id="api-order-rate">1.2%</div>
+                    <div style="font-size:10px; color:#ef4444; margin-top:4px;">▼ 0.3% (提示需优化)</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="grid-card">
+              <div class="card-header">
+                <h3>⚖️ Ozon 平台类目佣金与物流费率占比</h3>
+              </div>
+              <div class="card-body">
+                <div class="fee-breakdown-row" style="display:flex; gap:20px; align-items:center;">
+                  <div style="flex:1;">
+                    <canvas id="store-fees-chart" style="width: 100%; height: 200px; background:var(--bg3); border-radius:8px;"></canvas>
+                  </div>
+                  <div style="width:200px; display:flex; flex-direction:column; gap:8px; font-size:12px;">
+                    <div style="display:flex; justify-content:space-between;"><span>类目佣金扣除:</span><strong style="color:#005bff">12%</strong></div>
+                    <div style="display:flex; justify-content:space-between;"><span>干线运费占比:</span><strong style="color:#ff005b">18%</strong></div>
+                    <div style="display:flex; justify-content:space-between;"><span>末端送达扣减:</span><strong style="color:#f59e0b">6%</strong></div>
+                    <div style="display:flex; justify-content:space-between;"><span>实际到手货款:</span><strong style="color:#10b981">64%</strong></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Right side Store API Credentials Info -->
+          <div class="store-sidebar-column">
+            <div class="grid-card" style="margin-bottom:20px;">
+              <div class="card-header">
+                <h3>🏢 Ozon 已绑定店铺列表</h3>
+              </div>
+              <div class="card-body scrollable" style="max-height: 220px; padding: 10px;">
+                <div id="dashboard-shop-list" style="display:flex; flex-direction:column; gap:8px;">
+                  <!-- Shop list items populated dynamically -->
+                  <div class="empty-state" style="padding:15px 0;">暂无绑定店铺，请在下方录入。</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="grid-card">
+              <div class="card-header">
+                <h3>➕ 添加绑定新店铺 API</h3>
+              </div>
+              <div class="card-body" style="padding: 12px;">
+                <form id="add-shop-form" style="display:flex; flex-direction:column; gap:10px;">
+                  <div>
+                    <label style="font-size:11px; color:var(--text-secondary); display:block; margin-bottom:4px;">店铺自定义名称</label>
+                    <input type="text" id="new-shop-name" placeholder="如: Надёжный 1号店" required style="width:100%; font-size:12px; padding:6px; border:1px solid var(--border); border-radius:4px; background:var(--bg-input); color:var(--text-primary);">
+                  </div>
+                  <div>
+                    <label style="font-size:11px; color:var(--text-secondary); display:block; margin-bottom:4px;">Client ID</label>
+                    <input type="text" id="new-shop-client-id" placeholder="Ozon Client ID" required style="width:100%; font-size:12px; padding:6px; border:1px solid var(--border); border-radius:4px; background:var(--bg-input); color:var(--text-primary);">
+                  </div>
+                  <div>
+                    <label style="font-size:11px; color:var(--text-secondary); display:block; margin-bottom:4px;">API Key</label>
+                    <input type="password" id="new-shop-api-key" placeholder="Ozon API Key" required style="width:100%; font-size:12px; padding:6px; border:1px solid var(--border); border-radius:4px; background:var(--bg-input); color:var(--text-primary);">
+                  </div>
+                  <div>
+                    <label style="font-size:11px; color:var(--text-secondary); display:block; margin-bottom:4px;">发货时效履约模式</label>
+                    <select id="new-shop-warehouse" style="width:100%; font-size:12px; padding:6px; border:1px solid var(--border); border-radius:4px; background:var(--bg-input); color:var(--text-primary);">
+                      <option value="FBS">FBS (跨境直邮/自发货模式)</option>
+                      <option value="FBO">FBO (俄罗斯官方仓库模式)</option>
+                    </select>
+                  </div>
+                  <button type="submit" class="btn btn-primary btn-block" style="font-size:12px; padding:8px;">➕ 绑定该店铺</button>
+                </form>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- View: Events -->
+      <section id="view-events" class="view-pane">
+        <div class="grid-card">
+          <div class="card-body scrollable">
+            <div class="events-timeline" id="events-timeline-container">
+              <div class="empty-state">暂无变化事件记录</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- View: Reports -->
+      <section id="view-reports" class="view-pane">
+        <div class="reports-container">
+          <div class="reports-sidebar">
+            <div class="sidebar-title">商业决策书列表</div>
+            <div class="reports-list" id="reports-list-container">
+              <div class="empty-state">暂无生成报告</div>
+            </div>
+          </div>
+          <div class="report-viewer card-body scrollable">
+            <div class="report-viewer-content" id="report-viewer-content">
+              <div class="empty-state">请在左侧选择决策报告进行查看，或在 Ozon 前台网页唤醒浮窗执行 AI 技能。</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- View: Tasks -->
+      <section id="view-tasks" class="view-tasks-pane view-pane">
+        <div class="grid-card" style="margin-bottom:20px;">
+          <div class="card-header">
+            <h3>➕ 添加新监控任务</h3>
+          </div>
+          <div class="card-body form-inline-row" style="flex-wrap: wrap; gap: 10px;">
+            <input type="text" id="task-url" class="form-input" style="flex: 2; min-width: 250px;" placeholder="输入 Ozon 商品详情 URL 或卖家店铺主页 URL">
+            <select id="task-target-type" class="form-select" style="flex: 1; min-width: 130px;">
+              <option value="item" selected>🎯 监控单款商品</option>
+              <option value="shop">🏪 监控全店商品</option>
+            </select>
+            <select id="task-shop-nature" class="form-select" style="flex: 1; min-width: 130px;">
+              <option value="competitor" selected>🕵️ 第三方竞品</option>
+              <option value="self">🏢 自营店 (API关联)</option>
+            </select>
+            <select id="task-freq" class="form-select" style="flex: 1; min-width: 140px;">
+              <option value="15m">每 15 分钟 (爆品防变价)</option>
+              <option value="1h">每 1 小时</option>
+              <option value="6h" selected>每 6 小时 (日常变化)</option>
+              <option value="24h">每 24 小时</option>
+            </select>
+            <button id="add-task-btn" class="btn btn-primary">添加监控</button>
+          </div>
+        </div>
+
+        <div class="grid-card">
+          <div class="card-header">
+            <h3>⚙️ 自动感知监控列表 (Scheduled Tasks)</h3>
+          </div>
+          <div class="card-body scrollable">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>类型</th>
+                  <th>监控目标 URL</th>
+                  <th>运行频率</th>
+                  <th>最后感知时间</th>
+                  <th>状态</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="tasks-table-body">
+                <tr>
+                  <td colspan="6" class="empty-cell">
+                    <div class="empty-state">暂无监控任务</div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <button class="floating-settings-btn" id="floating-settings-btn" title="系统设置">系统设置</button>
+  <aside class="settings-drawer hidden" id="settings-drawer" aria-live="polite">
+    <div class="settings-drawer-head">
+      <div>
+        <h2>系统设置</h2>
+        <p>悬浮栏设置与系统级配置，不进入增长主流程。</p>
+      </div>
+      <button class="modal-close" id="settings-drawer-close">&times;</button>
+    </div>
+    <div class="settings-drawer-body">
+      <div class="workbench-toolbar compact">
+          <div>
+            <p>这里只保留影响插件运行的系统级配置。经营动作、报告、商品、竞品和实验都应回到增长工作流画布中推进。</p>
+          </div>
+          <div class="toolbar-actions">
+            <button class="btn btn-outline" id="settings-open-store">管理 API 数据</button>
+            <button class="btn btn-danger" id="settings-reset-all">重置本地数据</button>
+          </div>
+        </div>
+        <div class="settings-drawer-grid">
+          <div class="grid-card">
+            <div class="card-header">
+              <h3>业务端点审计摘要</h3>
+            </div>
+            <div class="card-body">
+              <div class="endpoint-audit-list" id="endpoint-audit-summary"></div>
+            </div>
+          </div>
+          <div class="grid-card">
+            <div class="card-header">
+              <h3>导航收敛原则</h3>
+            </div>
+            <div class="card-body">
+              <div class="empty-state" style="text-align:left; align-items:flex-start;">
+                左侧保留：增长工作流、API 数据、报告中心、系统任务。系统设置通过悬浮按钮打开。商品体检、机会雷达、执行复盘、竞品事件和利润线都应作为画布案件、任务或证据进入。
+              </div>
+            </div>
+          </div>
+        </div>
+    </div>
+  </aside>
+
+  <!-- Detail Dialog / Modal for Trend Charts -->
+  <div id="detail-modal" class="modal-overlay hidden">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="modal-title">趋势历史</h3>
+        <button id="close-modal-btn" class="modal-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div id="trend-summary" style="margin-bottom: 15px; font-size:13px; color:var(--text2);"></div>
+        <div class="trend-section" style="margin-bottom: 20px;">
+          <canvas id="trend-canvas" width="540" height="220" style="background:var(--bg3); border-radius:var(--radius-sm); border:1px solid var(--border); width: 100%; height: 220px;"></canvas>
+        </div>
+        <div class="trend-section">
+          <h4>数据快照明细</h4>
+          <div class="history-list scrollable" id="history-items-container">
+            <div class="empty-state">暂无历史快照</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add Stage Modal -->
+  <div id="add-stage-modal" class="modal-overlay hidden">
+    <div class="modal-content" style="max-width:400px;">
+      <div class="modal-header">
+        <h3>添加优化阶段标记</h3>
+        <button id="close-stage-modal-btn" class="modal-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group" style="margin-bottom:12px;">
+          <label class="form-label">阶段名称</label>
+          <input type="text" id="new-stage-name" class="form-input" placeholder="例如: 替换为高清大字首图">
+        </div>
+        <div class="form-group" style="margin-bottom:12px;">
+          <label class="form-label">日期</label>
+          <input type="date" id="new-stage-date" class="form-input">
+        </div>
+        <div class="form-group" style="margin-bottom:12px;">
+          <label class="form-label">备注说明</label>
+          <textarea id="new-stage-note" class="form-input" style="height:60px; resize:none;" placeholder="简述做出的调整内容..."></textarea>
+        </div>
+        <button id="save-stage-btn" class="btn btn-primary btn-block">确定添加</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Load core scripts -->
+  <script src="libs/dompurify.min.js"></script>
+  <script src="libs/marked.min.js"></script>
+  <script src="dashboard.js"></script>
+</body>
+</html>

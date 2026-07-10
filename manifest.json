@@ -1,23 +1,20 @@
 {
   "manifest_version": 3,
-  "name": "__MSG_extName__",
+  "name": "Ozon 跨境电商运营 AI 助手",
   "version": "1.1.0",
-  "description": "__MSG_extDescription__",
+  "description": "针对 Ozon 平台的智能跨境电商运营与选品套利工具。",
   "default_locale": "zh_CN",
   "permissions": [
     "activeTab",
     "scripting",
     "storage",
-    "sidePanel",
-    "tabs"
+    "tabs",
+    "alarms"
   ],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js",
     "type": "module"
-  },
-  "side_panel": {
-    "default_path": "sidepanel.html"
   },
   "action": {
     "default_title": "__MSG_actionTitle__",
@@ -34,9 +31,15 @@
   },
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
+      "matches": [
+        "*://*.ozon.ru/*",
+        "*://*.ozon.com/*",
+        "*://seller.ozon.ru/*",
+        "*://*.1688.com/*"
+      ],
       "js": ["content.js"],
-      "run_at": "document_end"
+      "run_at": "document_end",
+      "all_frames": true
     }
   ],
   "web_accessible_resources": [

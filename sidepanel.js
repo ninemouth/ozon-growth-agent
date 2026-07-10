@@ -6,6 +6,8 @@ let isRunning = false;
 let currentResultObj = null;
 let currentExcelData = null;
 let pastedTargetImageDataUrl = "";
+let activeGrowthAction = null;
+let availableSkills = [];
 
 const MODEL_HINTS = {
   openai: ["gpt-5.2-omni", "gpt-4o", "gpt-4o-mini", "o1-mini", "o3-mini"],
@@ -29,6 +31,69 @@ const PROVIDER_LINKS = {
   qwen: "https://dashscope.console.aliyun.com/apiKey",
   siliconflow: "https://cloud.siliconflow.cn/account/ak",
   groq: "https://console.groq.com/keys"
+};
+
+const GROWTH_ACTIONS = {
+  diagnose_store_growth: {
+    label: "全店体检",
+    skillId: "ozon_global_shop_optimizer",
+    instruction: "一键体检当前 Ozon 店铺增长瓶颈。请按曝光、点击、加购、付款、利润、履约、评分和商品结构输出优先级行动清单；必须区分真实页面/API证据、AI推断和待验证假设。",
+  },
+  diagnose_sku_funnel: {
+    label: "SKU 漏斗诊断",
+    skillId: "ozon_operations_tracker",
+    instruction: "诊断当前 Ozon SKU 的销售漏斗瓶颈。请区分曝光弱、点击弱、加购弱、付款弱、利润弱、履约风险和评论风险，并给出下一步实验动作。",
+  },
+  rewrite_listing: {
+    label: "Listing 改版",
+    skillId: "ozon_listing_generator",
+    instruction: "基于当前 Ozon 页面或 Dashboard 选中的 SKU，生成俄语 SEO 标题、主图卖点文案、详情页描述和 Характеристики 补齐建议。",
+  },
+  diagnose_visual_conversion: {
+    label: "首图诊断",
+    skillId: "ozon_global_shop_optimizer",
+    instruction: "诊断当前商品首图和画廊视觉转化力。请检查俄语卖点、中文残留、工厂图痕迹、规格表达、信任元素和竞品首图差距，并输出三种改版方向。",
+  },
+  scan_competitor_changes: {
+    label: "竞品扫描",
+    skillId: "ozon_global_shop_optimizer",
+    instruction: "扫描当前竞品或店铺页面的价格、主图、评论、断货、促销和关键词变化，输出跟价、避战、抢量、反打评论痛点的机会卡。",
+  },
+  analyze_review_defects: {
+    label: "评论缺陷",
+    skillId: "ozon_review_analyzer",
+    instruction: "分析俄罗斯买家评论与退换货风险，归因质量、包装、说明、规格、物流和预期差距，并生成产品改良任务。",
+  },
+  calculate_profit_guardrail: {
+    label: "利润安全线",
+    skillId: "ozon_sourcing_finder",
+    instruction: "测算当前 Ozon 商品的建议售价、最低促销价、利润保护价、FBS/FBO 成本边界和是否需要独立寻源降本。",
+  },
+  filter_supplier_sources: {
+    label: "货源筛选",
+    skillId: "ozon_sourcing_finder",
+    instruction: "基于当前 Ozon 商品、候选扩品方向或平台趋势机会筛选国内供应商货源。请重点验证同款/相似款图片匹配、规格一致、起批量、采购价、跨境物流、Ozon 佣金、关税和 RUB 净利润率；未获得真实供应商详情页时不得输出采购直达链接。",
+  },
+  detect_fulfillment_risk: {
+    label: "履约风险",
+    skillId: "ozon_operations_tracker",
+    instruction: "扫描待发货倒计时、FBS/FBO 履约风险、断货风险、补货优先级和库存积压 SKU。",
+  },
+  find_expansion_opportunities: {
+    label: "扩品机会",
+    skillId: "ozon_product_opportunity_explorer",
+    instruction: "从当前店铺、竞品、季节需求、差评痛点和供应链套利角度发现可上架或可小批测试的 Ozon 扩品机会。",
+  },
+  explore_platform_trends: {
+    label: "平台趋势",
+    skillId: "ozon_product_opportunity_explorer",
+    instruction: "扫描当前 Ozon 搜索、类目、品牌或热卖页面的平台商品机会和趋势窗口，识别价格带、评价门槛、头部商品共性、俄语关键词、季节性需求、Yandex/Google RU/Google Trends 证据或待验证假设；不要直接输出本店扩品执行清单。",
+  },
+  review_experiment_result: {
+    label: "实验复盘",
+    skillId: "ozon_operations_tracker",
+    instruction: "复盘 Dashboard 增长实验，比较优化前后曝光、加购、订单、利润和履约指标，判断成功、无效或需二次优化；没有真实日期窗口时必须标注待验证。",
+  },
 };
 
 // ── DOM refs ──
@@ -79,6 +144,8 @@ function applyI18n() {
   if (tipsBtn) tipsBtn.title = t("advancedTipsTitle", "指令高级玩法");
   const libraryBtn = $("libraryBtn");
   if (libraryBtn) libraryBtn.title = t("libraryTitle", "结果库");
+  const dashboardBtn = $("dashboardBtn");
+  if (dashboardBtn) dashboardBtn.title = t("dashboardTitle", "监控看板");
   const settingsBtn = $("settingsBtn");
   if (settingsBtn) settingsBtn.title = t("settingsTitle", "LLM 配置");
   setElementText(".run-btn-text", "runSkill", "执行 Skill");
@@ -111,6 +178,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   showView("main");
   applyI18n();
   await loadSkills();
+  await loadGrowthActionQueue();
   await updatePageInfo();
   await loadSettings();
   bindEvents();
@@ -128,6 +196,7 @@ async function loadSkills() {
       return;
     }
 
+    availableSkills = response.skills;
     skillList.innerHTML = "";
     response.skills.forEach((skill) => {
       const card = document.createElement("div");
@@ -143,6 +212,9 @@ async function loadSkills() {
       `;
       card.addEventListener("click", (e) => {
         e.stopPropagation();
+        activeGrowthAction = null;
+        $("growthModeBadge").textContent = "手动 Skill";
+        document.querySelectorAll(".growth-action-btn").forEach((btn) => btn.classList.remove("active"));
         selectSkill(skill, card);
         toggleDropdown(false);
       });
@@ -157,6 +229,22 @@ async function loadSkills() {
   } catch (err) {
     selectedContainer.innerHTML = `<div class="skill-loading">⚠ ${err.message}</div>`;
   }
+}
+
+function findSkillById(skillId) {
+  return availableSkills.find(skill => skill.id === skillId) || null;
+}
+
+function cssAttrEscape(value) {
+  return String(value || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+function selectSkillById(skillId) {
+  const skill = findSkillById(skillId);
+  if (!skill) return false;
+  const card = document.querySelector(`#skillList .skill-card[data-skill-path="${cssAttrEscape(skill.path)}"]`);
+  selectSkill(skill, card);
+  return true;
 }
 
 function selectSkill(skill, cardEl) {
@@ -188,10 +276,66 @@ function selectSkill(skill, cardEl) {
   $("runBtn").disabled = false;
 }
 
+async function loadGrowthActionQueue() {
+  const queue = $("growthActionQueue");
+  if (!queue) return;
+  const data = await new Promise((r) => chrome.storage.local.get(["growthActionRuns", "activeShopId", "ozonShops"], r));
+  const shops = data.ozonShops || [];
+  const activeShop = shops.find(shop => shop.id === data.activeShopId);
+  const runs = (data.growthActionRuns || [])
+    .filter(run => !run.shopId || !data.activeShopId || run.shopId === data.activeShopId)
+    .slice(0, 4);
+
+  $("sidepanelDataLedger").textContent = activeShop
+    ? `活动店铺：${activeShop.name}；前台页面实时读取，Seller API 由 Dashboard 同步，AI 推断必须在报告证据账本中标注。`
+    : "未绑定活动店铺；当前仅可读取前台页面，本地示例/推断不得作为真实经营证据。";
+
+  if (!runs.length) {
+    queue.innerHTML = `<div class="growth-queue-empty">Dashboard 创建的一键动作会出现在这里。</div>`;
+    return;
+  }
+  queue.innerHTML = runs.map(run => `
+    <button class="growth-queue-item" data-action="${escapeHtml(run.actionId)}" data-run-id="${escapeHtml(run.id)}">
+      <span>${escapeHtml(run.title || "增长动作")}</span>
+      <small>${escapeHtml(run.sku || "店铺级")} · ${new Date(run.createdAt || Date.now()).toLocaleTimeString()}</small>
+    </button>
+  `).join("");
+  queue.querySelectorAll(".growth-queue-item").forEach((btn) => {
+    btn.addEventListener("click", () => activateGrowthAction(btn.dataset.action, btn.dataset.runId));
+  });
+}
+
+async function activateGrowthAction(actionId, runId = "") {
+  const action = GROWTH_ACTIONS[actionId];
+  if (!action) return;
+  activeGrowthAction = { id: actionId, ...action, runId };
+
+  selectSkillById(action.skillId);
+  $("instruction").value = action.instruction;
+  $("growthModeBadge").textContent = action.label;
+  document.querySelectorAll(".growth-action-btn").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.action === actionId);
+  });
+  $("runBtn").disabled = false;
+  $("runBtn").querySelector(".run-btn-text").textContent = `运行：${action.label}`;
+
+  if (runId) {
+    const stored = await new Promise((r) => chrome.storage.local.get(["growthActionRuns"], r));
+    const runs = stored.growthActionRuns || [];
+    const match = runs.find(run => run.id === runId);
+    if (match) {
+      match.status = "selected_in_sidepanel";
+      match.selectedAt = new Date().toISOString();
+      await new Promise((r) => chrome.storage.local.set({ growthActionRuns: runs }, r));
+    }
+  }
+}
+
 function isImageSourcingSkill(skill) {
   return !!skill && [
     "domestic_sourcing_finder",
-    "tiktok_shop_fastmoss_analyzer"
+    "tiktok_shop_fastmoss_analyzer",
+    "ozon_sourcing_finder"
   ].includes(skill.id);
 }
 
@@ -313,7 +457,7 @@ async function runSkill() {
   $("streamOutput").textContent = "";
   $("streamOutput").classList.add("hidden");
 
-  addLog("start", "🚀", `执行 Skill: ${selectedSkill.name}`);
+    addLog("start", "🚀", activeGrowthAction ? `执行增长动作: ${activeGrowthAction.label}` : `执行 Skill: ${selectedSkill.name}`);
 
   try {
     // Check API key first
@@ -328,7 +472,7 @@ async function runSkill() {
     addLog("info", "📖", `建立 Agent 通信连接...`);
     
     // Connect to background Service Worker via Port
-    activePort = chrome.runtime.connect({ name: "agent-loop" });
+    activePort = chrome.runtime.connect({ name: "ozon-agent-loop" });
 
     // Start active pinging using one-time message (chrome.runtime.sendMessage) 
     // to reset MV3 Service Worker's idle timer, as port.postMessage does not count as activity in Chrome's idle timer.
@@ -346,8 +490,13 @@ async function runSkill() {
         if (msg) {
           if (msg.type === "tool_call") {
             addLog("info", "⚙️", `调用工具: ${msg.toolName}`);
-          } else if (msg.type === "reflection") {
-            addLog("warning", "🕵️", msg.message);
+          } else if (msg.type === "reflection" || msg.type === "thinking") {
+            let emoji = "🕵️";
+            const txt = msg.message || "";
+            if (txt.includes("自动化") || txt.includes("流程")) emoji = "🔄";
+            if (txt.includes("数据") || txt.includes("同步")) emoji = "💾";
+            if (txt.includes("AI") || txt.includes("审计")) emoji = "🤖";
+            addLog("warning", emoji, txt);
           } else if (msg.type === "streaming") {
             const streamEl = $("streamOutput");
             streamEl.classList.remove("hidden");
@@ -362,6 +511,9 @@ async function runSkill() {
       } else if (message.type === "SUCCESS") {
         if (typeof removeCaptchaAlertBanner === "function") removeCaptchaAlertBanner();
         addLog("success", "✅", `完成 (${message.result.steps || "?"} 步)`);
+        if (selectedSkill && (selectedSkill.id === "ecommerce_monitor" || selectedSkill.id === "tiktok_shop_monitor")) {
+          addLog("success", "📊", "监控数据处理成功！您可以点击顶部监控大盘查看折线图与变动分析。");
+        }
         showResult(message.result);
         cleanupPort();
       } else if (message.type === "ERROR") {
@@ -407,6 +559,7 @@ async function runSkill() {
     activePort.postMessage({
       type: "RUN_SKILL",
       skillPath: selectedSkill.path,
+      growthActionId: activeGrowthAction?.id || "",
       userInstruction: userInstruction,
       targetImageUrl,
       continueSession: $("continueSessionCheckbox").checked,
@@ -446,7 +599,7 @@ function showResult(response) {
   let jsonStr = "";
   
   // Store raw result for downloading
-  currentResultObj = typeof response.result === "string" ? { overview: response.result } : response.result;
+  currentResultObj = normalizeFinalOutput(response.result);
 
   if (response.type === "text") {
     jsonStr = response.result;
@@ -470,12 +623,7 @@ function showResult(response) {
       const formatted = syntaxHighlightJSON(jsonStr);
       content.innerHTML = formatted;
       
-      let rawData = typeof response.result === "string" ? JSON.parse(response.result) : response.result;
-      
-      // Flatten the output wrapper if it exists (e.g. { type: "final", output: { overview, analysis, summary, data } })
-      if (rawData && rawData.output && typeof rawData.output === "object" && !Array.isArray(rawData.output)) {
-        rawData = { ...rawData, ...rawData.output };
-      }
+      let rawData = normalizeFinalOutput(typeof response.result === "string" ? JSON.parse(response.result) : response.result);
       currentResultObj = rawData;
       
       // Check if there are guide overlays to render in active page
@@ -542,17 +690,50 @@ function showResult(response) {
       }
       
       if (hasReport) {
-        $("viewReportBtn").click();
+        if ($("viewReportBtn")) $("viewReportBtn").click();
       } else if (!hasReport && (!targetArray || targetArray.length === 0)) {
-        $("viewJsonBtn").click();
+        if ($("viewDataBtn")) $("viewDataBtn").click();
       }
     } catch (_) {
-      content.textContent = JSON.stringify(response.result, null, 2);
+      const fallback = normalizeFinalOutput(response.result);
+      content.textContent = typeof fallback === "string" ? fallback : JSON.stringify(fallback, null, 2);
       grid.innerHTML = `<div style="padding: 12px; color: var(--text2);">解析失败。</div>`;
-      report.innerHTML = `<div style="padding: 12px; color: var(--text2);">解析失败。</div>`;
-      $("viewJsonBtn").click();
+      if (fallback && typeof fallback === "object" && (fallback.overview || fallback.analysis || fallback.summary)) {
+        report.innerHTML = sanitizeHtml(renderReport(fallback));
+      } else {
+        report.innerHTML = `<div style="padding: 12px; color: var(--text2);">解析失败。</div>`;
+      }
+      if ($("viewReportBtn")) $("viewReportBtn").click();
     }
   }
+}
+
+function normalizeFinalOutput(value) {
+  let current = value;
+  for (let i = 0; i < 4; i += 1) {
+    if (typeof current === "string") {
+      const trimmed = current.trim();
+      if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) {
+        return { overview: current };
+      }
+      try {
+        current = JSON.parse(trimmed);
+        continue;
+      } catch (_) {
+        return { overview: current };
+      }
+    }
+    if (current && typeof current === "object" && current.type === "final" && current.output && typeof current.output === "object") {
+      current = current.output;
+      continue;
+    }
+    if (current && typeof current === "object" && current.result && typeof current.result === "object") {
+      current = current.result;
+      continue;
+    }
+    break;
+  }
+  return current && typeof current === "object" ? current : { overview: String(current || "") };
 }
 
 function renderMarkdown(text) {
@@ -835,7 +1016,7 @@ function syntaxHighlightJSON(json) {
 // ── Save Result ──
 async function saveCurrentResult() {
   const content = $("resultContent");
-  if (!content.textContent.trim()) return;
+  if (!content.textContent.trim() && !currentResultObj) return;
 
   try {
     const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -848,9 +1029,10 @@ async function saveCurrentResult() {
       id: Date.now(),
       createdAt: new Date().toISOString(),
       skillName: selectedSkill?.name || "Unknown Skill",
+      skillId: selectedSkill?.id || selectedSkill?.path || "",
       url: tab?.url || "",
       pageTitle: tab?.title || "",
-      result: maskApiKeys(content.textContent),
+      result: maskSensitiveData(currentResultObj || content.textContent),
     });
     await new Promise((r) => chrome.storage.local.set({ savedResults: savedResults.slice(0, 100) }, r));
 
@@ -1069,6 +1251,10 @@ async function saveSettings() {
 // ── Events ──
 function bindEvents() {
   $("runBtn").addEventListener("click", runSkill);
+
+  document.querySelectorAll(".growth-action-btn").forEach((btn) => {
+    btn.addEventListener("click", () => activateGrowthAction(btn.dataset.action));
+  });
   
   $("skillDropdownTrigger").addEventListener("click", () => toggleDropdown());
   document.addEventListener("click", (e) => {
@@ -1079,6 +1265,9 @@ function bindEvents() {
   });
 
   $("settingsBtn").addEventListener("click", () => showView("settings"));
+  $("dashboardBtn").addEventListener("click", () => {
+    chrome.runtime.sendMessage({ type: "OPEN_DASHBOARD" });
+  });
   $("backFromSettings").addEventListener("click", () => showView("main"));
 
   $("libraryBtn").addEventListener("click", () => {
@@ -1118,7 +1307,9 @@ function bindEvents() {
   });
 
   $("copyBtn").addEventListener("click", () => {
-    const text = maskApiKeys($("resultContent").textContent);
+    const text = currentResultObj
+      ? convertResultToMarkdown(maskSensitiveData(currentResultObj)) || JSON.stringify(maskSensitiveData(currentResultObj), null, 2)
+      : maskApiKeys($("resultContent").textContent);
     navigator.clipboard.writeText(text);
     $("copyBtn").textContent = "已复制 ✓";
     setTimeout(() => { $("copyBtn").textContent = t("copy", "复制"); }, 1500);

@@ -1,14 +1,14 @@
 {
   "extName": {
-    "message": "电商增长 Agent",
+    "message": "Ozon 电商运营 AI 助手",
     "description": "Chrome extension name"
   },
   "extDescription": {
-    "message": "基于大模型的 AI 电商增长引擎。支持全自动选品挖掘、竞品痛点分析、跨平台趋势监控与 Listing 智能生成。",
+    "message": "专为俄罗斯 Ozon 卖家打造的 AI 运营与选品增长引擎。支持多维选品、竞品对比、1688寻源套利计算、俄语 SEO Listing 生成与多阶段运营指标追踪。",
     "description": "Chrome extension description"
   },
   "actionTitle": {
-    "message": "打开电商增长 Agent",
+    "message": "打开 Ozon AI 助手",
     "description": "Toolbar action title"
   },
   "chooseSkill": {

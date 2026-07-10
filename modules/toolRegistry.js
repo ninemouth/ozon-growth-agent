@@ -1,8 +1,31 @@
 // modules/toolRegistry.js — Tool registry and content script bridge
 
 import { callLLM, getSettings, prepareCleanProductImage } from './llmClient.js';
+import { ozonGetProductList, ozonGetProductInfo, ozonGetAnalyticsData, ozonGetFbsPostingList, ozonGetFboPostingList, ozonGetStoreSnapshot } from './ozonApi.js';
 
 const preparedImageCache = new Map();
+
+export let currentSessionData = {
+  products: new Map(),
+  creatorInfo: null,
+  detailCreators: []
+};
+
+export function resetSessionData() {
+  currentSessionData = {
+    products: new Map(),
+    creatorInfo: null,
+    detailCreators: []
+  };
+}
+
+export function getAccumulatedSessionData() {
+  return {
+    items: Array.from(currentSessionData.products.values()),
+    creatorInfo: currentSessionData.creatorInfo,
+    detailCreators: currentSessionData.detailCreators
+  };
+}
 
 async function getCurrentTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -78,27 +101,46 @@ async function sendToContentScript(tabId, message) {
     throw err;
   }
 
-  try {
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      files: ["content.js"],
-    });
-  } catch (err) {
-    if (err.message && (err.message.includes("Cannot access") || err.message.includes("restricted"))) {
-      throw new Error("由于安全策略，当前网页无法注入脚本。请切换到普通电商网页再试。");
-    }
-    // Already injected or other minor issues, ignore
-  }
+  const sendMessagePromise = () => {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error("Content script response timeout"));
+      }, 6000);
 
-  return new Promise((resolve, reject) => {
-    chrome.tabs.sendMessage(tabId, message, (response) => {
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message));
-      } else {
-        resolve(response);
-      }
+      chrome.tabs.sendMessage(tabId, message, (response) => {
+        clearTimeout(timer);
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+        } else {
+          resolve(response);
+        }
+      });
     });
-  });
+  };
+
+  try {
+    return await sendMessagePromise();
+  } catch (err) {
+    const isConnErr = err.message.includes("Receiving end does not exist") || 
+                      err.message.includes("context invalidated") ||
+                      err.message.includes("timeout");
+    if (isConnErr) {
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId },
+          files: ["content.js"],
+        });
+        return await sendMessagePromise();
+      } catch (injectErr) {
+        if (injectErr.message && (injectErr.message.includes("Cannot access") || injectErr.message.includes("restricted"))) {
+          throw new Error("由于安全策略，当前网页无法注入脚本。请切换到普通电商网页再试。");
+        }
+        throw injectErr;
+      }
+    } else {
+      throw err;
+    }
+  }
 }
 
 async function _captureTabScreenshot(tabId) {
@@ -268,9 +310,44 @@ export const tools = {
   read_current_page: async () => {
     const tab = await getCurrentTab();
     if (!tab) throw new Error("No active tab found");
-    const result = await sendToContentScript(tab.id, { type: "READ_CURRENT_PAGE" });
+    
+    let cachedSelectors = null;
+    try {
+      const domain = new URL(tab.url).hostname;
+      const storage = await new Promise((r) => chrome.storage.local.get(["platformMemory"], r));
+      const memory = storage.platformMemory || {};
+      cachedSelectors = memory[domain] || null;
+    } catch (_) {}
+
+    const result = await sendToContentScript(tab.id, { 
+      type: "READ_CURRENT_PAGE",
+      cachedSelectors
+    });
     if (!result?.ok) throw new Error(result?.error || "Failed to read page");
-    return result.data;
+
+    const pageData = result.data || {};
+    if (Array.isArray(pageData.productCards)) {
+      for (const card of pageData.productCards) {
+        if (card.href && card.title) {
+          currentSessionData.products.set(card.href, {
+            ...card,
+            captured_at: new Date().toISOString()
+          });
+        }
+      }
+    }
+    if (pageData.creatorInfo) {
+      currentSessionData.creatorInfo = pageData.creatorInfo;
+    }
+    if (Array.isArray(pageData.detailCreators)) {
+      for (const dc of pageData.detailCreators) {
+        if (dc.username && !currentSessionData.detailCreators.some(x => x.username === dc.username)) {
+          currentSessionData.detailCreators.push(dc);
+        }
+      }
+    }
+
+    return pageData;
   },
 
   extract_product_info: async () => {
@@ -333,6 +410,20 @@ export const tools = {
       await new Promise(r => setTimeout(r, 2500));
     }
     return result;
+  },
+
+  scroll_page: async (args) => {
+    const { direction = "down", amount = 800 } = args || {};
+    const tab = await getCurrentTab();
+    if (!tab) throw new Error("No active tab found");
+    const result = await sendToContentScript(tab.id, {
+      type: "SCROLL_PAGE",
+      direction,
+      amount
+    });
+    if (!result?.ok) throw new Error(result?.error || "Failed to scroll page");
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    return { ok: true, message: `Scrolled ${direction} by ${amount}px` };
   },
 
   open_url: async (args) => {
@@ -551,10 +642,10 @@ export const tools = {
     if (!query) throw new Error("query is required");
     
     let targetQuery = query;
-    const isForeignPlatform = ["amazon", "etsy", "google", "bing"].includes(engine);
+    const isForeignPlatform = ["amazon", "etsy", "google", "google_ru", "google_trends", "bing", "yandex", "ozon"].includes(engine);
     const hasChinese = /[\u4e00-\u9fa5]/.test(query);
 
-    if (isForeignPlatform && (hasChinese || engine === "etsy" || engine === "amazon")) {
+    if (isForeignPlatform && (hasChinese || engine === "etsy" || engine === "amazon" || engine === "yandex" || engine === "ozon" || engine === "google_trends" || engine === "google_ru")) {
       try {
         console.log(`Localizing query "${query}" for ${engine}...`);
         const messages = [
@@ -582,9 +673,13 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
 
     const engines = {
       google: `https://www.google.com/search?q=${encodeURIComponent(targetQuery)}`,
+      google_ru: `https://www.google.com/search?q=${encodeURIComponent(targetQuery)}&hl=ru&gl=ru`,
+      google_trends: `https://trends.google.com/trends/explore?date=today%2012-m&geo=RU&q=${encodeURIComponent(targetQuery)}`,
       bing: `https://www.bing.com/search?q=${encodeURIComponent(targetQuery)}`,
       amazon: `https://www.amazon.com/s?k=${encodeURIComponent(targetQuery)}`,
       etsy: `https://www.etsy.com/search?q=${encodeURIComponent(targetQuery)}`,
+      yandex: `https://yandex.ru/search/?text=${encodeURIComponent(targetQuery)}`,
+      ozon: `https://www.ozon.ru/search/?text=${encodeURIComponent(targetQuery)}&from_global=true`,
       taobao: `https://s.taobao.com/search?q=${encodeURIComponent(targetQuery)}&_input_charset=utf-8`,
       jd: `https://search.jd.com/Search?keyword=${encodeURIComponent(targetQuery)}&enc=utf-8`,
       pinduoduo: `https://mobile.yangkeduo.com/search_result.html?search_key=${encodeURIComponent(targetQuery)}`,
@@ -993,8 +1088,8 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
               clearInterval(poll);
               setTimeout(async () => {
                 try {
-                  const data = await sendToContentScript(tab.id, { type: "READ_CURRENT_PAGE" });
-                  resolve({ ok: true, tabId: tab.id, pageData: data?.data || "" });
+                  const data = await tools.read_current_page();
+                  resolve({ ok: true, tabId: tab.id, pageData: data || "" });
                 } catch (err) {
                   resolve({ ok: true, tabId: tab.id, pageData: "Failed to read DOM (Script injection restricted)" });
                 }
@@ -1145,3 +1240,531 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
     }
   },
 };
+
+// ── Ecommerce Monitor Helper Functions ──
+function generateHash(str) {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = (hash << 5) - hash + char;
+    hash = hash & hash;
+  }
+  return Math.abs(hash).toString(36);
+}
+
+function parsePrice(priceStr) {
+  if (priceStr === undefined || priceStr === null) return 0;
+  if (typeof priceStr === 'number') return priceStr;
+  const match = String(priceStr).replace(/[^\d.]/g, '');
+  const val = parseFloat(match);
+  return isNaN(val) ? 0 : val;
+}
+
+function parseSales(salesStr) {
+  if (salesStr === undefined || salesStr === null) return 0;
+  if (typeof salesStr === 'number') return salesStr;
+  let s = String(salesStr).toLowerCase().replace(/[^a-z0-9.+]/g, '');
+  let multiplier = 1;
+  if (s.includes('k')) {
+    multiplier = 1000;
+    s = s.replace('k', '');
+  } else if (s.includes('m')) {
+    multiplier = 1000000;
+    s = s.replace('m', '');
+  }
+  const val = parseFloat(s);
+  return isNaN(val) ? 0 : Math.round(val * multiplier);
+}
+
+function extractTikTokProductId(url) {
+  if (!url) return null;
+  const match = String(url).match(/\/product\/(\d+)/) || String(url).match(/\/t\/(\d+)/);
+  return match ? match[1] : null;
+}
+
+// ── Append Monitor Tools ──
+Object.assign(tools, {
+  monitor_process_page_data: async (args) => {
+    const { items = [], creatorInfo = null, shopInfo = null, detailCreators = [], platform = "tiktok", shopId = null } = args || {};
+
+    const activeShopStorage = await new Promise(res => chrome.storage.local.get(["activeShopId"], res));
+    const finalShopId = shopId || activeShopStorage.activeShopId || '';
+
+    const storage = await new Promise((resolve) =>
+      chrome.storage.local.get(
+        ["monitorEntities", "monitorSnapshots", "monitorChangeEvents"],
+        resolve
+      )
+    );
+
+    const entities = storage.monitorEntities || [];
+    const snapshots = storage.monitorSnapshots || [];
+    const changeEvents = storage.monitorChangeEvents || [];
+
+    const now = new Date().toISOString();
+    const newSnapshots = [];
+    const newChangeEvents = [];
+    let processedCount = 0;
+
+    const upsertEntity = (key, type, platformId, name, url, imageUrl, extra = {}) => {
+      let entity = entities.find((e) => e.entity_key === key);
+      if (!entity) {
+        entity = {
+          entity_key: key,
+          shopId: finalShopId, // Associated with dynamic shopId!
+          platform,
+          entity_type: type,
+          platform_entity_id: platformId,
+          name,
+          canonical_url: url || "",
+          image_url: imageUrl || "",
+          first_seen_at: now,
+          last_seen_at: now,
+          status: "active",
+          ...extra
+        };
+        entities.push(entity);
+      } else {
+        entity.name = name || entity.name;
+        if (imageUrl) entity.image_url = imageUrl;
+        if (url) entity.canonical_url = url;
+        if (!entity.shopId) entity.shopId = finalShopId;
+        entity.last_seen_at = now;
+        Object.assign(entity, extra);
+      }
+      return entity;
+    };
+
+    let shopKey = "";
+    if (shopInfo && shopInfo.name) {
+      const shopId = shopInfo.id || shopInfo.name;
+      shopKey = `${platform}:shop:${shopId}`;
+      upsertEntity(
+        shopKey,
+        "shop",
+        shopId,
+        shopInfo.name,
+        shopInfo.url || "",
+        shopInfo.logoUrl || "",
+        { productCount: shopInfo.productCount || items.length }
+      );
+      processedCount++;
+    }
+
+    if (creatorInfo && creatorInfo.username) {
+      const creatorKey = `${platform}:creator:${creatorInfo.username}`;
+      const fans = parseSales(creatorInfo.fansCount || creatorInfo.fans);
+      const likes = parseSales(creatorInfo.likesCount || creatorInfo.likes);
+      
+      upsertEntity(
+        creatorKey,
+        "creator",
+        creatorInfo.username,
+        creatorInfo.username,
+        creatorInfo.url || `https://www.tiktok.com/@${creatorInfo.username}`,
+        creatorInfo.avatarUrl || creatorInfo.avatar || "",
+        { fansCount: fans, likesCount: likes, shop_key: shopKey }
+      );
+
+      const snapshotHash = generateHash(`${fans}_${likes}`);
+      const latestSnap = snapshots
+        .filter((s) => s.entity_key === creatorKey)
+        .sort((a, b) => new Date(b.captured_at) - new Date(a.captured_at))[0];
+
+      if (!latestSnap || latestSnap.snapshot_hash !== snapshotHash) {
+        const snapId = `snap_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+        const newSnap = {
+          id: snapId,
+          shopId: finalShopId, // Associated with shopId!
+          entity_key: creatorKey,
+          snapshot_hash: snapshotHash,
+          price: 0,
+          sales: fans,
+          rating: 0,
+          reviewCount: likes,
+          stock: 0,
+          captured_at: now,
+          raw_data: creatorInfo
+        };
+        snapshots.unshift(newSnap);
+        newSnapshots.push(newSnap);
+
+        if (latestSnap) {
+          const oldFans = latestSnap.sales || 0;
+          const fansDelta = fans - oldFans;
+          if (fansDelta !== 0) {
+            newChangeEvents.push({
+              id: `evt_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+              shopId: finalShopId, // Associated with shopId!
+              entity_key: creatorKey,
+              event_type: "fans_changed",
+              old_value: oldFans,
+              new_value: fans,
+              delta: fansDelta,
+              delta_percent: oldFans ? Number(((fansDelta / oldFans) * 100).toFixed(2)) : 0,
+              severity: Math.abs(fansDelta) > 5000 ? "high" : "medium",
+              detected_at: now,
+              is_read: false
+            });
+          }
+        } else {
+          newChangeEvents.push({
+            id: `evt_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+            shopId: finalShopId, // Associated with shopId!
+            entity_key: creatorKey,
+            event_type: "new_creator",
+            old_value: null,
+            new_value: fans,
+            delta: 0,
+            delta_percent: 0,
+            severity: "medium",
+            detected_at: now,
+            is_read: false
+          });
+        }
+      }
+      processedCount++;
+    }
+
+    for (const dc of detailCreators) {
+      if (!dc.username) continue;
+      const creatorKey = `${platform}:creator:${dc.username}`;
+      const fans = parseSales(dc.fansCount || dc.fans);
+      const likes = parseSales(dc.likesCount || dc.likes);
+      
+      upsertEntity(
+        creatorKey,
+        "creator",
+        dc.username,
+        dc.username,
+        dc.url || `https://www.tiktok.com/@${dc.username}`,
+        dc.avatarUrl || dc.avatar || "",
+        { fansCount: fans, likesCount: likes, shop_key: shopKey }
+      );
+
+      const snapshotHash = generateHash(`${fans}_${likes}`);
+      const latestSnap = snapshots
+        .filter((s) => s.entity_key === creatorKey)
+        .sort((a, b) => new Date(b.captured_at) - new Date(a.captured_at))[0];
+
+      if (!latestSnap || latestSnap.snapshot_hash !== snapshotHash) {
+        const snapId = `snap_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+        const newSnap = {
+          id: snapId,
+          entity_key: creatorKey,
+          snapshot_hash: snapshotHash,
+          price: 0,
+          sales: fans,
+          rating: 0,
+          reviewCount: likes,
+          stock: 0,
+          captured_at: now,
+          raw_data: dc
+        };
+        snapshots.unshift(newSnap);
+        newSnapshots.push(newSnap);
+      }
+      processedCount++;
+    }
+
+    for (const item of items) {
+      if (!item.title) continue;
+      
+      const price = parsePrice(item.price);
+      const sales = parseSales(item.sales);
+      const itemUrl = item.href || item.url || "";
+      const platformId = extractTikTokProductId(itemUrl) || item.id || generateHash(item.title).slice(0, 10);
+      const entityKey = `${platform}:product:${platformId}`;
+      
+      upsertEntity(
+        entityKey,
+        "product",
+        platformId,
+        item.title,
+        itemUrl,
+        item.imageSrc || item.imageUrl || "",
+        { price, sales, shop_key: shopKey }
+      );
+
+      const snapshotHash = generateHash(`${price}_${sales}`);
+      const latestSnap = snapshots
+        .filter((s) => s.entity_key === entityKey)
+        .sort((a, b) => new Date(b.captured_at) - new Date(a.captured_at))[0];
+
+      if (!latestSnap || latestSnap.snapshot_hash !== snapshotHash) {
+        const snapId = `snap_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+        const newSnap = {
+          id: snapId,
+          shopId: finalShopId, // Associated with shopId!
+          entity_key: entityKey,
+          snapshot_hash: snapshotHash,
+          price,
+          sales,
+          rating: parsePrice(item.rating || 0),
+          reviewCount: parseSales(item.reviewCount || 0),
+          stock: parseSales(item.stock || 0),
+          captured_at: now,
+          raw_data: item
+        };
+        snapshots.unshift(newSnap);
+        newSnapshots.push(newSnap);
+
+        if (latestSnap) {
+          const oldPrice = latestSnap.price || 0;
+          const oldSales = latestSnap.sales || 0;
+          
+          if (price !== oldPrice && oldPrice > 0) {
+            const priceDelta = price - oldPrice;
+            newChangeEvents.push({
+              id: `evt_${Date.now()}_${Math.random().toString(36).slice(2, 6)}_p`,
+              shopId: finalShopId, // Associated with shopId!
+              entity_key: entityKey,
+              event_type: "price_changed",
+              old_value: oldPrice,
+              new_value: price,
+              delta: priceDelta,
+              delta_percent: Number(((priceDelta / oldPrice) * 100).toFixed(2)),
+              severity: priceDelta < 0 ? "high" : "medium",
+              detected_at: now,
+              is_read: false
+            });
+          }
+
+          if (sales !== oldSales && oldSales > 0) {
+            const salesDelta = sales - oldSales;
+            newChangeEvents.push({
+              id: `evt_${Date.now()}_${Math.random().toString(36).slice(2, 6)}_s`,
+              shopId: finalShopId, // Associated with shopId!
+              entity_key: entityKey,
+              event_type: "sales_spike",
+              old_value: oldSales,
+              new_value: sales,
+              delta: salesDelta,
+              delta_percent: Number(((salesDelta / oldSales) * 100).toFixed(2)),
+              severity: (salesDelta / oldSales) > 0.2 ? "high" : "medium",
+              detected_at: now,
+              is_read: false
+            });
+          }
+        } else {
+          newChangeEvents.push({
+            id: `evt_${Date.now()}_${Math.random().toString(36).slice(2, 6)}_n`,
+            shopId: finalShopId, // Associated with shopId!
+            entity_key: entityKey,
+            event_type: "new_product",
+            old_value: null,
+            new_value: price,
+            delta: 0,
+            delta_percent: 0,
+            severity: "medium",
+            detected_at: now,
+            is_read: false
+          });
+        }
+      }
+      processedCount++;
+    }
+
+    if (newChangeEvents.length > 0) {
+      changeEvents.unshift(...newChangeEvents);
+    }
+
+    await new Promise((resolve) =>
+      chrome.storage.local.set(
+        {
+          monitorEntities: entities,
+          monitorSnapshots: snapshots.slice(0, 1000),
+          monitorChangeEvents: changeEvents.slice(0, 500)
+        },
+        resolve
+      )
+    );
+
+    return {
+      ok: true,
+      processedCount,
+      newSnapshotsCount: newSnapshots.length,
+      eventsGeneratedCount: newChangeEvents.length,
+      events: newChangeEvents.map(e => ({
+        entity_key: e.entity_key,
+        event_type: e.event_type,
+        old_value: e.old_value,
+        new_value: e.new_value,
+        delta: e.delta,
+        delta_percent: e.delta_percent
+      }))
+    };
+  },
+
+  monitor_get_stored_data: async (args) => {
+    const { type = "all", limit = 100 } = args || {};
+    const keys = [];
+    if (type === "all") {
+      keys.push("monitorEntities", "monitorSnapshots", "monitorChangeEvents", "monitorTasks", "monitorReports");
+    } else if (type === "entities") {
+      keys.push("monitorEntities");
+    } else if (type === "snapshots") {
+      keys.push("monitorSnapshots");
+    } else if (type === "events") {
+      keys.push("monitorChangeEvents");
+    } else if (type === "tasks") {
+      keys.push("monitorTasks");
+    } else if (type === "reports") {
+      keys.push("monitorReports");
+    }
+
+    const storage = await new Promise((resolve) =>
+      chrome.storage.local.get(keys, resolve)
+    );
+
+    if (type === "all") {
+      return {
+        ok: true,
+        entities: (storage.monitorEntities || []).slice(0, limit),
+        snapshots: (storage.monitorSnapshots || []).slice(0, limit),
+        events: (storage.monitorChangeEvents || []).slice(0, limit),
+        tasks: (storage.monitorTasks || []).slice(0, limit),
+        reports: (storage.monitorReports || []).slice(0, limit)
+      };
+    } else {
+      const key = keys[0];
+      return {
+        ok: true,
+        data: (storage[key] || []).slice(0, limit)
+      };
+    }
+  },
+
+  monitor_get_entity_history: async (args) => {
+    const { entity_key } = args || {};
+    if (!entity_key) throw new Error("entity_key is required");
+
+    const storage = await new Promise((resolve) =>
+      chrome.storage.local.get(["monitorSnapshots", "monitorChangeEvents"], resolve)
+    );
+
+    const entitySnapshots = (storage.monitorSnapshots || [])
+      .filter((s) => s.entity_key === entity_key)
+      .sort((a, b) => new Date(a.captured_at) - new Date(b.captured_at));
+
+    const entityEvents = (storage.monitorChangeEvents || [])
+      .filter((e) => e.entity_key === entity_key)
+      .sort((a, b) => new Date(b.detected_at) - new Date(a.detected_at));
+
+    return {
+      ok: true,
+      entity_key,
+      history: entitySnapshots.map((s) => ({
+        price: s.price,
+        sales: s.sales,
+        rating: s.rating,
+        reviewCount: s.reviewCount,
+        captured_at: s.captured_at
+      })),
+      events: entityEvents
+    };
+  },
+
+  monitor_save_report: async (args) => {
+    const { report } = args || {};
+    if (!report) throw new Error("report object is required");
+
+    const storage = await new Promise((resolve) =>
+      chrome.storage.local.get(["monitorReports"], resolve)
+    );
+    const reports = storage.monitorReports || [];
+
+    const newReport = {
+      id: `rep_${Date.now()}`,
+      created_at: new Date().toISOString(),
+      ...report
+    };
+
+    reports.unshift(newReport);
+    await new Promise((resolve) =>
+      chrome.storage.local.set({ monitorReports: reports.slice(0, 100) }, resolve)
+    );
+
+    return { ok: true, id: newReport.id, message: "Report saved successfully." };
+  },
+
+  ozon_api_get_products: async (args) => {
+    const { limit, lastId } = args || {};
+    try {
+      const result = await ozonGetProductList(limit, lastId);
+      return { ok: true, result };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  },
+
+  ozon_api_get_product_info: async (args) => {
+    const { productIds, skus } = args || {};
+    try {
+      const result = await ozonGetProductInfo(productIds, skus);
+      return { ok: true, result };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  },
+
+  ozon_api_get_analytics: async (args) => {
+    const { dateFrom, dateTo, dimension, metrics } = args || {};
+    try {
+      const result = await ozonGetAnalyticsData(dateFrom, dateTo, dimension, metrics);
+      return { ok: true, result };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  },
+
+  ozon_api_get_transactions: async (args) => {
+    const { dateFrom, dateTo, offset, pageSize } = args || {};
+    try {
+      const fbs = await ozonGetFbsPostingList(dateFrom, dateTo, offset || 0, pageSize || 20);
+      const fbo = await ozonGetFboPostingList(dateFrom, dateTo, offset || 0, pageSize || 20);
+      const result = {
+        source: "posting_api_compat",
+        note: "finance transaction list is not used by default; this compatibility tool returns FBS/FBO postings.",
+        fbs,
+        fbo,
+      };
+      return { ok: true, result };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  },
+
+  ozon_api_get_store_snapshot: async (args) => {
+    try {
+      const result = await ozonGetStoreSnapshot(args || {});
+      return { ok: result.ok, result };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  },
+
+  get_platform_memory: async (args) => {
+    const { domain } = args || {};
+    if (!domain) throw new Error("domain is required");
+    const storage = await new Promise((r) => chrome.storage.local.get(["platformMemory"], r));
+    const memory = storage.platformMemory || {};
+    return memory[domain] || null;
+  },
+
+  save_platform_memory: async (args) => {
+    const { domain, selectors } = args || {};
+    if (!domain) throw new Error("domain is required");
+    if (!selectors) throw new Error("selectors object is required");
+    
+    const storage = await new Promise((r) => chrome.storage.local.get(["platformMemory"], r));
+    const memory = storage.platformMemory || {};
+    memory[domain] = {
+      ...(memory[domain] || {}),
+      ...selectors,
+      updated_at: new Date().toISOString()
+    };
+    await new Promise((r) => chrome.storage.local.set({ platformMemory: memory }, r));
+    return { ok: true, message: `Platform memory saved successfully for ${domain}` };
+  },
+});

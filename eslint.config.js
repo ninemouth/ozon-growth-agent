@@ -53,7 +53,9 @@ export default [
         atob: "readonly",
         btoa: "readonly",
         marked: "readonly",
-        alert: "readonly"
+        alert: "readonly",
+        confirm: "readonly",
+        getComputedStyle: "readonly"
       }
     },
     rules: {

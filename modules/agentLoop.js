@@ -28,10 +28,21 @@ function summarizeProductCards(cards = []) {
   }));
 }
 
+const SOURCING_SKILL_RE = /domestic_sourcing_finder|ozon_sourcing_finder/;
+const IMAGE_SEARCH_TOOLS = ["image_search_1688", "image_search_taobao", "image_search_in_browser"];
+
+function isSourcingSkill(skillId = "") {
+  return SOURCING_SKILL_RE.test(String(skillId || ""));
+}
+
+function isImageSearchTool(toolName = "") {
+  return IMAGE_SEARCH_TOOLS.includes(toolName);
+}
+
 function lastIncompleteImageSearch(toolHistory = []) {
   for (let i = toolHistory.length - 1; i >= 0; i--) {
     const entry = toolHistory[i];
-    if (!["image_search_1688", "image_search_taobao", "image_search_in_browser"].includes(entry.tool)) continue;
+    if (!isImageSearchTool(entry.tool)) continue;
     const result = entry.result || {};
     const hasProducts = (result.pageData?.productLinks || []).length > 0 || (result.pageData?.productCards || []).length > 0;
     if (result.imageSearchIncomplete || result.requiresImageSearchRetry || (!result.ok && !hasProducts && !result.isCaptcha)) {
@@ -43,7 +54,7 @@ function lastIncompleteImageSearch(toolHistory = []) {
 }
 
 function hasImageSearchAttempt(toolHistory = []) {
-  return toolHistory.some((entry) => ["image_search_1688", "image_search_taobao", "image_search_in_browser"].includes(entry.tool));
+  return toolHistory.some((entry) => isImageSearchTool(entry.tool));
 }
 
 function hasPreparedCleanImageAttempt(toolHistory = []) {
@@ -58,16 +69,223 @@ function isExplicitTextFallbackAllowed(userInstruction = "") {
   return /允许文本|文本兜底|关键词兜底|文字搜索|文本搜索|标品|standard/i.test(String(userInstruction || ""));
 }
 
+function isExplicitSourcingRequested(userInstruction = "") {
+  return /1688|寻源|货源|采购|供应商|源头|工厂|拿样|比价|套利|采购直达|供货|批发|起批/i.test(String(userInstruction || ""));
+}
+
+function hasProductCandidates(result = {}) {
+  const pageData = result.pageData || result;
+  const cards = pageData.productCards || result.productCards || [];
+  const links = pageData.productLinks || result.productLinks || [];
+  return (Array.isArray(cards) && cards.length > 0) || (Array.isArray(links) && links.length > 0);
+}
+
+function lastSuccessfulSourcingSearchWithProducts(toolHistory = []) {
+  for (let i = toolHistory.length - 1; i >= 0; i--) {
+    const entry = toolHistory[i] || {};
+    const engine = String(entry.arguments?.engine || "").toLowerCase();
+    const isSearchTool = isImageSearchTool(entry.tool) ||
+      (entry.tool === "search_in_browser" && ["1688", "taobao"].includes(engine)) ||
+      entry.tool === "input_text_and_search";
+    if (!isSearchTool) continue;
+    const result = entry.result || {};
+    if (result.ok === false || result.error || result.isCaptcha) continue;
+    if (hasProductCandidates(result)) return entry;
+  }
+  return null;
+}
+
+function isSupplierDetailUrl(url = "") {
+  return /detail\.1688\.com\/offer\/|item\.taobao\.com\/item\.htm|detail\.tmall\.com/i.test(String(url || ""));
+}
+
+function hasSupplierDetailPageEvidence(toolHistory = [], pageContext = {}) {
+  if (isSupplierDetailUrl(pageContext?.url)) return true;
+  return toolHistory.some((entry) => {
+    const urls = [
+      entry.arguments?.url,
+      entry.result?.url,
+      entry.result?.finalUrl,
+      entry.result?.pageData?.url,
+      entry.result?.pageData?.canonicalUrl,
+    ];
+    return urls.some(isSupplierDetailUrl);
+  });
+}
+
+function isSourcingSearchToolCall(toolName = "", toolArgs = {}) {
+  if (isImageSearchTool(toolName) || toolName === "input_text_and_search") return true;
+  if (toolName !== "search_in_browser") return false;
+  const engine = String(toolArgs.engine || "").toLowerCase();
+  const query = String(toolArgs.query || toolArgs.keyword || "");
+  return ["1688", "taobao"].includes(engine) || /1688|淘宝|货源|供应商|采购|批发|起批|工厂/i.test(query);
+}
+
+export function getSourcingWorkflowGuardError({
+  skillId,
+  toolName,
+  toolArgs = {},
+  userInstruction = "",
+  toolHistory = [],
+  pageContext = {},
+} = {}) {
+  if (!isSourcingSkill(skillId)) return null;
+  if (!isSourcingSearchToolCall(toolName, toolArgs)) return null;
+
+  const completedSearch = lastSuccessfulSourcingSearchWithProducts(toolHistory);
+  if (!completedSearch) return null;
+  if (hasSupplierDetailPageEvidence(toolHistory, pageContext)) return null;
+
+  const incompleteImageSearch = lastIncompleteImageSearch(toolHistory);
+  if (incompleteImageSearch) return null;
+  if (isExplicitTextFallbackAllowed(userInstruction)) return null;
+
+  const productCards = completedSearch.result?.pageData?.productCards || completedSearch.result?.productCards || [];
+  const productLinks = completedSearch.result?.pageData?.productLinks || completedSearch.result?.productLinks || [];
+  return {
+    type: "tool_error",
+    tool: toolName,
+    error: "当前已经拿到 1688/淘宝结果页候选商品卡片，不允许继续换关键词、重新图搜或切换淘宝搜索。下一步必须基于现有 productCards/productLinks 做视觉初筛，按目标主图的外观、材质、结构和细节排序，打开 1-3 个最相似的详情页审计价格、MOQ、规格和供应商资质；只有当前结果明确为空、验证码/登录墙阻断，或用户明确要求文本兜底时，才允许重新搜索。",
+    previousSearch: {
+      tool: completedSearch.tool,
+      productCards: Array.isArray(productCards) ? summarizeProductCards(productCards) : [],
+      productLinks: Array.isArray(productLinks) ? productLinks.slice(0, 12) : [],
+    },
+  };
+}
+
 function isLogisticsOrPolicySearchQuery(query = "") {
   return /运费|物流|空派|海运|快递|货代|FBA|配送费|佣金|费率|关税|税率|清关|政策|认证|合规|freight|shipping|logistics|fulfillment|tariff|customs|duty|fee|commission|policy/i.test(String(query || ""));
 }
 
+function isShopOptimizerOnly(skillId = "") {
+  const id = String(skillId || "");
+  return id.includes("ozon_global_shop_optimizer") && !id.includes("ozon_sourcing_finder") && !id.includes("domestic_sourcing_finder");
+}
+
+function isOzonBusinessSkill(skillId = "") {
+  return String(skillId || "").includes("ozon_");
+}
+
+function hasSuccessfulToolCall(toolHistory = [], predicate) {
+  return toolHistory.some((entry) => {
+    if (!predicate(entry)) return false;
+    const result = entry.result || {};
+    return result.ok !== false && !result.error;
+  });
+}
+
+function hasEvidenceSource(toolHistory = [], pageContext = {}, sourceType = "") {
+  const normalized = String(sourceType || "").toLowerCase();
+  if (normalized === "page_dom") {
+    return Boolean(pageContext?.url || pageContext?.title || (pageContext?.text && String(pageContext.text).trim()));
+  }
+  if (normalized === "screenshot_visual") {
+    return Boolean(pageContext?.screenshot);
+  }
+  if (normalized === "ozon_api") {
+    return hasSuccessfulToolCall(toolHistory, (entry) => String(entry.tool || "").startsWith("ozon_api_"));
+  }
+  if (normalized === "ozon_search") {
+    return hasSuccessfulToolCall(toolHistory, (entry) =>
+      entry.tool === "search_in_browser" && String(entry.arguments?.engine || "").toLowerCase() === "ozon"
+    );
+  }
+  if (normalized === "yandex_search") {
+    return hasSuccessfulToolCall(toolHistory, (entry) =>
+      entry.tool === "search_in_browser" && String(entry.arguments?.engine || "").toLowerCase() === "yandex"
+    );
+  }
+  if (normalized === "google_search") {
+    return hasSuccessfulToolCall(toolHistory, (entry) => {
+      const engine = String(entry.arguments?.engine || "").toLowerCase();
+      return entry.tool === "search_in_browser" && (engine === "google" || engine === "google_ru");
+    });
+  }
+  if (normalized === "google_trends") {
+    return hasSuccessfulToolCall(toolHistory, (entry) =>
+      entry.tool === "search_in_browser" && String(entry.arguments?.engine || "").toLowerCase() === "google_trends"
+    );
+  }
+  if (normalized === "sourcing_search") {
+    return hasSuccessfulToolCall(toolHistory, (entry) =>
+      isImageSearchTool(entry.tool) ||
+      (entry.tool === "search_in_browser" && ["1688", "taobao"].includes(String(entry.arguments?.engine || "").toLowerCase()))
+    );
+  }
+  if (normalized === "supplier_page") {
+    return /1688\.com|taobao\.com|tmall\.com/i.test(String(pageContext?.url || "")) ||
+      hasSuccessfulToolCall(toolHistory, (entry) => {
+        const url = String(entry.result?.url || entry.result?.pageData?.url || entry.arguments?.url || "");
+        return /detail\.1688\.com|item\.taobao\.com|tmall\.com/i.test(url);
+      });
+  }
+  if (normalized === "user_input") return true;
+  if (normalized === "assumption") return true;
+  return false;
+}
+
+function hasLedgerType(ledger = [], sourceType = "") {
+  return ledger.some((entry) => String(entry?.source_type || "").toLowerCase() === sourceType);
+}
+
+function hasAnyLedgerType(ledger = [], sourceTypes = []) {
+  const normalizedTypes = sourceTypes.map((type) => String(type || "").toLowerCase());
+  return ledger.some((entry) => normalizedTypes.includes(String(entry?.source_type || "").toLowerCase()));
+}
+
+function hasAssumptionFallback(ledger = [], topicRegex) {
+  return ledger.some((entry) => {
+    const sourceType = String(entry?.source_type || "").toLowerCase();
+    if (sourceType !== "assumption") return false;
+    const text = [
+      entry?.source_ref,
+      entry?.observed_value,
+      entry?.used_for,
+      entry?.limitation,
+    ].filter(Boolean).join(" ");
+    return topicRegex.test(text) && /不可用|未绑定|未获得|未访问|阻断|无法|待验证|blocked|unavailable|not available/i.test(text);
+  });
+}
+
+function validateEvidenceLedgerEntries({
+  entries,
+  label,
+  toolHistory,
+  pageContext,
+  allowedTypes = ["page_dom", "screenshot_visual", "ozon_api", "ozon_search", "yandex_search", "google_search", "google_trends", "sourcing_search", "supplier_page", "user_input", "assumption"],
+}) {
+  const errors = [];
+  if (!Array.isArray(entries) || entries.length === 0) {
+    errors.push(`${label} 缺少 evidence_ledger 结构化证据账本。每个实体必须拆分真实页面/API/搜索/供应商页面/假设来源。`);
+    return errors;
+  }
+  entries.forEach((entry, ledgerIdx) => {
+    const prefix = `${label} 的 evidence_ledger 第 ${ledgerIdx + 1} 条`;
+    const sourceType = String(entry?.source_type || "").toLowerCase();
+    const sourceRef = entry?.source_ref;
+    const observedValue = entry?.observed_value;
+    const usedFor = entry?.used_for;
+    const limitation = entry?.limitation;
+    if (!allowedTypes.includes(sourceType)) {
+      errors.push(`${prefix} 的 source_type 无效，必须是 ${allowedTypes.join(" / ")}。`);
+    }
+    if (!sourceRef || !observedValue || !usedFor || !entry?.confidence || !limitation) {
+      errors.push(`${prefix} 不完整，必须包含 source_type、source_ref、observed_value、used_for、confidence、limitation。`);
+    }
+    if (sourceType && sourceType !== "assumption" && sourceType !== "user_input" && !hasEvidenceSource(toolHistory, pageContext, sourceType)) {
+      errors.push(`${prefix} 声称来源为 ${sourceType}，但本轮没有对应的真实页面/API/搜索/供应商工具证据。请调用对应工具，或改为 assumption 并明确待验证。`);
+    }
+  });
+  return errors;
+}
+
 function domesticVisualRouteActive(skillId, pageContext, toolHistory) {
-  if (!(skillId || "").includes("domestic_sourcing_finder")) return false;
+  if (!isSourcingSkill(skillId)) return false;
   return hasImageSearchAttempt(toolHistory) || hasPreparedCleanImageAttempt(toolHistory);
 }
 
-function validateReport(parsed, userInstruction, skillId, toolHistory = []) {
+function validateReport(parsed, userInstruction, skillId, toolHistory = [], pageContext = {}) {
   const errors = [];
   if (!parsed || parsed.type !== "final" || !parsed.output) {
     errors.push("未输出符合格式的 final 报告 JSON 结构");
@@ -86,6 +304,123 @@ function validateReport(parsed, userInstruction, skillId, toolHistory = []) {
     errors.push("报告正文中包含内部技术黑话或函数名（如 DOM, read_current_page, xpath 等），请过滤并替换为通俗易懂的商业/供应链分析术语！");
   }
 
+  if (isShopOptimizerOnly(skillId)) {
+    const combinedReportText = `${out.overview || ""}\n${out.analysis || ""}\n${out.summary || ""}`;
+    if (/货源\s*#|推荐对齐货源|采购直达|1688\s*采购直达链接|detail\.1688\.com|s\.1688\.com/i.test(combinedReportText)) {
+      errors.push("店铺优化报告不得输出货源编号、采购直达链接或 1688 推荐清单。请改为店铺健康评级、ABC 分级优化候选方案与执行任务。");
+    }
+
+    const hasClassifiedPlan = out.data.some((item) => {
+      const text = [
+        item?.plan_id,
+        item?.scheme_id,
+        item?.diagnosis_level,
+        item?.title,
+        item?.name,
+        item?.direction,
+      ].filter(Boolean).join(" ");
+      return /\b[ABC]-?\d*\b|A级|B级|C级|方案|优化|整改|诊断/i.test(text);
+    });
+    if (!hasClassifiedPlan) {
+      errors.push("店铺优化报告的 data 数组必须包含 A/B/C 分级优化候选方案或诊断任务，而不是商品/货源清单。");
+    }
+
+    out.data.forEach((item, idx) => {
+      const title = item.title || item.name || item.plan_id || `方案 #${idx + 1}`;
+      const link = item.product_link || item.link || "";
+      const ledger = item.financial_ledger || {};
+      if (/1688\.com/i.test(String(link))) {
+        errors.push(`店铺优化方案第 ${idx + 1} 项 (${title}) 包含 1688 采购链接。除非用户明确要求寻源，否则不能在店铺优化第一步生成采购链接。`);
+      }
+      if (ledger.sourcing_cost || ledger.sourcing_cost_cny || ledger.sourcing_cost_rub) {
+        errors.push(`店铺优化方案第 ${idx + 1} 项 (${title}) 包含采购成本字段。没有真实寻源时只能写成本压力或待验证假设，不能伪造供应商账本。`);
+      }
+      const evidence = item.evidence || item.diagnosis_basis || item.selection_rationale || item.trend_evidence || "";
+      if (!evidence || String(evidence).trim().length < 20) {
+        errors.push(`店铺优化方案第 ${idx + 1} 项 (${title}) 缺少具体证据字段（evidence / diagnosis_basis / selection_rationale），必须说明来自页面、截图、Ozon API 或待验证假设。`);
+      }
+
+      const ledgerEntries = Array.isArray(item.evidence_ledger) ? item.evidence_ledger : [];
+      if (ledgerEntries.length === 0) {
+        errors.push(`店铺优化方案第 ${idx + 1} 项 (${title}) 缺少 evidence_ledger 结构化证据账本。每个方案必须拆分 page_dom / screenshot_visual / ozon_api / ozon_search / yandex_search / google_search / google_trends / assumption 等来源。`);
+      }
+
+      ledgerEntries.forEach((entry, ledgerIdx) => {
+        const prefix = `店铺优化方案第 ${idx + 1} 项 (${title}) 的 evidence_ledger 第 ${ledgerIdx + 1} 条`;
+        const sourceType = String(entry?.source_type || "").toLowerCase();
+        const sourceRef = entry?.source_ref;
+        const observedValue = entry?.observed_value;
+        const usedFor = entry?.used_for;
+        const limitation = entry?.limitation;
+        const allowedTypes = ["page_dom", "screenshot_visual", "ozon_api", "ozon_search", "yandex_search", "google_search", "google_trends", "assumption"];
+        if (!allowedTypes.includes(sourceType)) {
+          errors.push(`${prefix} 的 source_type 无效，必须是 ${allowedTypes.join(" / ")}。`);
+        }
+        if (!sourceRef || !observedValue || !usedFor || !entry?.confidence || !limitation) {
+          errors.push(`${prefix} 不完整，必须包含 source_type、source_ref、observed_value、used_for、confidence、limitation。`);
+        }
+        if (sourceType && sourceType !== "assumption" && !hasEvidenceSource(toolHistory, pageContext, sourceType)) {
+          errors.push(`${prefix} 声称来源为 ${sourceType}，但本轮没有对应的真实页面/API/搜索工具证据。请调用对应工具，或把该结论改为 assumption 并明确待验证。`);
+        }
+      });
+
+      const itemText = JSON.stringify(item);
+      if (/API|Seller API|ozon_api|Sessions|session|加购|订单|扣费|交易|履约成本|FBO|FBS/i.test(itemText) && !hasLedgerType(ledgerEntries, "ozon_api") && !hasAssumptionFallback(ledgerEntries, /API|Seller|流量|订单|履约|FBO|FBS/i)) {
+        errors.push(`店铺优化方案第 ${idx + 1} 项 (${title}) 使用了 API/流量/订单/履约类结论，但 evidence_ledger 没有 ozon_api 证据或 assumption 降级说明。`);
+      }
+      if (/Yandex|yandex/i.test(itemText) && !hasLedgerType(ledgerEntries, "yandex_search") && !hasAssumptionFallback(ledgerEntries, /Yandex/i)) {
+        errors.push(`店铺优化方案第 ${idx + 1} 项 (${title}) 使用了 Yandex/站外需求结论，但 evidence_ledger 没有 yandex_search 证据或 assumption 降级说明。`);
+      }
+      if (/站外|搜索指数|外部流量|季节性/i.test(itemText) && !hasAnyLedgerType(ledgerEntries, ["yandex_search", "google_search", "google_trends"]) && !hasAssumptionFallback(ledgerEntries, /Yandex|Google|谷歌|站外|搜索指数|外部流量|季节|趋势/i)) {
+        errors.push(`店铺优化方案第 ${idx + 1} 项 (${title}) 使用了站外需求/季节性结论，但 evidence_ledger 没有 yandex_search / google_search / google_trends 证据或 assumption 降级说明。`);
+      }
+      if (/Google|Google Trends|谷歌趋势|搜索趋势|年度趋势|季度趋势|YoY|QoQ|季节性增长|需求趋势/i.test(itemText) && !hasAnyLedgerType(ledgerEntries, ["google_search", "google_trends"]) && !hasAssumptionFallback(ledgerEntries, /Google|谷歌|趋势|YoY|QoQ|季节/i)) {
+        errors.push(`店铺优化方案第 ${idx + 1} 项 (${title}) 使用了 Google/趋势/季节性增长结论，但 evidence_ledger 没有 google_search / google_trends 证据或 assumption 降级说明。`);
+      }
+      if (/Ozon 站内|ozon 站内|热卖榜|第一页|竞品均价|评价门槛|广告占位/i.test(itemText) && !hasLedgerType(ledgerEntries, "ozon_search") && !hasAssumptionFallback(ledgerEntries, /Ozon|站内|热卖榜|第一页|竞品|评价门槛|广告占位/i)) {
+        errors.push(`店铺优化方案第 ${idx + 1} 项 (${title}) 使用了 Ozon 站内/热卖榜/竞品搜索结论，但 evidence_ledger 没有 ozon_search 证据或 assumption 降级说明。`);
+      }
+    });
+
+    const allLedgerEntries = out.data.flatMap((item) => Array.isArray(item.evidence_ledger) ? item.evidence_ledger : []);
+    if (!hasLedgerType(allLedgerEntries, "ozon_search") && !hasAssumptionFallback(allLedgerEntries, /Ozon|站内|热卖榜|竞品|榜单/i)) {
+      errors.push("店铺优化报告缺少 Ozon 站内搜索/热卖榜对标证据。请调用 Ozon 搜索/榜单，或用 assumption 明确说明当前无法访问并列为待验证。");
+    }
+    if (!hasAnyLedgerType(allLedgerEntries, ["yandex_search", "google_search", "google_trends"]) && !hasAssumptionFallback(allLedgerEntries, /Yandex|Google|谷歌|站外|趋势|季节|需求/i)) {
+      errors.push("店铺优化报告缺少俄罗斯站外需求趋势证据。请至少使用 Yandex.ru、Google RU 或 Google Trends RU 之一，或用 assumption 明确说明工具/网络不可用并列为待验证。");
+    }
+    if (!hasAnyLedgerType(allLedgerEntries, ["yandex_search", "google_search", "google_trends"]) && hasAssumptionFallback(allLedgerEntries, /Yandex|Google|谷歌|站外|趋势|季节|需求/i) && /呈现|显示|证明|同比|环比|增长|下降|热度高|趋势上升/i.test(combinedReportText)) {
+      errors.push("店铺优化报告的站外趋势只有 assumption，正文不能写成已验证事实。请把趋势判断降级为待验证假设，或先调用 Yandex.ru / Google RU / Google Trends RU 获取真实证据。");
+    }
+  }
+
+  if (isOzonBusinessSkill(skillId) && !isShopOptimizerOnly(skillId)) {
+    out.data.forEach((item, idx) => {
+      const title = item.title || item.name || item.plan_id || item.phase_id || item.keyword || `实体 #${idx + 1}`;
+      const ledgerEntries = Array.isArray(item.evidence_ledger) ? item.evidence_ledger : [];
+      errors.push(...validateEvidenceLedgerEntries({
+        entries: ledgerEntries,
+        label: `Ozon 业务报告第 ${idx + 1} 项 (${title})`,
+        toolHistory,
+        pageContext,
+      }));
+
+      const itemText = JSON.stringify(item);
+      if (/蓝海|爆品|高增长|低竞争|趋势|季节|搜索热度|YoY|QoQ/i.test(itemText) && !hasAnyLedgerType(ledgerEntries, ["ozon_search", "yandex_search", "google_search", "google_trends"]) && !hasAssumptionFallback(ledgerEntries, /Ozon|Yandex|Google|谷歌|趋势|季节|需求|竞争|搜索/i)) {
+        errors.push(`Ozon 业务报告第 ${idx + 1} 项 (${title}) 使用了市场机会/趋势/竞争结论，但 evidence_ledger 没有 Ozon/Yandex/Google/Google Trends 证据或主题相关 assumption。`);
+      }
+      if (/SEO|关键词|搜索词|高频词|标题公式|Listing|листинг/i.test(itemText) && !hasAnyLedgerType(ledgerEntries, ["page_dom", "ozon_search", "yandex_search", "google_search", "google_trends"]) && !hasAssumptionFallback(ledgerEntries, /SEO|关键词|搜索词|标题|Listing/i)) {
+        errors.push(`Ozon 业务报告第 ${idx + 1} 项 (${title}) 使用了 SEO/关键词/Listing 结论，但 evidence_ledger 没有页面或搜索证据，也没有降级为待验证假设。`);
+      }
+      if (/评论|差评|Отзывы|отзыв|买家反馈|退货|破损|不符|Не работает/i.test(itemText) && !hasAnyLedgerType(ledgerEntries, ["page_dom", "screenshot_visual", "ozon_search"]) && !hasAssumptionFallback(ledgerEntries, /评论|差评|Отзывы|买家反馈|退货|破损|不符/i)) {
+        errors.push(`Ozon 业务报告第 ${idx + 1} 项 (${title}) 使用了评论/差评/退货结论，但 evidence_ledger 没有页面/截图/Ozon 搜索证据，也没有降级为待验证假设。`);
+      }
+      if (/1688|淘宝|供应商|采购|拿样|货源/i.test(itemText) && !hasAnyLedgerType(ledgerEntries, ["sourcing_search", "supplier_page", "user_input"]) && !hasAssumptionFallback(ledgerEntries, /1688|淘宝|供应商|采购|拿样|货源/i)) {
+        errors.push(`Ozon 业务报告第 ${idx + 1} 项 (${title}) 使用了供应商/采购/拿样结论，但 evidence_ledger 没有 sourcing_search / supplier_page / user_input 证据，也没有降级为待验证假设。`);
+      }
+    });
+  }
+
   // 2. Check product quantity if specified in instruction
   const numMatch = (userInstruction || "").match(/(\d+)款/);
   if (numMatch) {
@@ -96,13 +431,18 @@ function validateReport(parsed, userInstruction, skillId, toolHistory = []) {
   }
 
   // 3. Sourcing-specific details check (1688 / Taobao links, profiling, spec alignment, profit ledger)
-  if ((skillId || "").includes("domestic_sourcing_finder")) {
+  if (isSourcingSkill(skillId)) {
     if (out.data.length < 1) {
       errors.push("供应链寻源报告至少必须返回 1 个真实采购候选。请继续通过 1688/淘宝完成对应路径的真实检索、视觉筛选或详情页穿透补足；只有找到 1 个合格货源也可以交付，但不能输出空 data。");
     }
+    const combinedSourcingText = `${out.overview || ""}\n${out.analysis || ""}\n${out.summary || ""}\n${JSON.stringify(out.data || [])}`;
+    const hasSupplierShortageExplanation = /不足\s*2|少于\s*2|仅\s*1\s*个|只有\s*1\s*个|无法形成.*比价|不足以形成.*比价|验证码|登录墙|平台阻断|图片搜索受限|未获得真实|无合格货源|继续人工寻源|暂不建议.*采购|不建议.*备货/i.test(combinedSourcingText);
+    if (out.data.length > 0 && out.data.length < 2 && !hasSupplierShortageExplanation) {
+      errors.push("供应链寻源报告默认必须返回至少 2 个可比供应商候选，以便比较价格、MOQ、材质、供货能力和跨境毛利。当前只有 1 个候选且未说明平台阻断/严格筛选不足 2 个的原因。请继续基于结果页打开第二个详情页审计；若确实无法获得第二个合格供应商，必须在 summary 和 audit_comment 中明确“不足以形成供应商比价，本轮不建议直接采购/批量备货，需要继续人工寻源或拿样验证”。");
+    }
 
     const hasSuccessfulImageSearch = toolHistory.some((entry) => {
-      if (!["image_search_1688", "image_search_taobao", "image_search_in_browser"].includes(entry.tool)) return false;
+      if (!isImageSearchTool(entry.tool)) return false;
       const result = entry.result || {};
       const links = result.pageData?.productLinks || [];
       const cards = result.pageData?.productCards || [];
@@ -199,11 +539,12 @@ function validateReport(parsed, userInstruction, skillId, toolHistory = []) {
     });
   }
 
-  // 4. Selection evidence validation (trend_evidence / selection_rationale must be at least 20 chars)
+  // 4. Evidence validation must match the current skill semantics.
   out.data.forEach((item, idx) => {
-    const evidence = item.trend_evidence || item.selection_rationale || "";
+    const evidence = item.trend_evidence || item.selection_rationale || item.evidence || item.diagnosis_basis || "";
     if (!evidence || evidence.trim().length < 20) {
-      errors.push(`商品列表第 ${idx + 1} 项 (${item.title || "未命名商品"}) 缺少充分的选品逻辑和证据链（trend_evidence 字段长度必须大于 20 字，需包含真实销量、竞品差评痛点或明确的利润率优势作为选品证据）！`);
+      const label = isShopOptimizerOnly(skillId) ? "方案" : "商品列表";
+      errors.push(`${label}第 ${idx + 1} 项 (${item.title || item.name || item.plan_id || "未命名实体"}) 缺少充分证据链（trend_evidence / evidence / diagnosis_basis / selection_rationale 字段长度必须大于 20 字，并说明真实页面、截图、API、竞品或假设来源）！`);
     }
   });
 
@@ -297,7 +638,11 @@ ${userInstruction ? `用户补充了以下核心探索方向。这是你的**最
 
 ${highRandomness ? `\n\n## ⚠️ [Anti-Cache] 强制发散与破局指令 (Nonce: ${Date.now()})\n用户要求进行**【全新视角的探索】**。请你**完全抛弃最常规、最容易想到的思路**。如果之前的方向是 A，这次请尝试 B 甚至是冷门的 C。突破固有套路，给我极具差异化的答案！` : ""}
 
-${(skillId || "").includes("domestic_sourcing_finder") ? `\n\n## 国内供应链寻源运行硬约束\n- 如果目标是非标外观/造型/模具商品且存在 targetImageUrl，优先调用 image_search_1688 或 image_search_taobao。若已配置生图模型、且平台自动框选主体不完整，可先调用 prepare_clean_product_image，并把返回的 image_search_argument.imageUrl 用作图片搜索输入。\n- 非标品一旦启动图片搜索或干净搜图图准备流程，后续 Critic 打回也严禁调用 input_text_and_search 文本框搜索；必须继续用 productCards 候选主图、截图和视觉相似度证据筛选。\n- agentic_web_search 最多调用 1 次，且只用于物流、费率、政策或认证核算；严禁用它寻找 1688/淘宝货源或替代站内图片搜索。` : ""}
+${((skillId || "").includes("domestic_sourcing_finder") || (skillId || "").includes("ozon_sourcing_finder")) ? `\n\n## 国内供应链寻源运行硬约束\n- 如果目标是非标外观/造型/模具商品且存在 targetImageUrl，优先调用 image_search_1688 或 image_search_taobao。若已配置生图模型、且平台自动框选主体不完整，可先调用 prepare_clean_product_image，并把返回的 image_search_argument.imageUrl 用作图片搜索输入。\n- 非标品一旦启动图片搜索或干净搜图图准备流程，后续 Critic 打回也严禁调用 input_text_and_search 文本框搜索；必须继续用 productCards 候选主图、截图和视觉相似度证据筛选。\n- agentic_web_search 最多调用 1 次，且只用于物流、费率、政策或认证核算；严禁用它寻找 1688/淘宝货源或替代站内图片搜索。` : ""}
+
+${(skillId || "").includes("ozon_") ? `\n\n## Ozon 浏览器标签页生命周期纪律\n- agentic_web_search 是静默信息检索工具，它自己的临时浏览器标签页由工具内部清理。\n- search_in_browser、open_new_tab、image_search_1688、image_search_taobao、image_search_in_browser 会打开可见标签页。凡是仅用于 Ozon 取证、竞品查看、站外搜索或详情页抽样的新标签页，在读取证据后必须调用 close_tab 关闭对应 tabId。\n- 只有遇到验证码、登录态、人机验证、上传控件等待人工处理，或用户明确需要保留页面继续人工比对时，才允许暂时不关闭；最终报告必须说明保留原因和 tabId。\n- 输出 final 前必须自检：本轮由你打开且已经完成取证的无关标签页是否已经关闭。` : ""}
+
+${(skillId || "").includes("tiktok_shop_monitor") ? `\n\n## ⚠️ TikTok 监控运行硬约束 (TikTok Monitor Hard Constraints)\n- 【严禁直接输出 final】：你绝对不能在第 1 步就直接输出 final 最终报告！\n- 【详情页深挖流程】：你必须挑选出 2-3 个核心/爆款商品，对这 2-3 个商品依次执行：(1) 调用 open_new_tab 打开该商品详情页，(2) 自动读取页面（在 open_new_tab 返回中会自动包含最新的 pageData，或调用 read_current_page 确认），(3) 调用 close_tab 关闭该标签页。只有将这 2-3 个重点商品对应的详情页细节深度抓取合并后，才允许输出 final 最终报告！` : ""}
 `;
 
   let userContent = userText;
@@ -325,7 +670,9 @@ ${(skillId || "").includes("domestic_sourcing_finder") ? `\n\n## 国内供应链
         ? `[追加指令] 用户对刚才的执行结果提出了新的要求或调整。请严格基于以上的上下文记忆，重新推演并输出最终的 JSON 报告。\n用户的最新要求是：\n"${userInstruction}"` 
         : `[追加指令] 请结合你最新的 System Prompt（你的目标任务可能已经发生了改变），并基于最新的页面上下文进行深度推演。`;
     
-    instructionText += `\n\n【⚠️ 极其重要：禁止直接生成/必须调用浏览器工具真实寻源】\n如果你的最新 System Prompt 包含寻源任务（例如需要去 1688、淘宝等平台寻找货源或对比价格），**你绝对禁止直接从历史记忆中复制或凭空捏造虚假的 1688/淘宝 详情页链接！**\n如果最新页面上下文中存在 targetImageUrl，且目标商品属于非标外观/模具/造型商品，你必须在第一步调用 'image_search_1688'（优先）或 'image_search_taobao' 执行供应商平台以图搜源；如果已配置生图模型且平台自动框选主体不完整，可先调用 'prepare_clean_product_image' 准备干净主体图，再把返回的 image_search_argument.imageUrl 传给图片搜索工具。非标品一旦进入图片检索路径，Critic 打回后也严禁切回 'input_text_and_search' 关键词搜索；只有目标明确为标品或用户明确要求文本兜底，才允许文本搜索。只有在通过工具真实获取并校验了详情页内容、价格和起批量后，才被允许在最后的报告中写入真实的 1688/淘宝详情页链接并输出 final 报告！`;
+    if ((skillId || "").includes("domestic_sourcing_finder") || (skillId || "").includes("ozon_sourcing_finder")) {
+      instructionText += `\n\n【⚠️ 极其重要：禁止直接生成/必须调用浏览器工具真实寻源】\n当前匹配到的是寻源任务（例如需要去 1688、淘宝等平台寻找货源或对比价格），**你绝对禁止直接从历史记忆中复制或凭空捏造虚假的 1688/淘宝 详情页链接！**\n如果最新页面上下文中存在 targetImageUrl，且目标商品属于非标外观/模具/造型商品，你必须在第一步调用 'image_search_1688'（优先）或 'image_search_taobao' 执行供应商平台以图搜源；如果已配置生图模型且平台自动框选主体不完整，可先调用 'prepare_clean_product_image' 准备干净主体图，再把返回的 image_search_argument.imageUrl 传给图片搜索工具。非标品一旦进入图片检索路径，Critic 打回后也严禁切回 'input_text_and_search' 关键词搜索；只有目标明确为标品或用户明确要求文本兜底，才允许文本搜索。只有在通过工具真实获取并校验了详情页内容、价格和起批量后，才被允许在最后的报告中写入真实的 1688/淘宝详情页链接并输出 final 报告！`;
+    }
 
     instructionText += `\n\n【极其重要：强制输出格式】\n无论你进行了多少轮推演，**你最后一次的输出必须，且只能是如下 JSON 格式**（请包裹在 \`\`\`json 中）：\n\`\`\`json\n{\n  "type": "final",\n  "output": {\n    "overview": "...",\n    "analysis": "...",\n    "summary": "...",\n    "data": [] \n  }\n}\n\`\`\`\n严禁把上述指令文字直接暴露在最终报告中！`;
     instructionText += `\n\n【注意：以下是你当前所处的最新页面上下文数据】\n${ctxString}`;
@@ -379,7 +726,7 @@ ${(skillId || "").includes("domestic_sourcing_finder") ? `\n\n## 国内供应链
     }
 
     if (parsed.type === "final") {
-      const validationErrors = validateReport(parsed, userInstruction, skillId, toolHistory);
+      const validationErrors = validateReport(parsed, userInstruction, skillId, toolHistory, pageContext);
       if (validationErrors.length > 0) {
         const reflectionsCount = ctxForPrompt.__reflectionsCount || 0;
         if (reflectionsCount < 2 && step < maxSteps - 1) {
@@ -403,7 +750,7 @@ ${(skillId || "").includes("domestic_sourcing_finder") ? `\n\n## 国内供应链
         messages.push({ role: "assistant", content: assistantContent });
         messages.push({
           role: "user",
-          content: `【Critic Agent 报告质量审计与反思】\n请根据本会话系统提示词（System Prompt）头部的【报告设计审计与规划基座 Skill】中的质量审计检查单（Auditor Checklist），对你刚才生成的最终报告进行最严苛的自检审查：\n1. 结构完整性：是否严格包含并对齐了该 Skill 要求的分析模块（如概述、推演、数据结构化卡片）？\n2. 深度审计：内容是否流于表面？是否对消费者痛点、产品改良策略进行了多维度的场景化推演？\n3. 格式规范性：数据视图（data 数组）中的键名和键值是否合规（无 [object Object] 等序列化错误，且已翻译为中文）？\n\n【重要要求】在输出优化后的 JSON 时，严禁在 output 内部的字段（如 overview, analysis, summary）中写入任何有关 AI 自我审计、自检表格或自评文字。报告正文必须纯净、专业，不留任何自检草稿痕迹，直接呈现面向跨境买家的供应链审计方案。\n\n如果你发现可以改进的地方，请进行深度反思，并输出优化后的 \`{"type":"final", "output": {...}}\`。\n如果你确信当前版本已经完美无缺，请直接原样再次输出 \`{"type":"final", "output": {...}}\` 即可通过审查。`
+          content: `【Critic Agent 报告质量审计与反思】\n请根据本会话系统提示词（System Prompt）头部的【报告设计审计与规划基座 Skill】中的质量审计检查单（Auditor Checklist），对你刚才生成的最终报告进行最严苛的自检审查：\n1. 结构完整性：是否严格包含并对齐了该 Skill 要求的分析模块（如概述、推演、数据结构化卡片）？\n2. 深度审计：内容是否流于表面？是否对消费者痛点、产品改良策略或运营动作进行了多维度的场景化推演？\n3. 格式规范性：数据视图（data 数组）中的键名和键值是否合规（无 [object Object] 等序列化错误，且已翻译为中文）？\n\n【重要要求】在输出优化后的 JSON 时，严禁在 output 内部的字段（如 overview, analysis, summary）中写入任何有关 AI 自我审计、自检表格或自评文字。报告正文必须纯净、专业，不留任何自检草稿痕迹，直接呈现面向 Ozon 卖家的运营/商业诊断方案。\n\n如果你发现可以改进的地方，请进行深度反思，并输出优化后的 \`{"type":"final", "output": {...}}\`。\n如果你确信当前版本已经完美无缺，请直接原样再次输出 \`{"type":"final", "output": {...}}\` 即可通过审查。`
         });
         continue;
       } else {
@@ -428,13 +775,50 @@ ${(skillId || "").includes("domestic_sourcing_finder") ? `\n\n## 国内供应链
         }
       }
 
-      if (["image_search_1688", "image_search_taobao", "image_search_in_browser"].includes(toolName)) {
+      if (isImageSearchTool(toolName)) {
         if ((!toolArgs.imageUrl || toolArgs.imageUrl === "__TARGET_IMAGE_URL__") && actualTargetImageUrl) {
           toolArgs.imageUrl = actualTargetImageUrl;
         }
       }
 
-      if ((skillId || "").includes("domestic_sourcing_finder") && toolName === "input_text_and_search") {
+      if (isShopOptimizerOnly(skillId) && !isExplicitSourcingRequested(userInstruction)) {
+        const engine = String(toolArgs.engine || "").toLowerCase();
+        const query = String(toolArgs.query || toolArgs.keyword || "");
+        const isSourcingTool =
+          isImageSearchTool(toolName) ||
+          (toolName === "search_in_browser" && (engine === "1688" || /1688|货源|供应商|采购|批发|起批|工厂/i.test(query)));
+        if (isSourcingTool) {
+          messages.push({ role: "assistant", content: assistantContent });
+          messages.push({
+            role: "user",
+            content: JSON.stringify({
+              type: "tool_error",
+              tool: toolName,
+              error: "当前任务是 Ozon 店铺优化诊断，不是寻源流程。第一步必须围绕店铺健康评级、页面/截图/自营 API 数据、Ozon 站内竞品、Yandex.ru / Google RU / Google Trends RU 需求证据构建 ABC 优化方案；除非用户明确要求 1688/货源/采购，否则禁止调用采购平台搜索或生成供应商链接。",
+            }),
+          });
+          continue;
+        }
+      }
+
+      const sourcingWorkflowGuardError = getSourcingWorkflowGuardError({
+        skillId,
+        toolName,
+        toolArgs,
+        userInstruction,
+        toolHistory,
+        pageContext,
+      });
+      if (sourcingWorkflowGuardError) {
+        messages.push({ role: "assistant", content: assistantContent });
+        messages.push({
+          role: "user",
+          content: JSON.stringify(sourcingWorkflowGuardError),
+        });
+        continue;
+      }
+
+      if (isSourcingSkill(skillId) && toolName === "input_text_and_search") {
         const incompleteImageSearch = lastIncompleteImageSearch(toolHistory);
         if (incompleteImageSearch) {
           messages.push({ role: "assistant", content: assistantContent });
@@ -467,7 +851,7 @@ ${(skillId || "").includes("domestic_sourcing_finder") ? `\n\n## 国内供应链
         }
       }
 
-      if ((skillId || "").includes("domestic_sourcing_finder") && toolName === "agentic_web_search") {
+      if (isSourcingSkill(skillId) && toolName === "agentic_web_search") {
         const query = toolArgs.query || "";
         const previousSearches = countToolCalls(toolHistory, "agentic_web_search");
         if (previousSearches >= 1 || !isLogisticsOrPolicySearchQuery(query)) {
@@ -501,6 +885,22 @@ ${(skillId || "").includes("domestic_sourcing_finder") ? `\n\n## 国内供应链
           content: JSON.stringify({ type: "tool_error", tool: toolName, error: errMsg }),
         });
         continue;
+      }
+
+      // Auto-inject page context into monitor_process_page_data to prevent LLM token overflow
+      if (toolName === "monitor_process_page_data") {
+        if (!toolArgs.items || toolArgs.items.length === 0) {
+          toolArgs.items = pageContext.productCards || [];
+        }
+        if (!toolArgs.shopInfo && pageContext.url) {
+          toolArgs.shopInfo = {
+            name: pageContext.title || "Ozon Seller",
+            url: pageContext.url
+          };
+        }
+        if (!toolArgs.platform) {
+          toolArgs.platform = (pageContext.url && pageContext.url.includes("ozon")) ? "ozon" : "tiktok";
+        }
       }
 
       let toolResult;
@@ -555,7 +955,7 @@ ${(skillId || "").includes("domestic_sourcing_finder") ? `\n\n## 国内供应链
       const productCards = toolResult?.pageData?.productCards || [];
       if (Array.isArray(productCards) && productCards.length > 0) {
         userResultObj.visual_candidate_summary = summarizeProductCards(productCards);
-        userResultObj.next_step_instruction = "当前页面已经抽取到带主图与屏幕坐标的 productCards。下一步必须先对照目标商品主图和最新截图，把这些卡片按外观/材质/结构视觉相似度排序；只允许打开视觉排名最高且未触发材质/造型红线的详情页。最终 data 每项必须写入 candidate_image_url、list_page_visual_score、visual_match_evidence，禁止只按标题关键词选择。";
+        userResultObj.next_step_instruction = "当前页面已经抽取到带主图与屏幕坐标的 productCards。下一步必须停止继续搜索，先对照目标商品主图和最新截图，把这些卡片按外观/材质/结构视觉相似度排序；只允许打开视觉排名最高且未触发材质/造型红线的 1-3 个详情页。最终 data 每项必须写入 candidate_image_url、list_page_visual_score、visual_match_evidence，禁止只按标题关键词选择。";
       }
 
       let userMsgContent;

@@ -143,8 +143,8 @@ export async function callLLM(messages, streamCallback, isHighRandomness = false
     openai: "https://api.openai.com/v1",
     anthropic: "https://api.anthropic.com/v1/messages",
     qwen: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    siliconflow: "https://api.siliconflow.cn/v1",
-    groq: "https://api.groq.com/openai/v1",
+    openrouter: "https://openrouter.ai/api/v1",
+    thinktv: "https://www.thinktv.ai/v1",
   };
 
   const provider = llmProvider || "openai";

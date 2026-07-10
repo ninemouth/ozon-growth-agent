@@ -7,6 +7,8 @@
   "scripts": {
     "lint": "eslint .",
     "test:security": "node scripts/security-smoke.mjs",
+    "test:business": "node scripts/business-flow-smoke.mjs",
+    "test:sourcing": "node scripts/sourcing-workflow-guard-smoke.mjs",
     "format": "prettier --write ."
   },
   "keywords": [
