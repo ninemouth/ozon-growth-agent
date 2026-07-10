@@ -433,7 +433,7 @@
       <section id="view-store" class="view-pane">
         <div class="store-grid">
           <!-- Left side Store Stats -->
-          <div class="store-main-column col-span-2">
+          <div class="store-main-column">
             <div class="grid-card" style="margin-bottom:20px;">
               <div class="card-header">
                 <h3>📦 卖家订单待履约雷达 (FBS / FBO)</h3>
@@ -515,51 +515,6 @@
                     <div style="display:flex; justify-content:space-between;"><span>实际到手货款:</span><strong style="color:#10b981">64%</strong></div>
                   </div>
                 </div>
-              </div>
-            </div>
-          </div>
-
-          <!-- Right side Store API Credentials Info -->
-          <div class="store-sidebar-column">
-            <div class="grid-card" style="margin-bottom:20px;">
-              <div class="card-header">
-                <h3>🏢 Ozon 已绑定店铺列表</h3>
-              </div>
-              <div class="card-body scrollable" style="max-height: 220px; padding: 10px;">
-                <div id="dashboard-shop-list" style="display:flex; flex-direction:column; gap:8px;">
-                  <!-- Shop list items populated dynamically -->
-                  <div class="empty-state" style="padding:15px 0;">暂无绑定店铺，请在下方录入。</div>
-                </div>
-              </div>
-            </div>
-
-            <div class="grid-card">
-              <div class="card-header">
-                <h3>➕ 添加绑定新店铺 API</h3>
-              </div>
-              <div class="card-body" style="padding: 12px;">
-                <form id="add-shop-form" style="display:flex; flex-direction:column; gap:10px;">
-                  <div>
-                    <label style="font-size:11px; color:var(--text-secondary); display:block; margin-bottom:4px;">店铺自定义名称</label>
-                    <input type="text" id="new-shop-name" placeholder="如: Надёжный 1号店" required style="width:100%; font-size:12px; padding:6px; border:1px solid var(--border); border-radius:4px; background:var(--bg-input); color:var(--text-primary);">
-                  </div>
-                  <div>
-                    <label style="font-size:11px; color:var(--text-secondary); display:block; margin-bottom:4px;">Client ID</label>
-                    <input type="text" id="new-shop-client-id" placeholder="Ozon Client ID" required style="width:100%; font-size:12px; padding:6px; border:1px solid var(--border); border-radius:4px; background:var(--bg-input); color:var(--text-primary);">
-                  </div>
-                  <div>
-                    <label style="font-size:11px; color:var(--text-secondary); display:block; margin-bottom:4px;">API Key</label>
-                    <input type="password" id="new-shop-api-key" placeholder="Ozon API Key" required style="width:100%; font-size:12px; padding:6px; border:1px solid var(--border); border-radius:4px; background:var(--bg-input); color:var(--text-primary);">
-                  </div>
-                  <div>
-                    <label style="font-size:11px; color:var(--text-secondary); display:block; margin-bottom:4px;">发货时效履约模式</label>
-                    <select id="new-shop-warehouse" style="width:100%; font-size:12px; padding:6px; border:1px solid var(--border); border-radius:4px; background:var(--bg-input); color:var(--text-primary);">
-                      <option value="FBS">FBS (跨境直邮/自发货模式)</option>
-                      <option value="FBO">FBO (俄罗斯官方仓库模式)</option>
-                    </select>
-                  </div>
-                  <button type="submit" class="btn btn-primary btn-block" style="font-size:12px; padding:8px;">➕ 绑定该店铺</button>
-                </form>
               </div>
             </div>
           </div>

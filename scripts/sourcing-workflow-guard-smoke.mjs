@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { getSourcingWorkflowGuardError } from "../modules/agentLoop.js";
+import { getSourcingWorkflowGuardError, sanitizeFinalReportForBusinessAudience } from "../modules/agentLoop.js";
 
 const sourcingSkillMarkdown = fs.readFileSync(new URL("../skills/ozon_sourcing_finder.skill.md", import.meta.url), "utf8");
 const agentLoopSource = fs.readFileSync(new URL("../modules/agentLoop.js", import.meta.url), "utf8");
@@ -8,6 +8,7 @@ const agentLoopSource = fs.readFileSync(new URL("../modules/agentLoop.js", impor
 assert.match(sourcingSkillMarkdown, /至少 2 个可比供应商候选/, "Ozon sourcing skill should require at least two comparable suppliers");
 assert.match(sourcingSkillMarkdown, /不足以形成供应商比价/, "Ozon sourcing skill should require shortage explanation when fewer than two suppliers pass");
 assert.match(agentLoopSource, /默认必须返回至少 2 个可比供应商候选/, "agent loop critic should enforce two-supplier sourcing reports");
+assert.match(agentLoopSource, /Critic 已自动清理报告中的内部技术措辞/, "agent loop should sanitize report jargon instead of blindly restarting evidence collection");
 
 const completedImageSearchHistory = [
   {
@@ -92,5 +93,35 @@ const allowExplicitTextFallback = getSourcingWorkflowGuardError({
 });
 
 assert.equal(allowExplicitTextFallback, null, "should allow explicit standard-product text fallback");
+
+const sanitizedFinal = sanitizeFinalReportForBusinessAudience({
+  type: "final",
+  output: {
+    overview: "通过 read_current_page 和 DOM 信息完成初筛。",
+    analysis: "search_in_browser 已获得 Ozon/Yandex 侧需求，close_tab 后整理报告。",
+    summary: "不应暴露 xpath、验证码、人机拦截、自愈程序 等内部措辞。",
+    data: [
+      {
+        title: "候选供应商 A",
+        product_link: "https://detail.1688.com/offer/read_current_page.html",
+        evidence: "调用指令: search_in_browser 后，基于 DOM 结果判断视觉相似。",
+      },
+    ],
+  },
+});
+
+const sanitizedText = [
+  sanitizedFinal.output.overview,
+  sanitizedFinal.output.analysis,
+  sanitizedFinal.output.summary,
+  sanitizedFinal.output.data[0].evidence,
+].join("\n");
+
+assert.doesNotMatch(sanitizedText, /read_current_page|search_in_browser|close_tab|DOM|xpath|验证码|人机拦截|自愈程序/i, "business report text should not expose internal tool or browser automation jargon");
+assert.equal(
+  sanitizedFinal.output.data[0].product_link,
+  "https://detail.1688.com/offer/read_current_page.html",
+  "sanitizer should not mutate URL/link fields"
+);
 
 console.log("sourcing workflow guard smoke passed");

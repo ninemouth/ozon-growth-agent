@@ -160,6 +160,11 @@ window.alert = (message) => {
   alertText = message;
 };
 window.confirm = () => true;
+window.open = (url, target) => {
+  storage.lastOpenedUrl = url;
+  storage.lastOpenedTarget = target;
+  return null;
+};
 
 const context = dom.getInternalVMContext();
 context.chrome = window.chrome;
@@ -176,6 +181,8 @@ assert.equal(window.document.querySelectorAll(".canvas-focus-tab").length, 0, "w
 assert.ok(window.document.querySelector(".workflow-zoom-dock"), "workflow zoom controls should live in the bottom dock");
 assert.doesNotMatch(window.document.querySelector(".workflow-canvas-space")?.textContent || "", /滚轮缩放，按住空白处拖动画布/, "workflow helper hint should be removed");
 assert.match(window.document.querySelector('.root-node[data-root-id="store_health"]')?.textContent || "", /API 已同步/, "workflow root should expose Seller API evidence status before running");
+assert.equal(window.document.querySelectorAll(".store-sidebar-column").length, 0, "API data page should not expose the removed shop-binding sidebar");
+assert.equal(window.document.querySelectorAll("#add-shop-form, #dashboard-shop-list").length, 0, "shop credential management should not appear in the API data page");
 
 window.document.querySelector('.root-node[data-root-id="platform_trends"]').click();
 await wait();
@@ -250,6 +257,13 @@ context.renderReportsList([], storage.savedResults);
 const wrappedReportText = window.document.getElementById("report-viewer-content").textContent;
 assert.match(wrappedReportText, /Ozon 松鼠喂食器跨境供应链审计/, "wrapped final reports should render as business report content");
 assert.doesNotMatch(wrappedReportText, /"type":\s*"final"/, "wrapped final reports should not render raw JSON by default");
+window.document.querySelector(".report-pdf-current").click();
+assert.match(storage.printHtml, /<meta charset="UTF-8">/, "report center PDF print HTML should declare UTF-8");
+assert.match(storage.printHtml, /PingFang SC[\s\S]*Microsoft YaHei[\s\S]*Noto Sans CJK SC/, "report center PDF should use Chinese-capable font fallbacks");
+assert.match(storage.printHtml, /@page\s*\{\s*size:\s*A4 portrait;/, "report center PDF should use the native A4 print template");
+assert.match(storage.printHtml, /正在生成原生数字版 PDF/, "report center PDF should use the native print-to-PDF bridge");
+assert.match(storage.printHtml, /Ozon 松鼠喂食器跨境供应链审计/, "report center PDF should preserve Chinese report content");
+assert.equal(storage.lastOpenedUrl, "chrome-extension://test/print.html", "report center PDF should open the shared print bridge");
 
 storage.savedResults.unshift({
   id: "embedded-json-report",

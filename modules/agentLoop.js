@@ -30,9 +30,55 @@ function summarizeProductCards(cards = []) {
 
 const SOURCING_SKILL_RE = /domestic_sourcing_finder|ozon_sourcing_finder/;
 const IMAGE_SEARCH_TOOLS = ["image_search_1688", "image_search_taobao", "image_search_in_browser"];
+const TECHNICAL_JARGON_ERROR = "报告正文中包含内部技术黑话或函数名（如 DOM, read_current_page, xpath 等），请过滤并替换为通俗易懂的商业/供应链分析术语！";
+const TECHNICAL_JARGON_RE = /read_current_page|open_new_tab|close_tab|search_in_browser|click_by_text|click_by_selector|input_text_and_search|agentic_web_search|image_search_1688|image_search_taobao|image_search_in_browser|DOM|xpath|GBK 编码|UTF-8|自愈程序|爬虫|人机拦截|验证码/i;
+const REPORT_URL_FIELD_RE = /(^|_)(url|uri|link|href|image|image_src|img|src|thumbnail|photo|picture)(_|$)/i;
 
 function isSourcingSkill(skillId = "") {
   return SOURCING_SKILL_RE.test(String(skillId || ""));
+}
+
+function sanitizeReportStringForBusinessAudience(text = "") {
+  return String(text)
+    .replace(/调用指令[:：]?\s*(read_current_page|open_new_tab|close_tab|search_in_browser|click_by_text|click_by_selector|input_text_and_search|agentic_web_search|image_search_1688|image_search_taobao|image_search_in_browser)/gi, "完成业务取证")
+    .replace(/\b(read_current_page|open_new_tab|close_tab|click_by_text|click_by_selector|input_text_and_search|agentic_web_search|image_search_1688|image_search_taobao|image_search_in_browser)\b/gi, "业务取证")
+    .replace(/\bsearch_in_browser\b/gi, "市场检索")
+    .replace(/\bDOM\b/gi, "页面信息")
+    .replace(/\bxpath\b/gi, "页面定位信息")
+    .replace(/GBK 编码|UTF-8/gi, "页面编码")
+    .replace(/自愈程序/gi, "自动修正机制")
+    .replace(/爬虫/gi, "页面采集")
+    .replace(/人机拦截|验证码/gi, "平台访问限制");
+}
+
+function sanitizeReportValueForBusinessAudience(value, key = "") {
+  if (typeof value === "string") {
+    return REPORT_URL_FIELD_RE.test(key) ? value : sanitizeReportStringForBusinessAudience(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeReportValueForBusinessAudience(item));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([entryKey, entryValue]) => [
+        entryKey,
+        sanitizeReportValueForBusinessAudience(entryValue, entryKey),
+      ])
+    );
+  }
+  return value;
+}
+
+export function sanitizeFinalReportForBusinessAudience(parsed) {
+  if (!parsed || parsed.type !== "final" || !parsed.output) return parsed;
+  return {
+    ...parsed,
+    output: sanitizeReportValueForBusinessAudience(parsed.output),
+  };
+}
+
+function isTechnicalJargonOnlyFailure(validationErrors = []) {
+  return validationErrors.length > 0 && validationErrors.every((err) => err === TECHNICAL_JARGON_ERROR);
 }
 
 function isImageSearchTool(toolName = "") {
@@ -298,10 +344,9 @@ function validateReport(parsed, userInstruction, skillId, toolHistory = [], page
   }
 
   // 1. Check for technical jargon
-  const jargonRegex = /read_current_page|open_new_tab|click_by_text|click_by_selector|input_text_and_search|agentic_web_search|DOM|xpath|GBK 编码|UTF-8|自愈程序|爬虫|人机拦截|验证码/i;
-  const checkJargon = (str) => typeof str === "string" && jargonRegex.test(str);
+  const checkJargon = (str) => typeof str === "string" && TECHNICAL_JARGON_RE.test(str);
   if (checkJargon(out.overview) || checkJargon(out.analysis) || checkJargon(out.summary)) {
-    errors.push("报告正文中包含内部技术黑话或函数名（如 DOM, read_current_page, xpath 等），请过滤并替换为通俗易懂的商业/供应链分析术语！");
+    errors.push(TECHNICAL_JARGON_ERROR);
   }
 
   if (isShopOptimizerOnly(skillId)) {
@@ -726,7 +771,19 @@ ${(skillId || "").includes("tiktok_shop_monitor") ? `\n\n## ⚠️ TikTok 监控
     }
 
     if (parsed.type === "final") {
-      const validationErrors = validateReport(parsed, userInstruction, skillId, toolHistory, pageContext);
+      let finalParsed = parsed;
+      let validationErrors = validateReport(finalParsed, userInstruction, skillId, toolHistory, pageContext);
+      if (isTechnicalJargonOnlyFailure(validationErrors)) {
+        const sanitizedParsed = sanitizeFinalReportForBusinessAudience(finalParsed);
+        const sanitizedErrors = validateReport(sanitizedParsed, userInstruction, skillId, toolHistory, pageContext);
+        if (sanitizedErrors.length === 0) {
+          finalParsed = sanitizedParsed;
+          validationErrors = [];
+          sendProgress({ type: "reflection", step, message: "Critic 已自动清理报告中的内部技术措辞，保留本轮取证结果并继续完成。" });
+        } else {
+          validationErrors = sanitizedErrors;
+        }
+      }
       if (validationErrors.length > 0) {
         const reflectionsCount = ctxForPrompt.__reflectionsCount || 0;
         if (reflectionsCount < 2 && step < maxSteps - 1) {
@@ -754,12 +811,12 @@ ${(skillId || "").includes("tiktok_shop_monitor") ? `\n\n## ⚠️ TikTok 监控
         });
         continue;
       } else {
-        messages.push({ role: "assistant", content: assistantContent });
+        messages.push({ role: "assistant", content: JSON.stringify(finalParsed) });
         globalSessionCache[sessionKey] = messages;
         return {
           ok: true,
           type: "final",
-          result: parsed.output,
+          result: finalParsed.output,
           steps: step,
         };
       }

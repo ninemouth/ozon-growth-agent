@@ -3338,6 +3338,101 @@ async function copyReportContent(rep) {
   }
 }
 
+function buildNativePdfPrintHtml({
+  title = "Ozon_Growth_Report",
+  subtitle = "Ozon Growth Intelligence",
+  htmlContent = "",
+  dateStr = new Date().toISOString().split("T")[0],
+} = {}) {
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>${escapeHtml(title)}_${dateStr}</title>
+  <style>
+    :root {
+      --bg2: #f1f5f9;
+      --bg3: #f8fafc;
+      --text: #0f172a;
+      --text2: #475569;
+      --border: #cbd5e1;
+      --accent: #1e3a8a;
+    }
+
+    @page { size: A4 portrait; margin: 25mm 20mm; }
+    @page landscape-page { size: A4 landscape; margin: 20mm 25mm; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+      color: #1a202c;
+      line-height: 1.7;
+      background: #fff;
+      margin: 0 !important;
+      padding: 0 !important;
+      text-align: left;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+    }
+
+    .print-banner { background: #eff6ff; color: #1d4ed8; padding: 15px; text-align: center; font-weight: 700; border-bottom: 1px solid #bfdbfe; margin-bottom: 20px; }
+    @media print {
+      .print-banner { display: none !important; }
+      body { -webkit-print-color-adjust: exact; print-color-adjust: exact; margin: 0 !important; padding: 0 !important; }
+    }
+
+    .cover-page { padding-top: 60px; text-align: center !important; page-break-after: always; box-sizing: border-box; }
+    .cover-title { font-size: 2.4em; color: #1e3a8a; font-weight: 800; max-width: 82%; line-height: 1.3; margin: 40px auto 20px; text-align: center !important; }
+    .cover-subtitle { font-size: 1.05em; color: #64748b; margin-top: 10px; font-weight: 600; text-align: center !important; }
+    .cover-footer { margin-top: 160px; font-size: 1em; color: #94a3b8; text-align: center !important; }
+    .cover-page p, .cover-page div, .cover-page span { text-align: center !important; }
+
+    .report-container { max-width: 100%; font-size: 11pt; padding: 0 20px; text-align: left !important; }
+    .report-container p, .report-container li, .report-container td, .report-container div { text-align: left !important; }
+    .meta { color: #64748b; font-size: 10.5pt; margin-bottom: 20px; text-align: center !important; }
+
+    h1 { color: #0f172a; font-size: 22pt; border-bottom: 2px solid #1e3a8a; padding-bottom: 10px; margin: 30px 0 20px; text-align: center !important; }
+    h2 { color: #1e3a8a; font-size: 16pt; border-bottom: 1px solid #e2e8f0; padding-bottom: 8px; margin: 30px 0 15px; padding-top: 15px; page-break-after: avoid; text-align: left !important; }
+    h3 { color: #334155; font-size: 14pt; margin: 25px 0 10px; padding-top: 12px; page-break-after: avoid; text-align: left !important; }
+    h4 { color: #334155; font-size: 12.5pt; margin: 20px 0 8px; page-break-after: avoid; text-align: left !important; }
+    p { margin-bottom: 15px; color: #334155; orphans: 3; widows: 3; }
+    strong { color: #0f172a; }
+
+    .section-divider { page-break-before: always; }
+    .landscape-section { page: landscape-page; width: 100%; text-align: left !important; }
+
+    table { width: 100%; border-collapse: collapse; margin: 20px 0 30px; page-break-inside: avoid; font-size: 10pt; text-align: left !important; }
+    th, td { border: 1px solid #cbd5e1 !important; padding: 12px !important; text-align: left !important; vertical-align: top; word-break: break-word; }
+    th { background-color: #f8fafc !important; color: #0f172a !important; font-weight: 700; font-size: 9pt; }
+    tr:nth-child(even) { background-color: #f8fafc; }
+
+    code { background: #f1f5f9; color: #b91c1c; padding: 2px 6px; border-radius: 4px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.9em; text-align: left !important; }
+    pre { page-break-inside: avoid; text-align: left !important; }
+    pre code { display: block; background: #0f172a; color: #f8fafc; padding: 15px; border-radius: 6px; overflow-x: auto; white-space: pre-wrap; word-wrap: break-word; text-align: left !important; }
+    ul, ol { margin-bottom: 15px; padding-left: 20px; text-align: left !important; }
+    li { margin-bottom: 8px; text-align: left !important; }
+    img { max-width: 100%; height: auto; border-radius: 6px; margin: 15px 0; page-break-inside: avoid; }
+    a { color: #1e3a8a; text-decoration: none; border-bottom: 1px dashed #cbd5e1; word-break: break-word; }
+    .empty-text { display: none; }
+  </style>
+</head>
+<body>
+  <div class="print-banner">正在生成原生数字版 PDF。请在弹出的对话框中选择【另存为 PDF】；如未弹出，请按 Ctrl+P 或 Cmd+P。</div>
+  <div class="cover-page">
+    <div class="cover-subtitle">Ozon Growth Agent</div>
+    <div class="cover-title">${escapeHtml(title)}</div>
+    <div class="cover-subtitle">${escapeHtml(subtitle)}</div>
+    <div class="cover-footer">
+      <p>Report Date: ${escapeHtml(dateStr)}</p>
+      <p>Confidential & Proprietary</p>
+    </div>
+  </div>
+  <div class="report-container">
+    ${htmlContent}
+  </div>
+</body>
+</html>`;
+}
+
 async function deleteReportEntry(rep) {
   if (!rep) return;
   if (!confirm(`确定删除「${rep.title}」吗？`)) return;
@@ -3355,33 +3450,13 @@ async function deleteReportEntry(rep) {
 function downloadReportPdf(rep) {
   if (!rep) return;
   const dateStr = new Date().toISOString().split("T")[0];
-  const bodyHtml = marked.parse(rep.content || "");
-  const printHtml = `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <title>${escapeHtml(rep.title)}_${dateStr}</title>
-  <style>
-    @page { size: A4 portrait; margin: 20mm; }
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, "Microsoft YaHei", sans-serif; color:#111827; line-height:1.7; }
-    h1 { font-size: 24px; border-bottom: 2px solid #2563eb; padding-bottom: 10px; }
-    h2 { font-size: 18px; color:#1d4ed8; margin-top: 26px; }
-    h3 { font-size: 15px; color:#334155; margin-top: 20px; }
-    table { width:100%; border-collapse: collapse; margin:16px 0; font-size:12px; }
-    th, td { border:1px solid #cbd5e1; padding:8px; text-align:left; vertical-align:top; }
-    pre { white-space:pre-wrap; background:#0f172a; color:#f8fafc; padding:12px; border-radius:6px; }
-    .meta { color:#64748b; font-size:12px; margin-bottom:20px; }
-    .print-banner { background:#eff6ff; color:#1d4ed8; padding:10px; text-align:center; margin-bottom:18px; }
-    @media print { .print-banner { display:none; } }
-  </style>
-</head>
-<body>
-  <div class="print-banner">请选择“另存为 PDF”。如未弹出，请按 Ctrl+P 或 Cmd+P。</div>
-  <h1>${escapeHtml(rep.title)}</h1>
-  <div class="meta">${escapeHtml(rep.tag)} · ${escapeHtml(rep.date)}</div>
-  ${bodyHtml}
-</body>
-</html>`;
+  const bodyHtml = window.marked?.parse ? window.marked.parse(rep.content || "") : `<pre><code>${escapeHtml(rep.content || "")}</code></pre>`;
+  const printHtml = buildNativePdfPrintHtml({
+    title: rep.title,
+    subtitle: `${rep.tag || "AI决策"} · ${rep.date || dateStr}`,
+    htmlContent: `<h1>${escapeHtml(rep.title)}</h1><div class="meta">${escapeHtml(rep.tag)} · ${escapeHtml(rep.date)}</div>${bodyHtml}`,
+    dateStr,
+  });
   chrome.storage.local.set({ printHtml }, () => {
     window.open(chrome.runtime.getURL("print.html"), "_blank");
   });
