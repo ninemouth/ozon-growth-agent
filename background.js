@@ -1,8 +1,18 @@
-// background.js — Service Worker for ecommerce-growth-agent (ES Modules)
+// background.js — Service Worker for ozon-growth-agent (ES Modules)
 
 import { runAgentLoop } from './modules/agentLoop.js';
 import { tools, resetSessionData } from './modules/toolRegistry.js';
 import { callLLM } from './modules/llmClient.js';
+import {
+  acquireWorkflowLease,
+  appendWorkflowEvent,
+  clearWorkflowCancellation,
+  loadWorkflowSnapshot,
+  releaseWorkflowLease,
+  renewWorkflowLease,
+  requestWorkflowCancellation,
+  saveWorkflowSnapshot,
+} from './modules/workflowRuntime.js';
 
 // ── Keep Service Worker Alive in MV3 ──
 // Calling any Chrome API resets the 30-second idle timer in Manifest V3.
@@ -35,11 +45,13 @@ async function loadSkill(skillPath) {
 
 const OZON_SKILL_PATHS = new Set([
   "skills/ozon_product_opportunity_explorer.skill.md",
+  "skills/ozon_platform_trends.skill.md",
   "skills/ozon_sourcing_finder.skill.md",
   "skills/ozon_global_shop_optimizer.skill.md",
   "skills/ozon_operations_tracker.skill.md",
   "skills/ozon_listing_generator.skill.md",
   "skills/ozon_review_analyzer.skill.md",
+  "skills/ozon_compliance_auditor.skill.md",
 ]);
 
 const GROWTH_ACTION_SKILL_MAP = {
@@ -53,9 +65,10 @@ const GROWTH_ACTION_SKILL_MAP = {
   filter_supplier_sources: ["skills/ozon_sourcing_finder.skill.md"],
   detect_fulfillment_risk: ["skills/ozon_operations_tracker.skill.md"],
   find_expansion_opportunities: ["skills/ozon_product_opportunity_explorer.skill.md", "skills/ozon_sourcing_finder.skill.md"],
-  explore_platform_trends: ["skills/ozon_product_opportunity_explorer.skill.md"],
+  explore_platform_trends: ["skills/ozon_platform_trends.skill.md"],
   create_growth_experiment: ["skills/ozon_operations_tracker.skill.md"],
   review_experiment_result: ["skills/ozon_operations_tracker.skill.md"],
+  audit_compliance: ["skills/ozon_compliance_auditor.skill.md"],
 };
 
 function normalizeSkillPath(skillPath) {
@@ -88,6 +101,131 @@ async function cacheOzonApiSnapshot(kind, args = {}, result = {}) {
   return payload;
 }
 
+const UPDATE_STATUS_KEY = "ozonUpdateStatus";
+const UPDATE_CHECK_ALARM = "ozon_update_check";
+const UPDATE_CHECK_INTERVAL_MINUTES = 12 * 60;
+const GITHUB_RELEASES_URL = "https://github.com/ninemouth/ozon-growth-agent/releases";
+const GITHUB_LATEST_RELEASE_API = "https://api.github.com/repos/ninemouth/ozon-growth-agent/releases/latest";
+const GITHUB_MANIFEST_URL = "https://raw.githubusercontent.com/ninemouth/ozon-growth-agent/main/manifest.json";
+
+function getExtensionVersion() {
+  return chrome.runtime.getManifest().version || "0.0.0";
+}
+
+function normalizeVersion(version) {
+  return String(version || "")
+    .trim()
+    .replace(/^v/i, "")
+    .split(/[+-]/)[0]
+    .replace(/[^0-9.]/g, "");
+}
+
+function compareSemver(a, b) {
+  const left = normalizeVersion(a).split(".").map((part) => Number.parseInt(part, 10) || 0);
+  const right = normalizeVersion(b).split(".").map((part) => Number.parseInt(part, 10) || 0);
+  const length = Math.max(left.length, right.length, 3);
+  for (let i = 0; i < length; i += 1) {
+    const diff = (left[i] || 0) - (right[i] || 0);
+    if (diff !== 0) return diff > 0 ? 1 : -1;
+  }
+  return 0;
+}
+
+async function readCachedUpdateStatus() {
+  const cached = await new Promise((resolve) => chrome.storage.local.get([UPDATE_STATUS_KEY], resolve));
+  const currentVersion = getExtensionVersion();
+  return cached[UPDATE_STATUS_KEY] || {
+    currentVersion,
+    latestVersion: currentVersion,
+    hasUpdate: false,
+    status: "unknown",
+    checkedAt: "",
+    releaseUrl: GITHUB_RELEASES_URL,
+    source: "local_manifest",
+  };
+}
+
+async function fetchLatestReleaseMetadata() {
+  const releaseResponse = await fetch(GITHUB_LATEST_RELEASE_API, {
+    headers: {
+      Accept: "application/vnd.github+json",
+    },
+  });
+  if (releaseResponse.ok) {
+    const release = await releaseResponse.json();
+    return {
+      latestVersion: normalizeVersion(release.tag_name || release.name || ""),
+      releaseUrl: release.html_url || GITHUB_RELEASES_URL,
+      releaseName: release.name || release.tag_name || "",
+      releaseNotes: release.body || "",
+      source: "github_release",
+    };
+  }
+
+  if (releaseResponse.status !== 404) {
+    throw new Error(`GitHub Release 检查失败: HTTP ${releaseResponse.status}`);
+  }
+
+  const manifestResponse = await fetch(GITHUB_MANIFEST_URL, { cache: "no-store" });
+  if (!manifestResponse.ok) {
+    throw new Error(`GitHub manifest 检查失败: HTTP ${manifestResponse.status}`);
+  }
+  const manifest = await manifestResponse.json();
+  return {
+    latestVersion: normalizeVersion(manifest.version || ""),
+    releaseUrl: GITHUB_RELEASES_URL,
+    releaseName: "GitHub main manifest",
+    releaseNotes: "",
+    source: "github_manifest",
+  };
+}
+
+async function checkForUpdates({ force = false } = {}) {
+  const currentVersion = getExtensionVersion();
+  const cached = await readCachedUpdateStatus();
+  const checkedAt = cached.checkedAt ? Date.parse(cached.checkedAt) : 0;
+  const isFresh = checkedAt && Date.now() - checkedAt < 60 * 60 * 1000;
+  if (!force && isFresh) {
+    return { ...cached, currentVersion };
+  }
+
+  try {
+    const latest = await fetchLatestReleaseMetadata();
+    const latestVersion = latest.latestVersion || currentVersion;
+    const hasUpdate = compareSemver(latestVersion, currentVersion) > 0;
+    const status = {
+      ok: true,
+      currentVersion,
+      latestVersion,
+      hasUpdate,
+      status: hasUpdate ? "update_available" : "up_to_date",
+      checkedAt: new Date().toISOString(),
+      releaseUrl: latest.releaseUrl || GITHUB_RELEASES_URL,
+      releaseName: latest.releaseName || "",
+      releaseNotes: latest.releaseNotes || "",
+      source: latest.source || "github",
+      installMode: "source_or_unpacked",
+    };
+    await new Promise((resolve) => chrome.storage.local.set({ [UPDATE_STATUS_KEY]: status }, resolve));
+    return status;
+  } catch (err) {
+    const status = {
+      ok: false,
+      currentVersion,
+      latestVersion: cached.latestVersion || currentVersion,
+      hasUpdate: false,
+      status: "check_failed",
+      checkedAt: new Date().toISOString(),
+      releaseUrl: cached.releaseUrl || GITHUB_RELEASES_URL,
+      error: err.message,
+      source: "github",
+      installMode: "source_or_unpacked",
+    };
+    await new Promise((resolve) => chrome.storage.local.set({ [UPDATE_STATUS_KEY]: status }, resolve));
+    return status;
+  }
+}
+
 // ── Ozon Intent Router & Dispatcher ──
 async function dispatchOzonSkills(userInstruction) {
   const inst = String(userInstruction).toLowerCase();
@@ -107,13 +245,25 @@ async function dispatchOzonSkills(userInstruction) {
   const hasExplicitSourcingIntent =
     /1688|寻源|货源|采购|供应商|源头|工厂|拿样|比价|套利|采购直达|供货|批发|起批/.test(inst);
   const hasProductOpportunityIntent =
-    /选品|开发|类目|爆品|机会|牙刷|合规|eac|准入/.test(inst);
+    /选品|开发|类目|爆品|机会|牙刷|扩品/.test(inst);
+  const hasPlatformTrendIntent =
+    /平台趋势|趋势|大盘|热卖榜|排行榜|搜索趋势|季节性|yandex|google trends|google ru|站外需求|平台机会/.test(inst);
+  const hasComplianceIntent =
+    /合规|法规|认证|证书|侵权|商标|版权|eac|tr cu|欧亚经济联盟|禁售|安全审查|发布前审查|准入/.test(inst);
+
+  if (hasComplianceIntent) {
+    pushUnique(matched, "skills/ozon_compliance_auditor.skill.md");
+  }
+
+  if (hasPlatformTrendIntent && !hasShopOptimizationIntent) {
+    pushUnique(matched, "skills/ozon_platform_trends.skill.md");
+  }
   
   if (hasShopOptimizationIntent) {
     pushUnique(matched, "skills/ozon_global_shop_optimizer.skill.md");
   }
 
-  if (hasProductOpportunityIntent && !hasShopOptimizationIntent) {
+  if (hasProductOpportunityIntent && !hasShopOptimizationIntent && !hasPlatformTrendIntent && !hasComplianceIntent) {
     pushUnique(matched, "skills/ozon_product_opportunity_explorer.skill.md");
   }
 
@@ -141,13 +291,15 @@ async function dispatchOzonSkills(userInstruction) {
       const classificationPrompt = [
         {
           role: "system",
-          content: `你是一个 Ozon 跨境电商运营智能路由器。请根据用户的输入需求，从以下 6 个专有 AI 技能路径中选择所有最相关的技能路径：
+          content: `你是一个 Ozon 跨境电商运营智能路由器。请根据用户的输入需求，从以下 8 个专有 AI 技能路径中选择所有最相关的技能路径：
 1. "skills/ozon_product_opportunity_explorer.skill.md" (Ozon选品、类目需求分析、合规性风险审计)
-2. "skills/ozon_sourcing_finder.skill.md" (1688货源开发、卢布跨境利润套利测算、运费关税核算)
-3. "skills/ozon_global_shop_optimizer.skill.md" (Ozon店铺经营诊断、Seller API对账、ABC分级优化)
-4. "skills/ozon_operations_tracker.skill.md" (监控数据、对比优化阶段、流量曝光转化效果)
-5. "skills/ozon_listing_generator.skill.md" (俄语 SEO Title/Description 商品详情文案生成)
-6. "skills/ozon_review_analyzer.skill.md" (买家原声差评剖析、退换货与商品缺陷分析)
+2. "skills/ozon_platform_trends.skill.md" (Ozon平台公开搜索、Yandex.ru、Google RU/Trends 和趋势机会分析)
+3. "skills/ozon_sourcing_finder.skill.md" (1688货源开发、卢布跨境利润套利测算、运费关税核算)
+4. "skills/ozon_global_shop_optimizer.skill.md" (Ozon店铺经营诊断、Seller API对账、ABC分级优化)
+5. "skills/ozon_operations_tracker.skill.md" (监控数据、对比优化阶段、流量曝光转化效果)
+6. "skills/ozon_listing_generator.skill.md" (俄语 SEO Title/Description 商品详情文案生成)
+7. "skills/ozon_review_analyzer.skill.md" (买家原声差评剖析、退换货与商品缺陷分析)
+8. "skills/ozon_compliance_auditor.skill.md" (Ozon商品发布前合规、IP、产品安全与俄罗斯/欧亚经济联盟法规审查)
 
 请直接输出一个包含路径字符串的 JSON 数组（例如：["skills/ozon_sourcing_finder.skill.md"]），不要包含任何其他说明字符，格式必须是标准的 JSON 数组。`
         },
@@ -201,6 +353,13 @@ async function listSkills() {
       icon: "🇷🇺",
     },
     {
+      id: "ozon_platform_trends",
+      path: "skills/ozon_platform_trends.skill.md",
+      name: "Ozon 平台趋势与公开需求研究专家",
+      description: "基于 Ozon 搜索、Yandex.ru、Google RU/Trends 和公开竞品页面分析平台级需求窗口，不把自营 API 数据冒充平台大盘",
+      icon: "📊",
+    },
+    {
       id: "ozon_sourcing_finder",
       path: "skills/ozon_sourcing_finder.skill.md",
       name: "Ozon ➔ 1688 跨境选品供应链与套利审计专家 (Auto)",
@@ -234,6 +393,13 @@ async function listSkills() {
       name: "Ozon 俄语评论痛点与缺陷审计专家",
       description: "深度解析 Ozon 页面上俄罗斯买家的真实原声差评，归纳核心质量/包装/物流问题，提供备货改良指导",
       icon: "⭐",
+    },
+    {
+      id: "ozon_compliance_auditor",
+      path: "skills/ozon_compliance_auditor.skill.md",
+      name: "Ozon 商品合规与发布风险审查专家",
+      description: "审查 Ozon 商品在俄罗斯/欧亚经济联盟法规、IP、标签、材质安全和履约包装方面的发布风险",
+      icon: "🛡️",
     }
   ];
 
@@ -251,21 +417,100 @@ async function listSkills() {
 
 // ── Port Connection Handling (Streaming Progress) ──
 const activePorts = new Map();
+const WORKFLOW_CHECKPOINTS_KEY = "agentWorkflowCheckpoints";
+
+function buildWorkflowCheckpointKey({ tabId, matchedSkills = [], message = {} } = {}) {
+  if (message.workflowSessionId) return String(message.workflowSessionId);
+  if (message.growthCaseId) return `growth_case:${message.growthCaseId}`;
+  const skillPart = matchedSkills.join("+") || normalizeSkillPath(message.skillPath) || "auto";
+  const actionPart = message.growthActionId || "manual";
+  return `tab:${tabId || "unknown"}:${actionPart}:${skillPart}`;
+}
+
+async function getWorkflowCheckpoints() {
+  const data = await new Promise((resolve) => chrome.storage.local.get([WORKFLOW_CHECKPOINTS_KEY], resolve));
+  return data[WORKFLOW_CHECKPOINTS_KEY] || {};
+}
+
+async function getWorkflowCheckpoint(key) {
+  if (!key) return null;
+  const runtimeRecord = await loadWorkflowSnapshot(key).catch(() => null);
+  if (runtimeRecord?.snapshot) return { ...runtimeRecord.snapshot, runtimeStatus: runtimeRecord.status, workflowSequence: runtimeRecord.sequence };
+  const checkpoints = await getWorkflowCheckpoints();
+  return checkpoints[key] || null;
+}
+
+async function setWorkflowCheckpoint(key, patch = {}) {
+  if (!key) return;
+  await saveWorkflowSnapshot(key, {
+    status: patch.status || "running",
+    snapshot: {
+      ...(patch || {}),
+      key,
+      updatedAt: new Date().toISOString(),
+    },
+  });
+  await appendWorkflowEvent(key, patch.lastStage || patch.status || "checkpoint", {
+    status: patch.status || "running",
+    step: patch.step || 0,
+    currentTool: patch.currentTool || "",
+    lastStage: patch.lastStage || "",
+  });
+
+  const checkpoints = await getWorkflowCheckpoints();
+  const previous = checkpoints[key] || {};
+  checkpoints[key] = {
+    ...previous,
+    ...patch,
+    key,
+    updatedAt: new Date().toISOString(),
+  };
+  const entries = Object.entries(checkpoints)
+    .sort((a, b) => new Date(b[1].updatedAt || 0) - new Date(a[1].updatedAt || 0))
+    .slice(0, 30);
+  await new Promise((resolve) => chrome.storage.local.set({ [WORKFLOW_CHECKPOINTS_KEY]: Object.fromEntries(entries) }, resolve));
+}
+
+function isResumableCheckpoint(checkpoint) {
+  return checkpoint && !["completed", "cancelled"].includes(checkpoint.status);
+}
 
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name === "ozon-agent-loop") {
     const portId = Date.now().toString();
     activePorts.set(portId, port);
     let isCancelled = false;
+    let activeCheckpointKey = "";
+    let runInFlight = false;
+    let leaseRenewTimer = null;
 
     port.onDisconnect.addListener(() => {
       isCancelled = true;
       activePorts.delete(portId);
+      if (activeCheckpointKey) {
+        requestWorkflowCancellation(activeCheckpointKey, "port_disconnected").catch((err) => console.warn("Could not request workflow cancellation:", err.message));
+        setWorkflowCheckpoint(activeCheckpointKey, {
+          status: "interrupted",
+          lastStage: "port_disconnected",
+          interruptedAt: new Date().toISOString(),
+        }).catch((err) => console.warn("Could not persist interrupted checkpoint:", err.message));
+        releaseWorkflowLease(activeCheckpointKey, portId, "interrupted").catch((err) => console.warn("Could not release workflow lease:", err.message));
+      }
+      if (leaseRenewTimer) clearInterval(leaseRenewTimer);
       console.log(`Port ${portId} disconnected.`);
     });
 
     port.onMessage.addListener(async (message) => {
       if (message.type === "RUN_SKILL") {
+        if (runInFlight) {
+          port.postMessage({
+            type: "ERROR",
+            error: "当前已有 workflow 正在执行。请等待当前任务完成，或发送“继续”恢复已保存断点，避免并发任务重复开页和重复调用 AI。",
+            resumable: true,
+          });
+          return;
+        }
+        runInFlight = true;
         try {
           const tab = await getCurrentTab();
           if (!tab) throw new Error("无法获取当前活动的标签页，请确保浏览器焦点在目标网页上。");
@@ -347,6 +592,33 @@ chrome.runtime.onConnect.addListener((port) => {
             ? [selectedSkillPath]
             : await dispatchOzonSkills(message.userInstruction);
           console.log("Matched Ozon skills:", matchedSkills);
+          const checkpointKey = buildWorkflowCheckpointKey({ tabId: tab.id, matchedSkills, message });
+          activeCheckpointKey = checkpointKey;
+          const lease = await acquireWorkflowLease(checkpointKey, portId);
+          if (!lease.ok) {
+            throw new Error("该 workflow 当前已由另一个执行实例占用，请等待其结束或断点过期后再恢复。");
+          }
+          await clearWorkflowCancellation(checkpointKey);
+          leaseRenewTimer = setInterval(() => {
+            renewWorkflowLease(checkpointKey, portId).catch((err) => console.warn("Could not renew workflow lease:", err.message));
+          }, 15_000);
+          const existingCheckpoint = await getWorkflowCheckpoint(checkpointKey);
+          const shouldResumeFromCheckpoint = isResumableCheckpoint(existingCheckpoint) && (
+            message.continueSession ||
+            Boolean(message.userInstruction) ||
+            Boolean(message.growthCaseId)
+          );
+
+          if (shouldResumeFromCheckpoint) {
+            port.postMessage({
+              type: "PROGRESS",
+              data: {
+                type: "reflection",
+                step: existingCheckpoint.step || 0,
+                message: `🔁 已找到可恢复工作流：${existingCheckpoint.lastStage || existingCheckpoint.status || "checkpoint"}。将沿用 ${existingCheckpoint.toolHistory?.length || 0} 条工具证据继续执行。`
+              }
+            });
+          }
 
           // Notify user via progress stream
           const matchedNames = matchedSkills.map(p => {
@@ -385,9 +657,25 @@ chrome.runtime.onConnect.addListener((port) => {
             userInstruction: message.userInstruction,
             pageContext,
             sendProgress,
-            continueSession: message.continueSession,
+            continueSession: message.continueSession || shouldResumeFromCheckpoint,
             highRandomness: message.highRandomness,
-            negativeFilter: message.negativeFilter
+            negativeFilter: message.negativeFilter,
+            resumeState: shouldResumeFromCheckpoint ? existingCheckpoint : null,
+            workflowId: checkpointKey,
+            workflowGeneration: lease.generation,
+            onCheckpoint: async (checkpoint) => {
+              await setWorkflowCheckpoint(checkpointKey, {
+                ...checkpoint,
+                matchedSkills,
+                skillPath: matchedSkills.join("+"),
+                growthActionId: message.growthActionId || "",
+                growthRunId: message.growthRunId || "",
+                growthCaseId: message.growthCaseId || "",
+                pageUrl: tab.url || "",
+                pageTitle: tab.title || "",
+                workflowGeneration: lease.generation,
+              });
+            },
           });
 
           if (!isCancelled) {
@@ -427,11 +715,35 @@ chrome.runtime.onConnect.addListener((port) => {
                 savedEntry,
               }
             });
+            await setWorkflowCheckpoint(checkpointKey, {
+              status: "completed",
+              completedAt: new Date().toISOString(),
+              lastStage: "success_delivered",
+            });
+            if (leaseRenewTimer) clearInterval(leaseRenewTimer);
+            leaseRenewTimer = null;
+            await releaseWorkflowLease(checkpointKey, portId, "completed");
+            activeCheckpointKey = "";
           }
         } catch (err) {
+          if (activeCheckpointKey) {
+            await setWorkflowCheckpoint(activeCheckpointKey, {
+              status: "failed",
+              error: err.message,
+              lastStage: "error",
+              failedAt: new Date().toISOString(),
+            });
+          }
+          if (activeCheckpointKey) {
+            releaseWorkflowLease(activeCheckpointKey, portId, "failed").catch((leaseErr) => console.warn("Could not release failed workflow lease:", leaseErr.message));
+          }
+          if (leaseRenewTimer) clearInterval(leaseRenewTimer);
+          leaseRenewTimer = null;
           if (!isCancelled) {
             port.postMessage({ type: "ERROR", error: err.message });
           }
+        } finally {
+          runInFlight = false;
         }
       }
     });
@@ -470,6 +782,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === "EXPORT_RESULTS") {
     exportResults()
+      .then((data) => sendResponse({ ok: true, data }))
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+
+  if (message.type === "GET_UPDATE_STATUS") {
+    readCachedUpdateStatus()
+      .then((data) => sendResponse({ ok: true, data }))
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+
+  if (message.type === "CHECK_FOR_UPDATES") {
+    checkForUpdates({ force: Boolean(message.force) })
       .then((data) => sendResponse({ ok: true, data }))
       .catch((err) => sendResponse({ ok: false, error: err.message }));
     return true;
@@ -599,6 +925,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 // ── Alarms Listener for Scheduled Background Monitoring Checks ──
 chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (alarm.name === UPDATE_CHECK_ALARM) {
+    await checkForUpdates({ force: true });
+    return;
+  }
+
   if (alarm.name.startsWith("monitor_task_")) {
     const taskJson = alarm.name.slice("monitor_task_".length);
     try {
@@ -730,4 +1061,6 @@ chrome.runtime.onInstalled.addListener(() => {
       });
     }
   });
+  chrome.alarms.create(UPDATE_CHECK_ALARM, { periodInMinutes: UPDATE_CHECK_INTERVAL_MINUTES });
+  checkForUpdates({ force: true });
 });

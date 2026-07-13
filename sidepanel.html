@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>电商增长 Agent</title>
+  <title>Ozon 增长 Agent</title>
   <link rel="stylesheet" href="sidepanel.css" />
 </head>
 
@@ -14,7 +14,7 @@
     <header class="header">
       <div class="header-brand">
         <span class="brand-icon">⚡</span>
-        <span class="brand-name">电商增长 Agent</span>
+        <span class="brand-name">Ozon 增长 Agent</span>
         <span class="brand-badge">AI Runtime</span>
       </div>
       <div class="header-actions">
@@ -69,7 +69,7 @@
           </div>
           <div class="growth-data-ledger">
             <span>数据来源</span>
-            <strong id="sidepanelDataLedger">前台页面真实读取；Seller API 需在 Dashboard 绑定；示例数据不会作为报告证据。</strong>
+            <strong id="sidepanelDataLedger">前台页面真实读取；Seller API 需在 Dashboard 绑定；无真实数据时保持空状态。</strong>
           </div>
         </div>
       </section>
@@ -125,7 +125,7 @@
             <div style="flex: 1; text-align: left;">
               <label class="form-label" style="font-weight: 600; font-size: 11px; color: var(--text2); display: block; margin-bottom: 4px; text-align: left;">投放预算</label>
               <div style="display:flex; gap:4px; text-align: left;">
-                <input type="number" id="trafficBudget" style="width:100%; height:28px; padding:2px 6px; box-sizing:border-box; font-size:12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg3); color: var(--text);" placeholder="金额" value="1500" />
+                <input type="number" id="trafficBudget" style="width:100%; height:28px; padding:2px 6px; box-sizing:border-box; font-size:12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg3); color: var(--text);" placeholder="金额" />
                 <select id="trafficCurrency" style="height:28px; font-size:11px; border: 1px solid var(--border); border-radius: var(--radius-sm); padding:0 4px; background: var(--bg3); color: var(--text); outline: none;">
                   <option value="元 (CNY)">元</option>
                   <option value="美元 (USD)">美元</option>
@@ -134,7 +134,7 @@
             </div>
             <div style="flex: 1; text-align: left;">
               <label class="form-label" style="font-weight: 600; font-size: 11px; color: var(--text2); display: block; margin-bottom: 4px; text-align: left;">投放周期 (天)</label>
-              <input type="number" id="trafficDuration" style="width:100%; height:28px; padding:2px 6px; box-sizing:border-box; font-size:12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg3); color: var(--text);" placeholder="天数" value="10" />
+              <input type="number" id="trafficDuration" style="width:100%; height:28px; padding:2px 6px; box-sizing:border-box; font-size:12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg3); color: var(--text);" placeholder="天数" />
             </div>
           </div>
           <div class="form-row-group" style="display: flex; gap: 8px; margin-bottom: 10px; text-align: left;">
@@ -153,6 +153,21 @@
           </div>
         </div>
         <textarea id="instruction" class="textarea" rows="3" placeholder="描述你想要分析的内容，或留空使用 skill 默认流程..."></textarea>
+        <div class="session-control">
+          <div class="session-control-head">
+            <div>
+              <div class="session-label">会话模式</div>
+              <div id="sessionModeText" class="session-mode-text">新会话：不会沿用旧断点</div>
+            </div>
+            <button type="button" id="newSessionBtn" class="session-btn primary">+ 新会话</button>
+          </div>
+          <button type="button" id="sessionHistoryBtn" class="session-history-toggle">历史会话 / 恢复断点</button>
+          <div id="sessionHistoryPanel" class="session-history-panel hidden">
+            <div id="sessionHistoryList" class="session-history-list">
+              <div class="session-empty">暂无可恢复会话。</div>
+            </div>
+          </div>
+        </div>
         <div id="targetImageInputs" class="target-image-inputs hidden">
           <div class="target-image-label">目标商品图兜底 <span class="optional">(默认自动读取当前页主图)</span></div>
           <input type="url" id="targetImageUrl" class="form-input compact-input" placeholder="自动识别失败时，可粘贴商品主图 URL" />
@@ -161,10 +176,6 @@
         </div>
         <div class="continue-session-wrapper">
           <label class="checkbox-label">
-            <input type="checkbox" id="continueSessionCheckbox" />
-            <span class="checkbox-text">延续上一轮的对话记忆 (基于旧任务继续)</span>
-          </label>
-          <label class="checkbox-label" style="margin-top: 6px;">
             <input type="checkbox" id="highRandomnessCheckbox" />
             <span class="checkbox-text">强制发散探索 (跳出常规，强制每次结果不同)</span>
           </label>
@@ -303,8 +314,30 @@
 
         <div class="settings-section-title">关于</div>
         <p class="settings-about">
-          <b>电商增长 Agent</b> 是一款基于大模型的全自动化电商运营外挂。它能在任意网页直接读取 DOM 和截图，结合预设的专家模型（Skill），自动化执行：跨平台选品挖掘、竞品弱点分析、Listing 优化及流量诊断。所有数据通过本地直连第三方大模型，绝对保护商业隐私。
+          <b>Ozon 增长 Agent</b> 是面向 Ozon 运营的开源 AI 工作流插件。它把店铺体检、平台趋势、竞品追踪、货源筛选、Listing 优化、报告沉淀和断点恢复收敛为可执行的增长流程。所有业务数据通过本地直连你配置的大模型与浏览器能力处理，不经过我们的中间服务器。
         </p>
+        <div class="update-card" id="updateStatusCard">
+          <div class="update-head">
+            <div>
+              <div class="settings-section-title compact">版本更新</div>
+              <div id="updateStatusText" class="update-status-text">正在读取版本状态...</div>
+            </div>
+            <span id="updateStatusBadge" class="update-badge">检测中</span>
+          </div>
+          <div class="update-version-row">
+            <span>当前版本 <b id="currentVersionText">-</b></span>
+            <span>最新版本 <b id="latestVersionText">-</b></span>
+          </div>
+          <div id="updateCheckedAt" class="update-checked-at"></div>
+          <div id="updateErrorText" class="update-error hidden"></div>
+          <div class="update-actions">
+            <button id="checkUpdateBtn" class="secondary-btn" type="button">检查更新</button>
+            <a id="openReleasesLink" class="secondary-link" href="https://github.com/ninemouth/ozon-growth-agent/releases" target="_blank" rel="noopener noreferrer">打开 Releases</a>
+          </div>
+          <div class="update-note">
+            GitHub 源码或开发者模式加载的扩展无法静默自动安装更新；插件会感知新版本并引导下载。若通过 Chrome Web Store 或固定 key 的自托管 CRX 分发，浏览器才可执行真正自动更新。
+          </div>
+        </div>
       </div>
     </div>
 

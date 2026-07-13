@@ -34,6 +34,14 @@
 
 ## 归因与证据账本要求
 
+## 运营追踪硬门槛
+
+- 每次复盘必须同时声明 `baseline_window`、`comparison_window` 和 `observation_window`，包含起止日期、时区、数据来源和是否完整。
+- 没有优化前快照时，不得输出“提升/下降/优化成功”；只能输出“无法归因，先建立基线”。
+- 每个阶段必须列出 `intervention`、`baseline_metrics`、`comparison_metrics`、`confounders` 和 `attribution_confidence`。价格、广告、库存、促销、季节性、评价、FBS/FBO 履约变化必须逐项声明已知/未知。
+- Ozon Seller API 只能支持当前授权自营店铺范围内的数据；没有 API 返回的 Sessions、加购率、订单或履约指标时，不得用页面样本或模型估算替代。
+- 复盘结论必须形成下一观察窗口和成功判定阈值，例如“7 天观察，Ordered Units 不低于基线，且公开页面价格/促销/评价状态无负向变化”；不得只给无时间边界的建议。若需要广告 ROI、财务费用或退货率，必须标为待接口/人工补充。
+
 - 不得把单一指标变化直接归因于某个动作。必须说明是否存在价格调整、广告活动、库存断货、促销标签、评价变化、季节性或履约方式变化等干扰项。
 - `data` 数组中的每个阶段或行动建议必须包含 `evidence_ledger`，每条证据包含：
   - `source_type`: 允许 `ozon_api`、`page_dom`、`screenshot_visual`、`ozon_search`、`yandex_search`、`google_search`、`google_trends`、`assumption`。

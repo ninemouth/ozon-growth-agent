@@ -1,28 +1,43 @@
 {
-  "name": "ecommerce-growth-agent",
-  "version": "1.0.0",
-  "description": "An open-source, large language model powered Chrome Extension for automated e-commerce optimization, product selection, competitor analysis, and Listing generation.",
+  "name": "ozon-growth-agent",
+  "version": "1.2.0",
+  "description": "Open-source Ozon AI growth workflow Chrome extension for seller diagnosis, platform trends, competitor tracking, sourcing, and operational reports.",
   "main": "background.js",
   "type": "module",
   "scripts": {
     "lint": "eslint .",
     "test:security": "node scripts/security-smoke.mjs",
     "test:business": "node scripts/business-flow-smoke.mjs",
+    "test:workflow": "node scripts/workflow-runtime-smoke.mjs",
+    "test:store-diagnosis": "node scripts/ozon-store-diagnosis-parity-smoke.mjs",
+    "test:etsy-parity": "node scripts/etsy-parity-upgrade-smoke.mjs",
     "test:sourcing": "node scripts/sourcing-workflow-guard-smoke.mjs",
+    "test:update": "node scripts/update-awareness-smoke.mjs",
+    "test:no-mock": "node scripts/no-runtime-mock-smoke.mjs",
     "format": "prettier --write ."
   },
   "keywords": [
     "chrome-extension",
     "ai-agent",
     "llm",
-    "e-commerce",
-    "dropshipping",
-    "selection",
-    "amazon-seller",
-    "etsy-seller"
+    "ozon",
+    "seller-api",
+    "growth-agent",
+    "chrome-extension",
+    "workflow",
+    "sourcing",
+    "competitor-analysis"
   ],
-  "author": "E-commerce Growth Agent Contributors",
+  "author": "Ozon Growth Agent Contributors",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ninemouth/ozon-growth-agent.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ninemouth/ozon-growth-agent/issues"
+  },
+  "homepage": "https://github.com/ninemouth/ozon-growth-agent#readme",
   "devDependencies": {
     "eslint": "^9.0.0",
     "jsdom": "^26.1.0",

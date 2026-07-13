@@ -9,6 +9,12 @@ const root = process.cwd();
 const html = fs.readFileSync(path.join(root, "dashboard.html"), "utf8");
 const js = fs.readFileSync(path.join(root, "dashboard.js"), "utf8");
 const css = fs.readFileSync(path.join(root, "dashboard.css"), "utf8");
+const shopOptimizerSkill = fs.readFileSync(path.join(root, "skills/ozon_global_shop_optimizer.skill.md"), "utf8");
+const agentLoopSource = fs.readFileSync(path.join(root, "modules/agentLoop.js"), "utf8");
+const backgroundSource = fs.readFileSync(path.join(root, "background.js"), "utf8");
+const workflowRuntimeSource = fs.readFileSync(path.join(root, "modules/workflowRuntime.js"), "utf8");
+const platformTrendsSkill = fs.readFileSync(path.join(root, "skills/ozon_platform_trends.skill.md"), "utf8");
+const complianceSkill = fs.readFileSync(path.join(root, "skills/ozon_compliance_auditor.skill.md"), "utf8");
 
 const dom = new JSDOM(html, {
   url: "chrome-extension://test/dashboard.html",
@@ -208,6 +214,27 @@ assert.equal(messages[0]?.type, "RUN_SKILL", "dashboard should start a real RUN_
 assert.equal(messages[0]?.growthActionId, "diagnose_store_growth", "RUN_SKILL should carry growth action id");
 assert.ok(messages[0]?.growthRunId, "RUN_SKILL should carry growth run id");
 assert.ok(messages[0]?.growthCaseId?.startsWith("store_health_"), "RUN_SKILL should carry growth case id");
+assert.match(messages[0]?.userInstruction || "", /不能只凭截图下结论/, "store diagnosis entry should forbid screenshot-only diagnosis");
+assert.match(messages[0]?.userInstruction || "", /2-3 个同类高排名店铺|头部竞品页面/, "store diagnosis entry should require top competitor store learning");
+assert.match(shopOptimizerSkill, /店铺体检不得只凭截图下结论/, "shop optimizer skill should include screenshot-only diagnosis guardrail");
+assert.match(shopOptimizerSkill, /平台属性与店铺定位/, "shop optimizer skill should require platform attributes and positioning");
+assert.match(shopOptimizerSkill, /2-3 个同类高排名店铺|头部竞品页面/, "shop optimizer skill should require competitor store screenshot learning");
+assert.match(agentLoopSource, /店铺体检报告不能只依赖截图视觉证据/, "critic should reject screenshot-only store diagnosis reports");
+assert.match(agentLoopSource, /缺少 2-3 个同类高排名店铺/, "critic should require top competitor store learning evidence");
+assert.match(agentLoopSource, /resumeState/, "agent loop should accept persisted resume state");
+assert.match(agentLoopSource, /onCheckpoint/, "agent loop should emit durable checkpoints");
+assert.match(backgroundSource, /agentWorkflowCheckpoints/, "background should persist agent workflow checkpoints");
+assert.match(backgroundSource, /isResumableCheckpoint/, "background should detect resumable workflow checkpoints");
+assert.match(backgroundSource, /shouldResumeFromCheckpoint/, "background should resume interrupted workflows when user sends follow-up input");
+assert.match(js, /已保存断点/, "dashboard should expose interrupted workflow state as a resumable checkpoint");
+assert.match(workflowRuntimeSource, /ozonGrowthAgentRuntime/, "Ozon should use its own IndexedDB workflow runtime");
+assert.match(backgroundSource, /acquireWorkflowLease/, "background should acquire durable workflow leases");
+assert.match(backgroundSource, /renewWorkflowLease/, "background should renew workflow leases during long runs");
+assert.match(backgroundSource, /releaseWorkflowLease/, "background should release workflow leases on completion or interruption");
+assert.match(backgroundSource, /ozon_platform_trends/, "background should route platform trends to the dedicated skill");
+assert.match(backgroundSource, /ozon_compliance_auditor/, "background should expose the compliance auditor skill");
+assert.match(platformTrendsSkill, /不能把自营店铺 API 数据写成平台大盘数据/, "platform trends skill should enforce API boundary");
+assert.match(complianceSkill, /EAC|TR CU|欧亚经济联盟/, "compliance auditor should cover Ozon/RU compliance risks");
 
 const run = storage.growthActionRuns[0];
 assert.equal(run.status, "completed", "growth action run should complete");

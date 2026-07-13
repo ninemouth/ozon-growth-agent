@@ -48,7 +48,7 @@ const GROWTH_ACTIONS = {
   diagnose_store_growth: {
     title: "全店增长体检",
     skillPath: "skills/ozon_global_shop_optimizer.skill.md",
-    instruction: "一键体检当前 Ozon 店铺增长瓶颈，按曝光、点击、加购、付款、利润、履约、评分和商品结构输出优先级行动清单。",
+    instruction: "一键体检当前 Ozon 店铺增长瓶颈。不能只凭截图下结论：请先读取平台属性、主营类目、价格带、目标客群、使用场景、店铺定位和视觉调性/格调，再结合 Seller API、Ozon 站内搜索/热卖榜、Yandex/Google RU 趋势，并打开 2-3 个同类高排名店铺或头部竞品页面做截屏学习，最后按曝光、点击、加购、付款、利润、履约、评分和商品结构输出优先级行动清单。",
   },
   diagnose_sku_funnel: {
     title: "SKU 漏斗诊断",
@@ -97,7 +97,7 @@ const GROWTH_ACTIONS = {
   },
   explore_platform_trends: {
     title: "Ozon 平台趋势机会",
-    skillPath: "skills/ozon_product_opportunity_explorer.skill.md",
+    skillPath: "skills/ozon_platform_trends.skill.md",
     instruction: "扫描当前 Ozon 搜索、类目、品牌或热卖页面，专注判断平台级商品机会和趋势窗口。请输出价格带、评价门槛、头部商品共性、俄语关键词、季节性需求、Yandex/Google RU/Google Trends 待验证或真实证据，并区分平台趋势机会与本店扩品动作。",
   },
   create_growth_experiment: {
@@ -410,7 +410,7 @@ function bindEvents() {
       newForm.reset();
       alert(`店铺 [${name}] 绑定与授权成功！`);
       await refreshAllData();
-      drawMockTrackerCharts();
+      drawTrackerCharts();
       if (document.querySelector(".nav-menu button[data-tab='store']").classList.contains("active")) {
         renderStoreTab();
       }
@@ -428,7 +428,7 @@ function bindEvents() {
       if (selectedId) {
         await new Promise(r => chrome.storage.local.set({ activeShopId: selectedId }, r));
         await refreshAllData();
-        drawMockTrackerCharts();
+        drawTrackerCharts();
         if (document.querySelector(".nav-menu button[data-tab='store']").classList.contains("active")) {
           renderStoreTab();
         }
@@ -540,7 +540,7 @@ async function refreshAllData() {
           const shopId = btn.getAttribute("data-shop-id");
           await new Promise(r => chrome.storage.local.set({ activeShopId: shopId }, r));
           await refreshAllData();
-          drawMockTrackerCharts();
+          drawTrackerCharts();
           if (document.querySelector(".nav-menu button[data-tab='store']").classList.contains("active")) {
             renderStoreTab();
           }
@@ -564,7 +564,7 @@ async function refreshAllData() {
               activeShopId: nextActiveId
             }, r));
             await refreshAllData();
-            drawMockTrackerCharts();
+            drawTrackerCharts();
             if (document.querySelector(".nav-menu button[data-tab='store']").classList.contains("active")) {
               renderStoreTab();
             }
@@ -590,7 +590,7 @@ async function refreshAllData() {
   const filteredExperiments = filterByActiveShop(data.growthExperiments || []);
   const activeShop = shops.find(s => s.id === activeId) || null;
   const skuRows = buildSkuRows(filteredTracked, filteredSavedResults, filteredEvents, activeShop, data.ozonSkuAnalyticsSnapshot || null);
-  const opportunities = buildOpportunityCards(skuRows, filteredEvents, filteredSavedResults);
+  const opportunities = buildOpportunityCards(skuRows, filteredEvents);
   const workflowTasks = buildWorkflowTasks({
     skuRows,
     opportunities,
@@ -698,7 +698,7 @@ function extractSkuAnalyticsRows(snapshot = null) {
   }).filter(row => row.sku);
 }
 
-function buildSkuRows(tracked = [], savedResults = [], events = [], activeShop = null, skuAnalyticsSnapshot = null) {
+function buildSkuRows(tracked = [], savedResults = [], events = [], _activeShop = null, skuAnalyticsSnapshot = null) {
   const rows = [];
   const apiRows = extractSkuAnalyticsRows(skuAnalyticsSnapshot);
   if (apiRows.length) {
@@ -739,35 +739,22 @@ function buildSkuRows(tracked = [], savedResults = [], events = [], activeShop =
         nextAction,
         savedEvidence: savedResults.length,
         eventCount: events.length,
-        mockSource: false,
         dataSource: "Seller API",
       };
     });
   }
 
-  const mock = activeShop ? getShopMockData(activeShop) : null;
-  const categories = ["个护牙刷", "车载加湿器", "厨房收纳", "防寒耳罩", "园艺剪刀", "宠物清洁", "车载加热杯", "儿童泡泡机"];
-  const sourceProducts = tracked.length
-    ? tracked
-    : categories.slice(0, 6).map((title, index) => ({
-      id: `mock_sku_${index + 1}`,
-      title,
-      url: "",
-      registeredAt: new Date(Date.now() - index * 86400000).toISOString().slice(0, 10),
-    }));
+  const sourceProducts = tracked;
 
   sourceProducts.forEach((prod, index) => {
-    const seedBase = `${prod.id || prod.title || index}${activeShop?.id || "demo"}`;
-    let seed = 0;
-    for (let i = 0; i < seedBase.length; i++) seed += seedBase.charCodeAt(i) * (i + 1);
-    const sessions = 280 + (seed % 6200);
-    const views = sessions * (2 + (seed % 5));
-    const cartRate = Number((1.2 + (seed % 65) / 10).toFixed(1));
-    const orderRate = Number((0.3 + (seed % 25) / 10).toFixed(1));
-    const revenue = (sessions * orderRate * (320 + (seed % 1800)) / 100).toFixed(0);
-    const margin = 12 + (seed % 28);
-    const stockDays = 3 + (seed % 42);
-    const rating = Number((3.7 + (seed % 13) / 10).toFixed(1));
+    const sessions = Number(prod.sessions || prod.session_view || 0);
+    const views = Number(prod.views || prod.hits_view || 0);
+    const cartRate = Number(prod.cartRate || prod.conv_tocart || 0);
+    const orderRate = Number(prod.orderRate || 0);
+    const revenue = Number(prod.revenue || 0);
+    const margin = Number(prod.margin || 0);
+    const stockDays = Number(prod.stockDays || 0);
+    const rating = Number(prod.rating || 0);
     const issue = cartRate < 2.6
       ? "conversion"
       : margin < 20
@@ -785,15 +772,15 @@ function buildSkuRows(tracked = [], savedResults = [], events = [], activeShop =
       scale: "可放大",
     }[issue];
     const nextAction = {
-      exposure: "重构标题关键词并扫描 Ozon 热卖词",
-      conversion: "重做首图和俄语详情页承接",
-      profit: "测算利润保护价并寻找降本空间",
-      fulfillment: "检查库存/发货倒计时并评估 FBO",
-      scale: "复制到相邻关键词和扩展变体",
+      exposure: "需要同步 Seller API 后判断曝光入口",
+      conversion: "需要同步 Seller API 后判断首图/详情页承接",
+      profit: "需要补充真实售价、佣金、物流和采购成本",
+      fulfillment: "需要同步订单/库存后判断履约风险",
+      scale: "需要真实趋势窗口确认是否可放大",
     }[issue];
     rows.push({
       id: prod.id || `sku_${index}`,
-      sku: prod.sku || `${String(seed).slice(0, 5)}-OZ`,
+      sku: prod.sku || prod.offer_id || prod.product_id || `local-${index + 1}`,
       title: prod.title || prod.name || `Ozon 商品 ${index + 1}`,
       url: prod.url || prod.pageUrl || "",
       issue,
@@ -809,9 +796,7 @@ function buildSkuRows(tracked = [], savedResults = [], events = [], activeShop =
       nextAction,
       savedEvidence: savedResults.length,
       eventCount: events.length,
-      mockSource: !tracked.length,
-      dataSource: tracked.length ? "本地追踪" : "示例队列",
-      mockStoreSessions: mock?.sessions || 0,
+      dataSource: "本地追踪",
     });
   });
   return rows.sort((a, b) => {
@@ -820,7 +805,7 @@ function buildSkuRows(tracked = [], savedResults = [], events = [], activeShop =
   });
 }
 
-function buildOpportunityCards(skuRows = [], events = [], savedResults = []) {
+function buildOpportunityCards(skuRows = [], events = []) {
   const cards = [];
   const weakConversion = skuRows.find(row => row.issue === "conversion");
   const weakProfit = skuRows.find(row => row.issue === "profit");
@@ -882,17 +867,6 @@ function buildOpportunityCards(skuRows = [], events = [], savedResults = []) {
       experiment: "竞品变化应对实验",
     });
   });
-  if (!cards.length && !savedResults.length) {
-    cards.push({
-      id: "opp_seed",
-      type: "启动建议",
-      title: "先建立一个可追踪的增长闭环",
-      evidence: "当前本地还没有足够的历史报告或监控事件；建议先跑全店体检，再把 1 个 SKU 加入实验。",
-      impact: "让后续所有 AI 建议都能被复盘",
-      action: "diagnose_store_growth",
-      experiment: "首个店铺级增长实验",
-    });
-  }
   return cards;
 }
 
@@ -995,7 +969,7 @@ function buildWorkflowTasks({ skuRows = [], opportunities = [], events = [], rep
       sku: row.sku,
       reason: hasSkuApi
         ? `Seller API 发现该 SKU ${row.issueLabel}；曝光 ${Number(row.sessions || 0).toLocaleString()}，加购 ${row.cartRate}%，付款 ${row.orderRate}%。`
-        : `当前来自${row.dataSource || "本地追踪/示例"}，需要同步 Seller API 后确认。`,
+        : `当前来自${row.dataSource || "本地追踪"}，需要同步 Seller API 后确认。`,
       actionText: row.nextAction,
       actionId,
       source: hasSkuApi ? "Seller API 全量 SKU 轻体检" : "本地队列",
@@ -1060,7 +1034,7 @@ function buildWorkflowTasks({ skuRows = [], opportunities = [], events = [], rep
 
   if (!tasks.length) {
     tasks.push(buildWorkflowTask({
-      id: `seed_${activeShop?.id || "no_shop"}`,
+      id: `bootstrap_${activeShop?.id || "no_shop"}`,
       kind: "bootstrap",
       severity: "P0",
       title: activeShop ? "先运行一次全店体检，生成第一批运营任务" : "先绑定 Seller API 店铺，建立全量 SKU 体检基线",
@@ -1097,6 +1071,7 @@ function workflowCaseStatusLabel(status) {
     running: "运行中",
     completed: "已生成报告",
     failed: "运行失败",
+    interrupted: "已保存断点",
     needs_frontend_context: "需前台页面执行",
     observing: "观察中",
     done: "已关闭",
@@ -1185,6 +1160,7 @@ function assessStoreFoundation({ skuRows = [], reports = [], opportunities = [],
 function statusFromCaseRuns(caseItem = {}) {
   const runs = caseItem.runs || [];
   if (runs.some(run => run.status === "running")) return "running";
+  if (runs.some(run => run.status === "interrupted")) return "interrupted";
   if (runs.some(run => run.status === "failed")) return "failed";
   if (runs.some(run => run.status === "completed")) return "completed";
   if (runs.some(run => run.status === "queued")) return "queued";
@@ -2011,24 +1987,23 @@ function renderSourceLedger() {
   const hasExperiments = growthRuntimeState.experiments.length > 0;
   const hasSkuApi = !!growthRuntimeState.skuAnalyticsSnapshot?.result?.data?.length;
   const hasStoreApi = !!growthRuntimeState.storeSnapshotCache?.result;
-  const usesMockSku = growthRuntimeState.skuRows.some(row => row.mockSource);
   const formatSyncTime = (value) => value ? new Date(value).toLocaleString() : "未同步";
   ledger.innerHTML = `
     <div class="source-ledger-item">
-      <strong><span class="source-dot ${hasSkuApi ? "live" : usesMockSku ? "mock" : "local"}"></span>${hasSkuApi ? "Seller API SKU Analytics" : usesMockSku ? "示例 SKU 队列" : "真实跟踪 SKU"}</strong>
-      <p>${hasSkuApi ? `SKU 作战台已接入 ${growthRuntimeState.skuAnalyticsSnapshot.result.data.length} 行真实 SKU 维度 analytics；本地缓存更新时间：${formatSyncTime(growthRuntimeState.skuAnalyticsSnapshot.syncedAt)}。` : usesMockSku ? "当前没有足够 trackedProducts，SKU 作战台使用示例队列预览流程。" : "SKU 作战台来自本地跟踪商品，指标仍需 Seller API 进一步对齐。"}</p>
+      <strong><span class="source-dot ${hasSkuApi ? "live" : "local"}"></span>${hasSkuApi ? "Seller API SKU Analytics" : "本地跟踪 SKU"}</strong>
+      <p>${hasSkuApi ? `SKU 作战台已接入 ${growthRuntimeState.skuAnalyticsSnapshot.result.data.length} 行真实 SKU 维度 analytics；本地缓存更新时间：${formatSyncTime(growthRuntimeState.skuAnalyticsSnapshot.syncedAt)}。` : "未同步 SKU analytics 时只展示本地跟踪对象，不生成示例曝光、加购、订单或利润指标。"}</p>
     </div>
     <div class="source-ledger-item">
-      <strong><span class="source-dot ${hasHistory ? "local" : "mock"}"></span>${hasHistory ? "本地历史可用" : "暂无历史证据"}</strong>
-      <p>${hasHistory ? "机会卡会读取 savedResults / monitorChangeEvents / monitorReports。" : "机会中心会使用启动建议和 AI 推断兜底。"}</p>
+      <strong><span class="source-dot ${hasHistory ? "local" : "ai"}"></span>${hasHistory ? "本地历史可用" : "暂无历史证据"}</strong>
+      <p>${hasHistory ? "机会卡会读取 savedResults / monitorChangeEvents / monitorReports。" : "机会中心只显示待启动动作，不把 AI 推断伪装成历史结果。"}</p>
     </div>
     <div class="source-ledger-item">
-      <strong><span class="source-dot ${hasStoreApi ? "live" : hasShop ? "local" : "mock"}"></span>${hasStoreApi ? "Seller API 店铺快照" : hasShop ? "已选择活动店铺" : "未绑定 Seller API"}</strong>
-      <p>${hasStoreApi ? `店铺快照已保存在本地；下次 Seller API 同步成功会覆盖更新。最近同步：${formatSyncTime(growthRuntimeState.storeSnapshotCache.syncedAt)}。` : hasShop ? "店铺 API 看板会优先请求 Ozon Seller API；失败时页面会明示模拟数据。" : "店铺业绩、订单和费用只能展示模拟或空状态。"}</p>
+      <strong><span class="source-dot ${hasStoreApi ? "live" : hasShop ? "local" : "ai"}"></span>${hasStoreApi ? "Seller API 店铺快照" : hasShop ? "已选择活动店铺" : "未绑定 Seller API"}</strong>
+      <p>${hasStoreApi ? `店铺快照已保存在本地；下次 Seller API 同步成功会覆盖更新。最近同步：${formatSyncTime(growthRuntimeState.storeSnapshotCache.syncedAt)}。` : hasShop ? "店铺 API 看板会请求 Ozon Seller API；失败时显示空状态和错误原因，不生成模拟经营数据。" : "店铺业绩、订单和费用需要绑定 Seller API 后展示。"}</p>
     </div>
     <div class="source-ledger-item">
-      <strong><span class="source-dot ${hasExperiments ? "local" : "ai"}"></span>${hasExperiments ? "实验状态真实保存" : "实验示例待启动"}</strong>
-      <p>${hasExperiments ? "growthExperiments 已本地持久化；真实复盘需拉取实验前后 API 窗口。" : "默认实验卡只用于展示增长闭环，不代表真实结果。"}</p>
+      <strong><span class="source-dot ${hasExperiments ? "local" : "ai"}"></span>${hasExperiments ? "实验状态真实保存" : "暂无实验记录"}</strong>
+      <p>${hasExperiments ? "growthExperiments 已本地持久化；真实复盘需拉取实验前后 API 窗口。" : "未创建实验时保持空状态，不生成默认实验卡。"}</p>
     </div>
   `;
 }
@@ -2108,7 +2083,7 @@ function renderSkuWorkbench() {
     <tr>
       <td>
         <strong class="cell-ellipsis" title="${escapeHtml(row.title)}">${escapeHtml(row.title)}</strong>
-        <small>${escapeHtml(row.sku)} · ${escapeHtml(row.dataSource || (row.mockSource ? "示例队列" : "本地追踪"))}</small>
+        <small>${escapeHtml(row.sku)} · ${escapeHtml(row.dataSource || "本地追踪")}</small>
       </td>
       <td><span class="badge ${getRiskBadgeClass(row.issue)}">${row.issueLabel}</span></td>
       <td>${Number(row.revenue).toLocaleString()} ₽</td>
@@ -2178,7 +2153,14 @@ function renderExperimentBoard() {
   };
   if (!columns.todo) return;
   Object.values(columns).forEach((column) => { column.innerHTML = ""; });
-  const experiments = growthRuntimeState.experiments.length ? growthRuntimeState.experiments : getSeedExperiments();
+  const experiments = growthRuntimeState.experiments;
+  if (!experiments.length) {
+    columns.todo.innerHTML = `<div class="empty-state compact">暂无真实实验。请先从体检报告、SKU 诊断或机会卡创建实验。</div>`;
+    Object.entries(columns).forEach(([key, column]) => {
+      if (key !== "todo") column.innerHTML = `<div class="empty-state compact">暂无</div>`;
+    });
+    return;
+  }
   experiments.forEach((experiment) => {
     const status = columns[experiment.status] ? experiment.status : "todo";
     const node = document.createElement("div");
@@ -2210,31 +2192,6 @@ function renderExperimentBoard() {
   document.querySelectorAll(".experiment-card .growth-action-btn").forEach((btn) => {
     btn.addEventListener("click", () => handleGrowthAction(btn.dataset.action, ""));
   });
-}
-
-function getSeedExperiments() {
-  return [
-    {
-      id: "seed_visual",
-      status: "todo",
-      sku: growthRuntimeState.skuRows[0]?.sku || "示例 SKU",
-      title: "首图俄语卖点改版",
-      action: "把白底工厂图改成带规格、场景和信任点的俄语首图。",
-      metric: "加购率",
-      window: "7 天",
-      seedOnly: true,
-    },
-    {
-      id: "seed_profit",
-      status: "observing",
-      sku: "店铺级",
-      title: "利润保护价实验",
-      action: "为低毛利 SKU 设置最低促销价，观察订单量与毛利率变化。",
-      metric: "净利率",
-      window: "7 天",
-      seedOnly: true,
-    },
-  ];
 }
 
 async function createGrowthExperiment({ sku, title, action, metric, source }) {
@@ -2273,7 +2230,7 @@ async function createGrowthExperiment({ sku, title, action, metric, source }) {
 }
 
 async function moveExperiment(id, nextStatus) {
-  if (!id || id.startsWith("seed_")) return;
+  if (!id) return;
   const stored = await new Promise((r) => chrome.storage.local.get(["growthExperiments"], r));
   const experiments = stored.growthExperiments || [];
   const match = experiments.find(exp => exp.id === id);
@@ -2386,11 +2343,11 @@ function startDashboardGrowthRun(run) {
     port.onDisconnect?.addListener(async () => {
       if (settled) return;
       await persistGrowthRunUpdate(run.caseId, run.id, {
-        status: "failed",
-        error: "后台连接中断",
-        failedAt: new Date().toISOString(),
-      }, { status: "failed" });
-      reject(new Error("后台连接中断"));
+        status: "interrupted",
+        error: "后台连接中断，已保存断点，可再次运行继续。",
+        interruptedAt: new Date().toISOString(),
+      }, { status: "interrupted" });
+      reject(new Error("后台连接中断，已保存断点，可再次运行继续。"));
     });
     port.postMessage({
       type: "RUN_SKILL",
@@ -2463,7 +2420,9 @@ async function handleGrowthAction(actionId, sku = "") {
     await refreshAllData();
     openWorkflowPip({ rootId: GROWTH_ACTION_CASE_TYPE[actionId] || "store_health" });
   } catch (err) {
-    const fallbackStatus = /当前环境不支持|Receiving end|无法获取当前活动|无法注入|content/i.test(err.message)
+    const fallbackStatus = /已保存断点|连接中断/.test(err.message)
+      ? "interrupted"
+      : /当前环境不支持|Receiving end|无法获取当前活动|无法注入|content/i.test(err.message)
       ? "needs_frontend_context"
       : "failed";
     await persistGrowthRunUpdate(run.caseId, run.id, {
@@ -2754,11 +2713,10 @@ function renderTrackedItemDetails(prod) {
     });
   };
 
-  // Mock API button for simulation
-  document.getElementById("mock-api-data-btn").onclick = () => {
-    alert("✨ 卖家 API 模拟同步成功！曝光、加购数、转化折线图已更新。");
-    drawMockTrackerCharts();
-  };
+  document.getElementById("sync-api-data-btn")?.addEventListener("click", () => {
+    document.querySelector('.nav-menu button[data-tab="store"]')?.click();
+    renderStoreTab();
+  });
 
   // Run AI analysis
   document.getElementById("run-tracker-ai-btn").onclick = () => {
@@ -2781,10 +2739,10 @@ function renderTrackedItemDetails(prod) {
   };
 
   // Draw Charts
-  drawMockTrackerCharts();
+  drawTrackerCharts();
 }
 
-function drawMockTrackerCharts() {
+function drawTrackerCharts() {
   const drawLine = (canvasId, data = [], labels = [], color = '#005bff') => {
     const canvas = document.getElementById(canvasId);
     if (!canvas) return;
@@ -2865,8 +2823,12 @@ function drawMockTrackerCharts() {
     });
   };
 
-  drawLine('tracker-sales-chart', [120, 140, 210, 195], ['基线期', '主图优化后', '大促开始', '降价促量'], '#005bff');
-  drawLine('tracker-conv-chart', [4.8, 5.2, 4.1, 5.9], ['基线期', '主图优化后', '大促开始', '降价促量'], '#ff005b');
+  const experiments = growthRuntimeState.experiments || [];
+  const labels = experiments.map((item) => item.name || item.stage || "阶段");
+  const sales = experiments.map((item) => Number(item.result?.orders || item.orders || item.baseline?.orders || 0));
+  const conversion = experiments.map((item) => Number(item.result?.cartRate || item.cartRate || item.baseline?.cartRate || 0));
+  drawLine('tracker-sales-chart', sales, labels, '#005bff');
+  drawLine('tracker-conv-chart', conversion, labels, '#ff005b');
 }
 
 // ── Ozon Store API Tab Logic ──
@@ -3021,7 +2983,7 @@ function renderStoreMetrics(storeData, sourceKind) {
     tableBody.innerHTML = `
       <tr>
         <td colspan="7" class="empty-cell">
-          <div class="empty-state">${sourceKind === "live" ? "Seller API 暂未返回交易订单。" : "模拟数据暂无订单。"}</div>
+          <div class="empty-state">${sourceKind === "live" ? "Seller API 暂未返回交易订单。" : "暂无真实订单数据。"}</div>
         </td>
       </tr>
     `;
@@ -3045,13 +3007,27 @@ function renderStoreMetrics(storeData, sourceKind) {
   }
 }
 
-function renderStoreCostBreakdown(costData, sourceKind = "mock") {
+function renderStoreCostBreakdown(costData = null, sourceKind = "empty") {
+  if (!costData) {
+    drawStoreFeesChart([]);
+    const labelContainer = document.querySelector("#store-fees-chart")?.parentNode?.nextElementSibling;
+    if (labelContainer) {
+      labelContainer.innerHTML = `
+        <div style="font-size:10px; color:var(--text-secondary); margin-bottom:4px;">暂无 Seller API 财务/费用明细，以下比例不生成模拟值。</div>
+        <div style="display:flex; justify-content:space-between;"><span>类目佣金扣除:</span><strong>待验证</strong></div>
+        <div style="display:flex; justify-content:space-between;"><span>干线运费占比:</span><strong>待验证</strong></div>
+        <div style="display:flex; justify-content:space-between;"><span>末端送达扣减:</span><strong>待验证</strong></div>
+        <div style="display:flex; justify-content:space-between;"><span>实际到手货款:</span><strong>待验证</strong></div>
+      `;
+    }
+    return;
+  }
   drawStoreFeesChart([costData.profit, costData.commission, costData.logistics, costData.tail]);
 
   const labelContainer = document.querySelector("#store-fees-chart").parentNode.nextElementSibling;
   if (labelContainer) {
     labelContainer.innerHTML = `
-      <div style="font-size:10px; color:var(--text-secondary); margin-bottom:4px;">${sourceKind === "live" ? "费用占比为模型估算，待 Seller API 财务明细验证" : "模拟费用占比，仅用于界面预览"}</div>
+      <div style="font-size:10px; color:var(--text-secondary); margin-bottom:4px;">${sourceKind === "live" ? "费用占比为模型估算，待 Seller API 财务明细验证" : "费用占比待 Seller API 财务明细验证"}</div>
       <div style="display:flex; justify-content:space-between;"><span>类目佣金扣除:</span><strong style="color:#005bff">${costData.commission}%</strong></div>
       <div style="display:flex; justify-content:space-between;"><span>干线运费占比:</span><strong style="color:#ff005b">${costData.logistics}%</strong></div>
       <div style="display:flex; justify-content:space-between;"><span>末端送达扣减:</span><strong style="color:#f59e0b">${costData.tail}%</strong></div>
@@ -3060,11 +3036,10 @@ function renderStoreCostBreakdown(costData, sourceKind = "mock") {
   }
 }
 
-function renderMockStoreData(activeShop, reason = "") {
-  const mockData = getShopMockData(activeShop);
-  renderStoreMetrics(mockData, "mock");
-  renderStoreCostBreakdown(mockData, "mock");
-  setStoreApiStatus("mock", `模拟数据展示${reason ? `：${reason}` : "，未作为 Seller API 真实证据"}`);
+function renderEmptyStoreData(reason = "") {
+  renderStoreMetrics({ sessions: 0, views: 0, cartRate: "0.0", orderRate: "0.0", orders: [] }, "empty");
+  renderStoreCostBreakdown(null, "empty");
+  setStoreApiStatus("partial", `暂无 Seller API 真实数据${reason ? `：${reason}` : ""}`);
 }
 
 async function renderStoreTab() {
@@ -3088,7 +3063,8 @@ async function renderStoreTab() {
       document.getElementById("api-views").innerText = "--";
       document.getElementById("api-cart-rate").innerText = "--";
       document.getElementById("api-order-rate").innerText = "--";
-      setStoreApiStatus("mock", "未绑定活动店铺，无法调用 Seller API");
+      renderStoreCostBreakdown(null, "empty");
+      setStoreApiStatus("partial", "未绑定活动店铺，无法调用 Seller API");
       return;
     }
 
@@ -3130,7 +3106,7 @@ async function renderStoreTab() {
       }
       const snapshot = response?.data?.result;
       if (!snapshot) {
-        renderMockStoreData(activeShop, response?.error || response?.data?.error || "未收到 API 快照");
+        renderEmptyStoreData(response?.error || response?.data?.error || "未收到 API 快照");
         return;
       }
 
@@ -3138,12 +3114,12 @@ async function renderStoreTab() {
       const hasLivePayload = (snapshot.analytics?.data || []).length > 0 || (snapshot.orders || []).length > 0 || (snapshot.products?.items || []).length > 0;
       if (!hasLivePayload) {
         const reason = (storeMetrics.failures || []).map(formatStoreApiFailure).join("；") || "API 返回空数据";
-        renderMockStoreData(activeShop, reason);
+        renderEmptyStoreData(reason);
         return;
       }
 
       renderStoreMetrics(storeMetrics, snapshot.ok ? "live" : "partial");
-      renderStoreCostBreakdown(getShopMockData(activeShop), "live");
+      renderStoreCostBreakdown(null, "live");
       if (snapshot.ok) {
         const skuCount = skuAnalyticsResponse?.data?.result?.data?.length || 0;
         setStoreApiStatus("live", `Seller API 实时数据：${snapshot.dateFrom} 至 ${snapshot.dateTo}${skuCount ? `；SKU 作战台已同步 ${skuCount} 行真实 analytics` : ""}`);
@@ -3152,7 +3128,7 @@ async function renderStoreTab() {
         setStoreApiStatus("partial", `Seller API 部分成功：${reason || "部分接口无数据"}`);
       }
     } catch (err) {
-      renderMockStoreData(activeShop, err.message);
+      renderEmptyStoreData(err.message);
     } finally {
       storeApiRequestInFlight = false;
       if (queryBtn) queryBtn.disabled = false;
@@ -3460,42 +3436,4 @@ function downloadReportPdf(rep) {
   chrome.storage.local.set({ printHtml }, () => {
     window.open(chrome.runtime.getURL("print.html"), "_blank");
   });
-}
-
-// ── Dynamic Mock Sourcing and Analytics Data Generator ──
-function getShopMockData(shop) {
-  let hash = 0;
-  const str = shop.id + shop.clientId;
-  for (let i = 0; i < str.length; i++) {
-    hash = str.charCodeAt(i) + ((hash << 5) - hash);
-  }
-  const seed = Math.abs(hash);
-
-  const sessions = 2000 + (seed % 15000);
-  const views = sessions * (3 + (seed % 4));
-  const cartRate = (2.5 + (seed % 50) / 10).toFixed(1);
-  const orderRate = (0.8 + (seed % 20) / 10).toFixed(1);
-
-  const commission = 8 + (seed % 8); 
-  const logistics = 12 + (seed % 10); 
-  const tail = 4 + (seed % 4); 
-  const profit = 100 - commission - logistics - tail;
-
-  const categories = ["个护牙刷", "车载加湿", "泡泡机", "加湿器", "电动牙刷", "防寒耳罩", "园艺剪刀", "车载加热杯"];
-  const orderCount = 2 + (seed % 4);
-  const orders = [];
-  for (let i = 0; i < orderCount; i++) {
-    const orderId = `#3984${(seed + i * 29) % 100000}`;
-    const sku = `${(seed + i * 97) % 90000 + 10000}-SKU`;
-    const cat = categories[(seed + i) % categories.length];
-    const qty = 1 + ((seed + i) % 3);
-    const price = (qty * (300 + (seed % 1200)));
-    const logisticsType = (seed + i) % 2 === 0 ? "Ozon Rocket FBS" : "Ozon FBO";
-    const status = (seed + i) % 3 === 0 ? "待包装" : ((seed + i) % 3 === 1 ? "待交接集运" : "俄罗斯本土仓出库中");
-    const countdown = status === "待包装" ? "⌛ 18 小时" : (status === "待交接集运" ? "⌛ 24 小时" : "--");
-
-    orders.push({ orderId, sku, cat, qty, price, logisticsType, status, countdown });
-  }
-
-  return { sessions, views, cartRate, orderRate, commission, logistics, tail, profit, orders };
 }

@@ -1,4 +1,4 @@
-// sidepanel.js — Skill Runner UI Controller
+// sidepanel.js — Ozon Growth Agent UI Controller
 
 // ── State ──
 let selectedSkill = null;
@@ -8,6 +8,11 @@ let currentExcelData = null;
 let pastedTargetImageDataUrl = "";
 let activeGrowthAction = null;
 let availableSkills = [];
+let sessionMode = "new";
+let selectedResumeSessionKey = "";
+let selectedResumeSessionMeta = null;
+
+const WORKFLOW_CHECKPOINTS_KEY = "agentWorkflowCheckpoints";
 
 const MODEL_HINTS = {
   openai: ["gpt-5.2-omni", "gpt-4o", "gpt-4o-mini", "o1-mini", "o3-mini"],
@@ -37,7 +42,7 @@ const GROWTH_ACTIONS = {
   diagnose_store_growth: {
     label: "全店体检",
     skillId: "ozon_global_shop_optimizer",
-    instruction: "一键体检当前 Ozon 店铺增长瓶颈。请按曝光、点击、加购、付款、利润、履约、评分和商品结构输出优先级行动清单；必须区分真实页面/API证据、AI推断和待验证假设。",
+    instruction: "一键体检当前 Ozon 店铺增长瓶颈。不能只凭截图下结论：请先读取平台属性、主营类目、价格带、目标客群、使用场景、店铺定位和视觉调性/格调，再结合 Seller API、Ozon 站内搜索/热卖榜、Yandex/Google RU 趋势，并打开 2-3 个同类高排名店铺或头部竞品页面做截屏学习；必须区分真实页面/API/搜索证据、AI推断和待验证假设。",
   },
   diagnose_sku_funnel: {
     label: "SKU 漏斗诊断",
@@ -86,7 +91,7 @@ const GROWTH_ACTIONS = {
   },
   explore_platform_trends: {
     label: "平台趋势",
-    skillId: "ozon_product_opportunity_explorer",
+    skillId: "ozon_platform_trends",
     instruction: "扫描当前 Ozon 搜索、类目、品牌或热卖页面的平台商品机会和趋势窗口，识别价格带、评价门槛、头部商品共性、俄语关键词、季节性需求、Yandex/Google RU/Google Trends 证据或待验证假设；不要直接输出本店扩品执行清单。",
   },
   review_experiment_result: {
@@ -136,8 +141,8 @@ function setButtonTextPreservingIcon(selector, messageName, fallback) {
 
 function applyI18n() {
   document.documentElement.lang = chrome.i18n?.getUILanguage?.() || "zh-CN";
-  document.title = t("extName", "电商增长 Agent");
-  setElementText(".brand-name", "extName", "电商增长 Agent");
+  document.title = t("extName", "Ozon 增长 Agent");
+  setElementText(".brand-name", "extName", "Ozon 增长 Agent");
   setElementText("#view-main > .section:nth-of-type(1) .section-label", "chooseSkill", "选择 Skill");
   setButtonTextPreservingIcon("#tipsBtn", "advancedTips", "高级玩法");
   const tipsBtn = $("tipsBtn");
@@ -173,6 +178,80 @@ function showView(name) {
   });
 }
 
+function createWorkflowSessionId() {
+  return `workflow_session_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function getSessionTitle(checkpoint = {}) {
+  const skillName = String(checkpoint.skillPath || checkpoint.skillId || "").split("/").pop()?.replace(".skill.md", "") || "Ozon workflow";
+  const stage = checkpoint.lastStage || checkpoint.lastNode || checkpoint.status || "checkpoint";
+  return `${skillName} · ${stage}`;
+}
+
+function updateSessionModeUI() {
+  const modeText = $("sessionModeText");
+  if (!modeText) return;
+  if (sessionMode === "resume" && selectedResumeSessionKey) {
+    modeText.textContent = `恢复历史会话：${getSessionTitle(selectedResumeSessionMeta || {})}`;
+    modeText.classList.add("resume");
+  } else {
+    modeText.textContent = "新会话：不会沿用旧断点";
+    modeText.classList.remove("resume");
+  }
+}
+
+function startNewSessionMode() {
+  sessionMode = "new";
+  selectedResumeSessionKey = "";
+  selectedResumeSessionMeta = null;
+  updateSessionModeUI();
+}
+
+async function getWorkflowCheckpointEntries() {
+  const data = await new Promise((resolve) => chrome.storage.local.get([WORKFLOW_CHECKPOINTS_KEY], resolve));
+  return Object.entries(data[WORKFLOW_CHECKPOINTS_KEY] || {})
+    .map(([key, checkpoint]) => ({ key, checkpoint: checkpoint || {} }))
+    .filter(({ checkpoint }) => !["completed", "cancelled"].includes(String(checkpoint.status || "")))
+    .sort((a, b) => new Date(b.checkpoint.updatedAt || 0) - new Date(a.checkpoint.updatedAt || 0));
+}
+
+async function renderSessionHistory() {
+  const list = $("sessionHistoryList");
+  if (!list) return;
+  const entries = await getWorkflowCheckpointEntries();
+  if (!entries.length) {
+    list.innerHTML = `<div class="session-empty">暂无可恢复会话。</div>`;
+    return;
+  }
+  list.innerHTML = entries.slice(0, 12).map(({ key, checkpoint }) => {
+    const updatedAt = checkpoint.updatedAt ? new Date(checkpoint.updatedAt).toLocaleString() : "未知时间";
+    const status = checkpoint.status || "checkpoint";
+    const step = checkpoint.step !== undefined ? ` · step ${checkpoint.step}` : "";
+    return `
+      <div class="session-history-item" data-session-key="${escapeHtml(key)}">
+        <div class="session-history-title">${escapeHtml(getSessionTitle(checkpoint))}</div>
+        <div class="session-history-meta">${escapeHtml(status)}${escapeHtml(step)} · ${escapeHtml(updatedAt)}</div>
+        <div class="session-history-actions">
+          <button type="button" class="session-resume-btn" data-session-key="${escapeHtml(key)}">恢复这个会话</button>
+        </div>
+      </div>
+    `;
+  }).join("");
+  list.querySelectorAll(".session-resume-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const key = btn.dataset.sessionKey || "";
+      const match = entries.find((entry) => entry.key === key);
+      if (!match) return;
+      sessionMode = "resume";
+      selectedResumeSessionKey = key;
+      selectedResumeSessionMeta = match.checkpoint;
+      updateSessionModeUI();
+      $("sessionHistoryPanel")?.classList.add("hidden");
+      addLog("info", "↩", `已选择历史会话：${getSessionTitle(match.checkpoint)}。点击运行将从该断点恢复。`);
+    });
+  });
+}
+
 // ── Init ──
 document.addEventListener("DOMContentLoaded", async () => {
   showView("main");
@@ -181,6 +260,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   await loadGrowthActionQueue();
   await updatePageInfo();
   await loadSettings();
+  updateSessionModeUI();
   bindEvents();
 });
 
@@ -489,7 +569,15 @@ async function runSkill() {
         const msg = message.data;
         if (msg) {
           if (msg.type === "tool_call") {
-            addLog("info", "⚙️", `调用工具: ${msg.toolName}`);
+            addLog("info", "⚙️", `调用动作: ${msg.actionLabel || msg.toolName}`);
+          } else if (msg.type === "checkpoint_restored") {
+            addLog("info", "↩", msg.message || "已恢复上次中断的 workflow");
+          } else if (msg.type === "tool_heartbeat") {
+            addLog("info", "⏱", msg.message || `${msg.toolName || "工具"} 仍在执行`);
+          } else if (msg.type === "tool_timeout") {
+            addLog("warning", "⏸", msg.message || `${msg.actionLabel || msg.toolName || "工具"} 超时，已回收临时标签页`);
+          } else if (msg.type === "stale_tool_result_discarded") {
+            addLog("warning", "↩", msg.message || "已丢弃旧 workflow 的迟到结果");
           } else if (msg.type === "reflection" || msg.type === "thinking") {
             let emoji = "🕵️";
             const txt = msg.message || "";
@@ -555,14 +643,21 @@ async function runSkill() {
     }
 
     const targetImageUrl = await getTargetImageUrlForRun();
+    const legacyContinueInstruction = /^(继续|继续推进|恢复|resume|continue)$/i.test(userInstruction.trim());
+    const shouldContinueSession = (sessionMode === "resume" && selectedResumeSessionKey) || legacyContinueInstruction;
+    const workflowSessionId = sessionMode === "resume" && selectedResumeSessionKey
+      ? selectedResumeSessionKey
+      : createWorkflowSessionId();
 
     activePort.postMessage({
       type: "RUN_SKILL",
       skillPath: selectedSkill.path,
       growthActionId: activeGrowthAction?.id || "",
+      workflowSessionId,
       userInstruction: userInstruction,
       targetImageUrl,
-      continueSession: $("continueSessionCheckbox").checked,
+      continueSession: Boolean(shouldContinueSession),
+      forceNewSession: !shouldContinueSession,
       highRandomness: $("highRandomnessCheckbox").checked,
       negativeFilter: $("negativeFilterCheckbox").checked,
     });
@@ -1145,6 +1240,77 @@ async function loadSettings() {
 
   updateProviderUI(s.llmProvider || "openai");
   updateApiStatusUI(s.helium10ApiKey, s.sellerSpriteApiKey, s.fastmossApiKey);
+  await loadUpdateStatus();
+}
+
+function formatUpdateTime(value) {
+  if (!value) return "尚未检查";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "检查时间未知";
+  return `上次检查：${parsed.toLocaleString()}`;
+}
+
+function renderUpdateStatus(status = {}) {
+  const currentVersion = status.currentVersion || chrome.runtime.getManifest?.().version || "-";
+  const latestVersion = status.latestVersion || currentVersion;
+  const badge = $("updateStatusBadge");
+  const text = $("updateStatusText");
+  const current = $("currentVersionText");
+  const latest = $("latestVersionText");
+  const checkedAt = $("updateCheckedAt");
+  const error = $("updateErrorText");
+  const releaseLink = $("openReleasesLink");
+
+  if (current) current.textContent = currentVersion;
+  if (latest) latest.textContent = latestVersion;
+  if (checkedAt) checkedAt.textContent = formatUpdateTime(status.checkedAt);
+  if (releaseLink && status.releaseUrl) releaseLink.href = status.releaseUrl;
+
+  if (error) {
+    error.textContent = status.error ? `检查失败：${status.error}` : "";
+    error.classList.toggle("hidden", !status.error);
+  }
+
+  if (!badge || !text) return;
+  badge.classList.remove("available", "current", "failed");
+  if (status.status === "update_available" || status.hasUpdate) {
+    badge.textContent = "可更新";
+    badge.classList.add("available");
+    text.textContent = `发现新版本 ${latestVersion}，可前往 GitHub Releases 下载并重新加载扩展。`;
+  } else if (status.status === "check_failed") {
+    badge.textContent = "失败";
+    badge.classList.add("failed");
+    text.textContent = "暂时无法读取 GitHub 版本信息，插件本地功能不受影响。";
+  } else if (status.status === "unknown") {
+    badge.textContent = "未检查";
+    text.textContent = "尚未完成 GitHub 版本检查。";
+  } else {
+    badge.textContent = "最新";
+    badge.classList.add("current");
+    text.textContent = "当前已是最新公开版本。";
+  }
+}
+
+async function loadUpdateStatus({ force = false } = {}) {
+  try {
+    const type = force ? "CHECK_FOR_UPDATES" : "GET_UPDATE_STATUS";
+    const response = await chrome.runtime.sendMessage({ type, force });
+    if (response?.ok) {
+      renderUpdateStatus(response.data || {});
+    } else {
+      renderUpdateStatus({
+        currentVersion: chrome.runtime.getManifest?.().version || "-",
+        status: "check_failed",
+        error: response?.error || "更新状态读取失败",
+      });
+    }
+  } catch (err) {
+    renderUpdateStatus({
+      currentVersion: chrome.runtime.getManifest?.().version || "-",
+      status: "check_failed",
+      error: err.message,
+    });
+  }
 }
 
 function updateApiStatusUI(h10Key, ssKey, fmKey) {
@@ -1275,8 +1441,29 @@ function bindEvents() {
     loadLibrary();
   });
   $("backFromLibrary").addEventListener("click", () => showView("main"));
+  $("newSessionBtn")?.addEventListener("click", () => {
+    startNewSessionMode();
+    $("sessionHistoryPanel")?.classList.add("hidden");
+    addLog("info", "+", "已切换为新会话：下一次运行不会沿用旧断点。");
+  });
+  $("sessionHistoryBtn")?.addEventListener("click", async () => {
+    const panel = $("sessionHistoryPanel");
+    if (!panel) return;
+    const willShow = panel.classList.contains("hidden");
+    panel.classList.toggle("hidden", !willShow);
+    if (willShow) await renderSessionHistory();
+  });
 
   $("saveSettings").addEventListener("click", saveSettings);
+  $("checkUpdateBtn")?.addEventListener("click", async () => {
+    const btn = $("checkUpdateBtn");
+    const previousText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "检查中...";
+    await loadUpdateStatus({ force: true });
+    btn.disabled = false;
+    btn.textContent = previousText;
+  });
 
   $("llmProvider").addEventListener("change", (e) => updateProviderUI(e.target.value));
 

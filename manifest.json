@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Ozon 跨境电商运营 AI 助手",
-  "version": "1.1.0",
-  "description": "针对 Ozon 平台的智能跨境电商运营与选品套利工具。",
+  "version": "1.2.0",
+  "description": "针对 Ozon 平台的 AI 增长工作流、店铺体检、趋势机会、竞品追踪与货源筛选插件。",
   "default_locale": "zh_CN",
   "permissions": [
     "activeTab",

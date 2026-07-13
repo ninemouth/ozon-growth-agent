@@ -752,8 +752,6 @@
 
         if (pid) {
           href = `https://shop.tiktok.com/us/store/product/${pid}`;
-        } else {
-          href = `https://shop.tiktok.com/us/store/product/fallback_${generateHash(title).slice(0, 8)}`;
         }
       }
 
@@ -842,9 +840,7 @@
         href = linkEl?.href || "";
       }
 
-      if (!href) {
-        href = `https://${window.location.hostname}/product/fallback_${generateHash(title).slice(0, 8)}`;
-      }
+      if (!href) continue;
 
       if (processedUrls.has(href)) continue;
       processedUrls.add(href);
@@ -1723,7 +1719,7 @@
       diagnose_store_growth: {
         label: "店铺感知",
         short: "店铺",
-        instruction: "一键感知当前 Ozon 店铺经营状态。请先判断当前页面是店铺页、商品页还是搜索/类目页；若是店铺页，重点分析店铺视觉、商品结构、转化漏斗、履约风险、评分信任、竞品对标，并输出今日必须处理的增长动作。",
+        instruction: "一键感知当前 Ozon 店铺经营状态。不能只凭当前截图下结论：请先判断当前页面是店铺页、商品页还是搜索/类目页，并读取平台属性、主营类目、价格带、目标客群、使用场景、店铺定位和视觉调性/格调；若是店铺页，必须结合 Ozon 站内搜索/热卖榜与 2-3 个同类高排名店铺或头部竞品页面截屏学习，再分析商品结构、转化漏斗、履约风险、评分信任、竞品对标，并输出今日必须处理的增长动作。",
       },
       diagnose_sku_funnel: {
         label: "商品分析/追踪",

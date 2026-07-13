@@ -960,7 +960,6 @@ body {
   border-radius: 999px;
   margin-right: 6px;
 }
-.source-dot.mock { background: var(--warning); }
 .source-dot.local { background: var(--accent); }
 .source-dot.live { background: var(--success); }
 .source-dot.ai { background: var(--ozon-blue); }

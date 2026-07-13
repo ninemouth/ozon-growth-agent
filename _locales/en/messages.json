@@ -1,14 +1,14 @@
 {
   "extName": {
-    "message": "Ecommerce Growth Agent",
+    "message": "Ozon Growth Agent",
     "description": "Chrome extension name"
   },
   "extDescription": {
-    "message": "An AI ecommerce growth engine powered by large language models. It supports automated product discovery, competitor insight analysis, cross-platform trend monitoring, and listing generation.",
+    "message": "An AI growth workflow Chrome extension for Ozon sellers, covering store diagnosis, platform trends, competitor tracking, sourcing, listing optimization, and operational reports.",
     "description": "Chrome extension description"
   },
   "actionTitle": {
-    "message": "Open Ecommerce Growth Agent",
+    "message": "Open Ozon Growth Agent",
     "description": "Toolbar action title"
   },
   "chooseSkill": {

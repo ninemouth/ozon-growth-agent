@@ -2,6 +2,7 @@
 
 import { callLLM, getSettings, prepareCleanProductImage } from './llmClient.js';
 import { ozonGetProductList, ozonGetProductInfo, ozonGetAnalyticsData, ozonGetFbsPostingList, ozonGetFboPostingList, ozonGetStoreSnapshot } from './ozonApi.js';
+import { getArtifactDataUrl, putDataUrlArtifact } from './artifactStore.js';
 
 const preparedImageCache = new Map();
 
@@ -155,6 +156,187 @@ async function _captureTabScreenshot(tabId) {
       }
     });
   });
+}
+
+function normalizeOzonUrl(url = "") {
+  const value = String(url || "").trim();
+  if (!value) return "";
+  if (/^https?:\/\//i.test(value)) return value;
+  if (value.startsWith("//")) return `https:${value}`;
+  if (value.startsWith("/")) return `https://www.ozon.ru${value}`;
+  return value;
+}
+
+function isOzonPageUrl(url = "") {
+  return /(^|\.)ozon\.ru/i.test(String(url || ""));
+}
+
+function inferOzonPageType(url = "", pageData = {}) {
+  const text = `${url} ${pageData?.title || ""}`.toLowerCase();
+  if (/\/seller\/|\/shop\/|магазин|seller|витрина/.test(text)) return "shop";
+  if (/\/product\//.test(text)) return "product";
+  if (/\/search\/|\/category\//.test(text)) return "search_or_category";
+  return "unknown";
+}
+
+function textSnippet(pageData = {}, maxLength = 1800) {
+  const chunks = [
+    pageData.title,
+    pageData.description,
+    pageData.metaDescription,
+    pageData.text,
+    pageData.visibleText,
+    pageData.bodyText,
+  ].filter(Boolean);
+  return chunks.join("\n").replace(/\s+/g, " ").trim().slice(0, maxLength);
+}
+
+function summarizeOzonProductCards(cards = []) {
+  return (Array.isArray(cards) ? cards : []).slice(0, 24).map((card, index) => ({
+    index: card.index ?? index + 1,
+    title: card.title || card.name || "",
+    price: card.price || card.currentPrice || "",
+    rating: card.rating || card.stars || "",
+    reviewCount: card.reviewCount || card.reviews || "",
+    href: normalizeOzonUrl(card.href || card.url || card.link || ""),
+    imageSrc: card.imageSrc || card.imageUrl || card.img || "",
+    promotion: card.promotion || card.badge || card.badges || "",
+    cardRect: card.cardRect,
+  }));
+}
+
+function extractOzonCandidateUrls(pageData = {}, limit = 6) {
+  const urls = [];
+  const pushUrl = (raw) => {
+    const url = normalizeOzonUrl(raw);
+    if (!url || !isOzonPageUrl(url)) return;
+    if (!/\/seller\/|\/shop\/|\/product\//i.test(url)) return;
+    if (!urls.includes(url)) urls.push(url);
+  };
+  (pageData.productCards || []).forEach((card) => pushUrl(card.href || card.url || card.link));
+  (pageData.productLinks || []).forEach((link) => pushUrl(link.href || link.url || link.link));
+  return urls.slice(0, limit);
+}
+
+async function waitForTabLoaded(tabId, maxAttempts = 24) {
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const tab = await new Promise((resolve) => {
+      chrome.tabs.get(tabId, (tabInfo) => {
+        if (chrome.runtime.lastError || !tabInfo) resolve(null);
+        else resolve(tabInfo);
+      });
+    });
+    if (!tab) return null;
+    if (tab.status === "complete") return tab;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  return await new Promise((resolve) => {
+    chrome.tabs.get(tabId, (tabInfo) => {
+      if (chrome.runtime.lastError || !tabInfo) resolve(null);
+      else resolve(tabInfo);
+    });
+  });
+}
+
+async function readPageFromTab(tabId) {
+  const result = await sendToContentScript(tabId, {
+    type: "READ_CURRENT_PAGE",
+    cachedSelectors: null,
+  });
+  if (!result?.ok) throw new Error(result?.error || "Failed to read page");
+  return result.data || {};
+}
+
+async function openOzonEvidenceTab(url, active = false) {
+  return await new Promise((resolve, reject) => {
+    chrome.tabs.create({ url: safeEncodeURI(normalizeOzonUrl(url)), active }, (tab) => {
+      if (chrome.runtime.lastError || !tab) {
+        reject(new Error(chrome.runtime.lastError?.message || "Failed to open Ozon evidence tab"));
+        return;
+      }
+      resolve(tab);
+    });
+  });
+}
+
+async function captureAndStoreOzonScreenshot(tabId, metadata = {}) {
+  const dataUrl = await _captureTabScreenshot(tabId);
+  return await putDataUrlArtifact(dataUrl, {
+    namespace: "ozon-competitor-screenshot",
+    metadata,
+    ttlMs: 48 * 60 * 60 * 1000,
+  });
+}
+
+async function collectOzonEvidencePage({
+  url,
+  tabId,
+  pageIndex = 1,
+  closeAfter = false,
+  source = "manual",
+} = {}) {
+  let evidenceTab = null;
+  let openedByTool = false;
+  try {
+    if (tabId) {
+      evidenceTab = await waitForTabLoaded(Number(tabId));
+    } else if (url) {
+      evidenceTab = await openOzonEvidenceTab(url, false);
+      openedByTool = true;
+      await waitForTabLoaded(evidenceTab.id);
+      await new Promise((resolve) => setTimeout(resolve, 1600));
+    } else {
+      evidenceTab = await getCurrentTab();
+    }
+    if (!evidenceTab?.id) throw new Error("No Ozon evidence tab available");
+
+    const finalUrl = evidenceTab.url || url || "";
+    if (!isOzonPageUrl(finalUrl)) {
+      throw new Error(`collect_ozon_shop_pages only supports ozon.ru pages. Current URL: ${finalUrl || "unknown"}`);
+    }
+
+    const pageData = await readPageFromTab(evidenceTab.id);
+    const screenshot = await captureAndStoreOzonScreenshot(evidenceTab.id, {
+      url: finalUrl,
+      pageIndex,
+      source,
+      capturedAt: new Date().toISOString(),
+    });
+    const productCards = summarizeOzonProductCards(pageData.productCards || []);
+    return {
+      ok: true,
+      tabId: evidenceTab.id,
+      openedByTool,
+      pageIndex,
+      url: pageData.url || finalUrl,
+      title: pageData.title || evidenceTab.title || "",
+      pageType: inferOzonPageType(pageData.url || finalUrl, pageData),
+      productCards,
+      productCardsVisible: productCards.length,
+      candidateUrls: extractOzonCandidateUrls(pageData),
+      visibleTextSnippet: textSnippet(pageData),
+      screenshotRef: screenshot.ref,
+      screenshotStorage: screenshot.storage,
+      screenshotBytes: screenshot.bytes,
+      pageHealth: productCards.length > 0 || textSnippet(pageData, 80) ? "readable" : "thin_or_blocked",
+      coverageLimit: "截图为当前视口，商品数量与价格分布仅代表本轮可见样本；未完成分页时不得写成全店全量。",
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      pageIndex,
+      url,
+      tabId: evidenceTab?.id || tabId || null,
+      error: err.message,
+      pageHealth: "failed",
+    };
+  } finally {
+    if ((closeAfter || openedByTool) && evidenceTab?.id) {
+      try {
+        await chrome.tabs.remove(evidenceTab.id);
+      } catch (_) {}
+    }
+  }
 }
 
 function isWarmCtaPixel(r, g, b, a) {
@@ -348,6 +530,203 @@ export const tools = {
     }
 
     return pageData;
+  },
+
+  collect_ozon_shop_pages: async (args = {}) => {
+    const {
+      url,
+      tabId,
+      maxPages = 1,
+      closeAfter = true,
+      source = "ozon_competitor_crawl",
+    } = args || {};
+    if (!url && !tabId) {
+      const activeTab = await getCurrentTab();
+      if (!activeTab?.url || !isOzonPageUrl(activeTab.url)) {
+        throw new Error("collect_ozon_shop_pages requires an Ozon shop/product URL, tabId, or active Ozon tab.");
+      }
+    }
+
+    const pages = [];
+    const firstPage = await collectOzonEvidencePage({
+      url,
+      tabId,
+      pageIndex: 1,
+      closeAfter,
+      source,
+    });
+    pages.push(firstPage);
+
+    const completedFullCrawl = Number(maxPages) <= 1 && firstPage.ok;
+    const readablePages = pages.filter((page) => page.ok);
+    return {
+      ok: readablePages.length > 0,
+      tool: "collect_ozon_shop_pages",
+      sourceUrl: normalizeOzonUrl(url || firstPage.url || ""),
+      pages,
+      pagesCollected: readablePages.length,
+      completedFullCrawl,
+      screenshotRefs: readablePages.map((page) => page.screenshotRef).filter(Boolean),
+      productCards: readablePages.flatMap((page) => page.productCards || []),
+      candidateUrls: Array.from(new Set(readablePages.flatMap((page) => page.candidateUrls || []))).slice(0, 12),
+      nextStep: "Pass pages or screenshotRefs to analyze_ozon_shop_crawl_screenshots before final report delivery. If only a search grid was collected, open 2-3 product/detail pages before making product-level conclusions.",
+      limitation: "当前工具采集 Ozon 可见页面与当前视口截图；若 Ozon 阻断、登录或验证码导致页面薄弱，报告必须降级为待验证。",
+    };
+  },
+
+  collect_ozon_competitor_shops: async (args = {}) => {
+    const {
+      urls = [],
+      competitorUrls = [],
+      maxCompetitors = 3,
+      maxPagesPerCompetitor = 1,
+      closeAfter = true,
+    } = args || {};
+    const rawUrls = [...urls, ...competitorUrls].map(normalizeOzonUrl).filter(Boolean);
+    const uniqueUrls = Array.from(new Set(rawUrls)).filter(isOzonPageUrl).slice(0, Math.max(1, Number(maxCompetitors) || 3));
+    if (uniqueUrls.length === 0) {
+      throw new Error("collect_ozon_competitor_shops requires at least one Ozon shop/product URL.");
+    }
+
+    const shops = [];
+    for (const competitorUrl of uniqueUrls) {
+      const crawl = await tools.collect_ozon_shop_pages({
+        url: competitorUrl,
+        maxPages: maxPagesPerCompetitor,
+        closeAfter,
+        source: "ozon_competitor_batch",
+      });
+      const readablePages = (crawl.pages || []).filter((page) => page.ok);
+      shops.push({
+        competitorUrl,
+        ok: crawl.ok,
+        pageType: readablePages[0]?.pageType || "unknown",
+        title: readablePages[0]?.title || "",
+        pages: crawl.pages || [],
+        pagesCollected: crawl.pagesCollected || 0,
+        productCardsVisible: readablePages.reduce((sum, page) => sum + Number(page.productCardsVisible || 0), 0),
+        candidateUrls: crawl.candidateUrls || [],
+        screenshotRefs: crawl.screenshotRefs || [],
+        limitation: crawl.limitation,
+      });
+    }
+
+    const allPages = shops.flatMap((shop) => shop.pages || []);
+    const readablePages = allPages.filter((page) => page.ok);
+    return {
+      ok: readablePages.length > 0,
+      tool: "collect_ozon_competitor_shops",
+      shops,
+      allPages,
+      competitorsRequested: uniqueUrls.length,
+      competitorsCollected: shops.filter((shop) => shop.ok).length,
+      screenshotRefs: readablePages.map((page) => page.screenshotRef).filter(Boolean),
+      productCards: readablePages.flatMap((page) => page.productCards || []),
+      nextStep: "Run analyze_ozon_shop_crawl_screenshots with allPages or screenshotRefs, then fill competitor_benchmarks and diagnostic_depth_matrix from the returned stage_report_inputs.",
+      limitation: "只能代表本轮打开的 Ozon 可见竞品页面，不能写成竞品后台、全店真实销量或完整库存。",
+    };
+  },
+
+  analyze_ozon_shop_crawl_screenshots: async (args = {}) => {
+    const pages = Array.isArray(args.pages) ? args.pages : [];
+    const refsFromPages = pages.map((page) => page.screenshotRef).filter(Boolean);
+    const screenshotRefs = Array.from(new Set([...(args.screenshotRefs || []), ...refsFromPages].filter(Boolean))).slice(0, 8);
+    if (screenshotRefs.length === 0) {
+      throw new Error("analyze_ozon_shop_crawl_screenshots requires pages with screenshotRef or a screenshotRefs array.");
+    }
+
+    const loaded = [];
+    for (const ref of screenshotRefs) {
+      const dataUrl = await getArtifactDataUrl(ref);
+      const page = pages.find((item) => item.screenshotRef === ref) || {};
+      if (!dataUrl) {
+        loaded.push({
+          ref,
+          ok: false,
+          error: "Screenshot artifact was not found or has expired. Re-run collect_ozon_shop_pages before visual analysis.",
+          page,
+        });
+        continue;
+      }
+      loaded.push({ ref, ok: true, dataUrl, page });
+    }
+
+    const readable = loaded.filter((item) => item.ok && item.dataUrl);
+    if (readable.length === 0) {
+      return {
+        ok: false,
+        tool: "analyze_ozon_shop_crawl_screenshots",
+        analyses: loaded,
+        error: "No screenshots could be analyzed. Re-run collect_ozon_shop_pages in the same workflow before visual analysis.",
+      };
+    }
+
+    const prompt = `你是 Ozon 竞品店铺视觉与商品结构审计员。请基于已采集的 Ozon 竞品页面截图和页面摘要，输出严格 JSON，不要 markdown。
+要求：
+1. stage_observations: 逐截图记录可见事实，包括页面类型、首屏商品/橱窗、首图卖点、俄语文案、价格/评价/促销/履约可见信号、局限。
+2. stage_synthesis: 逐竞品总结可学习方法和本店可能差距。
+3. stage_report_inputs: 给最终店铺体检报告使用，包含 evidence_ledger_drafts、competitor_benchmark_drafts、diagnostic_depth_matrix_hints。
+4. 不得把当前视口截图写成全页/全店/完整库存，不得编造 Ozon 后台销量。
+
+页面摘要：
+${JSON.stringify(readable.map((item, index) => ({
+  index: index + 1,
+  screenshotRef: item.ref,
+  url: item.page?.url,
+  title: item.page?.title,
+  pageType: item.page?.pageType,
+  productCardsVisible: item.page?.productCardsVisible,
+  productCards: (item.page?.productCards || []).slice(0, 8),
+  visibleTextSnippet: item.page?.visibleTextSnippet,
+  coverageLimit: item.page?.coverageLimit,
+})), null, 2)}`;
+
+    let parsedAnalysis = null;
+    try {
+      const content = [
+        { type: "text", text: prompt },
+        ...readable.map((item) => ({ type: "image_url", image_url: { url: item.dataUrl } })),
+      ];
+      const response = await callLLM([{ role: "user", content }]);
+      const jsonMatch = String(response || "").match(/```json\s*([\s\S]*?)```/i) || String(response || "").match(/({[\s\S]*})/);
+      parsedAnalysis = JSON.parse(jsonMatch ? jsonMatch[1] : response);
+    } catch (err) {
+      parsedAnalysis = {
+        stage_observations: readable.map((item, index) => ({
+          screenshot_ref: item.ref,
+          page_url: item.page?.url || "",
+          page_type: item.page?.pageType || "unknown",
+          observation: "截图已缓存，但视觉模型解析失败；最终报告只能引用页面文本、可见商品卡片与待人工复核的截图证据。",
+          limitation: err.message,
+          index: index + 1,
+        })),
+        stage_synthesis: [],
+        stage_report_inputs: {
+          evidence_ledger_drafts: readable.map((item) => ({
+            source_type: "screenshot_visual",
+            source_ref: item.ref,
+            observed_value: `Ozon 竞品页面当前视口截图：${item.page?.title || item.page?.url || "未命名页面"}`,
+            used_for: "竞品视觉与橱窗结构待人工复核",
+            confidence: "low",
+            limitation: "视觉模型解析失败，不能生成已验证的竞品视觉结论。",
+          })),
+          competitor_benchmark_drafts: [],
+          diagnostic_depth_matrix_hints: [],
+        },
+        parser_error: err.message,
+      };
+    }
+
+    return {
+      ok: true,
+      tool: "analyze_ozon_shop_crawl_screenshots",
+      screenshotRefs,
+      analyses: loaded.map(({ dataUrl: _dataUrl, ...rest }) => rest),
+      stage_observations: parsedAnalysis.stage_observations || [],
+      stage_synthesis: parsedAnalysis.stage_synthesis || [],
+      stage_report_inputs: parsedAnalysis.stage_report_inputs || {},
+      nextStepInstruction: "Do not reinterpret raw screenshots from memory. Use stage_observations, stage_synthesis and stage_report_inputs to fill final.output.competitor_benchmarks, diagnostic_depth_matrix and data[].evidence_ledger.",
+    };
   },
 
   extract_product_info: async () => {

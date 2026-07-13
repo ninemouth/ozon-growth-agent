@@ -2,8 +2,10 @@
 
 import { callLLM, getSettings } from './llmClient.js';
 import { tools } from './toolRegistry.js';
+import { isWorkflowCancellationRequested, isWorkflowGenerationCurrent } from './workflowRuntime.js';
 
 const globalSessionCache = {};
+const inFlightToolRuns = new Map();
 
 function hasConcreteVisualTerms(text) {
   return /颜色|配色|材质|金属|铁艺|铜|铝|钢|塑料|木|硅胶|玻璃|陶瓷|布|皮革|亚克力|轮廓|造型|形状|结构|弧形|圆形|方形|边缘|纹理|表面|光泽|磨砂|透明|图案|花纹|主体|比例|开孔|把手|支架|外观|细节|同模|相似|差异/i.test(String(text || ""));
@@ -28,10 +30,25 @@ function summarizeProductCards(cards = []) {
   }));
 }
 
+function stableToolValue(value) {
+  if (Array.isArray(value)) return value.map(stableToolValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, stableToolValue(value[key])]));
+  }
+  return value;
+}
+
+function toolRunKey(toolName, toolArgs = {}) {
+  const workflowId = String(toolArgs.workflowId || "default");
+  const dedupeArgs = { ...toolArgs };
+  delete dedupeArgs.workflowGeneration;
+  return `${workflowId}:${toolName}:${JSON.stringify(stableToolValue(dedupeArgs))}`;
+}
+
 const SOURCING_SKILL_RE = /domestic_sourcing_finder|ozon_sourcing_finder/;
 const IMAGE_SEARCH_TOOLS = ["image_search_1688", "image_search_taobao", "image_search_in_browser"];
 const TECHNICAL_JARGON_ERROR = "报告正文中包含内部技术黑话或函数名（如 DOM, read_current_page, xpath 等），请过滤并替换为通俗易懂的商业/供应链分析术语！";
-const TECHNICAL_JARGON_RE = /read_current_page|open_new_tab|close_tab|search_in_browser|click_by_text|click_by_selector|input_text_and_search|agentic_web_search|image_search_1688|image_search_taobao|image_search_in_browser|DOM|xpath|GBK 编码|UTF-8|自愈程序|爬虫|人机拦截|验证码/i;
+const TECHNICAL_JARGON_RE = /read_current_page|open_new_tab|close_tab|search_in_browser|click_by_text|click_by_selector|input_text_and_search|agentic_web_search|image_search_1688|image_search_taobao|image_search_in_browser|collect_ozon_shop_pages|collect_ozon_competitor_shops|analyze_ozon_shop_crawl_screenshots|DOM|xpath|GBK 编码|UTF-8|自愈程序|爬虫|人机拦截|验证码/i;
 const REPORT_URL_FIELD_RE = /(^|_)(url|uri|link|href|image|image_src|img|src|thumbnail|photo|picture)(_|$)/i;
 
 function isSourcingSkill(skillId = "") {
@@ -41,7 +58,7 @@ function isSourcingSkill(skillId = "") {
 function sanitizeReportStringForBusinessAudience(text = "") {
   return String(text)
     .replace(/调用指令[:：]?\s*(read_current_page|open_new_tab|close_tab|search_in_browser|click_by_text|click_by_selector|input_text_and_search|agentic_web_search|image_search_1688|image_search_taobao|image_search_in_browser)/gi, "完成业务取证")
-    .replace(/\b(read_current_page|open_new_tab|close_tab|click_by_text|click_by_selector|input_text_and_search|agentic_web_search|image_search_1688|image_search_taobao|image_search_in_browser)\b/gi, "业务取证")
+    .replace(/\b(read_current_page|open_new_tab|close_tab|click_by_text|click_by_selector|input_text_and_search|agentic_web_search|image_search_1688|image_search_taobao|image_search_in_browser|collect_ozon_shop_pages|collect_ozon_competitor_shops|analyze_ozon_shop_crawl_screenshots)\b/gi, "业务取证")
     .replace(/\bsearch_in_browser\b/gi, "市场检索")
     .replace(/\bDOM\b/gi, "页面信息")
     .replace(/\bxpath\b/gi, "页面定位信息")
@@ -224,17 +241,31 @@ function hasSuccessfulToolCall(toolHistory = [], predicate) {
 function hasEvidenceSource(toolHistory = [], pageContext = {}, sourceType = "") {
   const normalized = String(sourceType || "").toLowerCase();
   if (normalized === "page_dom") {
-    return Boolean(pageContext?.url || pageContext?.title || (pageContext?.text && String(pageContext.text).trim()));
+    return Boolean(pageContext?.url || pageContext?.title || (pageContext?.text && String(pageContext.text).trim())) ||
+      hasSuccessfulToolCall(toolHistory, (entry) => {
+        if (["read_current_page", "open_new_tab", "navigate_to"].includes(entry.tool)) return true;
+        if (["collect_ozon_shop_pages", "collect_ozon_competitor_shops"].includes(entry.tool)) {
+          const pages = entry.tool === "collect_ozon_competitor_shops" ? entry.result?.allPages : entry.result?.pages;
+          return Array.isArray(pages) && pages.some((page) => page?.ok && (page.visibleTextSnippet || page.productCardsVisible));
+        }
+        return false;
+      });
   }
   if (normalized === "screenshot_visual") {
-    return Boolean(pageContext?.screenshot);
+    return Boolean(pageContext?.screenshot) ||
+      hasSuccessfulToolCall(toolHistory, (entry) => {
+        if (["collect_ozon_shop_pages", "collect_ozon_competitor_shops", "analyze_ozon_shop_crawl_screenshots"].includes(entry.tool)) return true;
+        return Boolean(entry.result?.screenshotRef || entry.result?.screenshotRefs?.length);
+      });
   }
   if (normalized === "ozon_api") {
     return hasSuccessfulToolCall(toolHistory, (entry) => String(entry.tool || "").startsWith("ozon_api_"));
   }
   if (normalized === "ozon_search") {
     return hasSuccessfulToolCall(toolHistory, (entry) =>
-      entry.tool === "search_in_browser" && String(entry.arguments?.engine || "").toLowerCase() === "ozon"
+      (entry.tool === "search_in_browser" && String(entry.arguments?.engine || "").toLowerCase() === "ozon") ||
+      entry.tool === "collect_ozon_competitor_shops" ||
+      entry.tool === "collect_ozon_shop_pages"
     );
   }
   if (normalized === "yandex_search") {
@@ -294,6 +325,18 @@ function hasAssumptionFallback(ledger = [], topicRegex) {
   });
 }
 
+function hasLedgerTopic(ledger = [], topicRegex) {
+  return ledger.some((entry) => {
+    const text = [
+      entry?.source_ref,
+      entry?.observed_value,
+      entry?.used_for,
+      entry?.limitation,
+    ].filter(Boolean).join(" ");
+    return topicRegex.test(text);
+  });
+}
+
 function validateEvidenceLedgerEntries({
   entries,
   label,
@@ -323,6 +366,134 @@ function validateEvidenceLedgerEntries({
       errors.push(`${prefix} 声称来源为 ${sourceType}，但本轮没有对应的真实页面/API/搜索/供应商工具证据。请调用对应工具，或改为 assumption 并明确待验证。`);
     }
   });
+  return errors;
+}
+
+function collectOzonCrawledEvidence(toolHistory = []) {
+  const pages = [];
+  const analyzedRefs = new Set();
+  for (const entry of toolHistory) {
+    if (entry?.tool === "collect_ozon_shop_pages" && Array.isArray(entry.result?.pages)) {
+      pages.push(...entry.result.pages.filter((page) => page?.ok));
+    }
+    if (entry?.tool === "collect_ozon_competitor_shops" && Array.isArray(entry.result?.allPages)) {
+      pages.push(...entry.result.allPages.filter((page) => page?.ok));
+    }
+    if (entry?.tool === "analyze_ozon_shop_crawl_screenshots") {
+      (entry.result?.screenshotRefs || []).forEach((ref) => analyzedRefs.add(ref));
+      (entry.result?.analyses || []).forEach((analysis) => {
+        if (analysis?.ref && analysis?.ok !== false) analyzedRefs.add(analysis.ref);
+      });
+    }
+  }
+  const urls = new Set();
+  const screenshotRefs = new Set();
+  for (const page of pages) {
+    if (page.url) urls.add(String(page.url));
+    if (page.screenshotRef) screenshotRefs.add(page.screenshotRef);
+  }
+  return { pages, urls, screenshotRefs, analyzedRefs };
+}
+
+function urlWasCrawled(url = "", crawledUrls = new Set()) {
+  const normalized = String(url || "").replace(/\/+$/, "");
+  if (!normalized) return false;
+  for (const crawled of crawledUrls) {
+    const candidate = String(crawled || "").replace(/\/+$/, "");
+    if (!candidate) continue;
+    if (candidate === normalized || candidate.includes(normalized) || normalized.includes(candidate)) return true;
+  }
+  return false;
+}
+
+function validateOzonShopDiagnosisDepth(out = {}, toolHistory = []) {
+  const errors = [];
+  const { pages, urls, screenshotRefs, analyzedRefs } = collectOzonCrawledEvidence(toolHistory);
+  const crawlAttempted = pages.length > 0;
+  const screenshotAnalysisAttempted = toolHistory.some((entry) => entry?.tool === "analyze_ozon_shop_crawl_screenshots");
+
+  const benchmarks = Array.isArray(out.competitor_benchmarks) ? out.competitor_benchmarks : [];
+  const reportText = `${out.overview || ""}\n${out.analysis || ""}\n${out.summary || ""}\n${JSON.stringify(out.data || [])}`;
+  const hasBlockerText = /阻断|验证码|登录|无法访问|不可用|待验证|未获得|页面空白|blocked|captcha|login/i.test(reportText);
+  const minCompetitors = hasBlockerText ? 1 : 2;
+
+  if (benchmarks.length < minCompetitors) {
+    errors.push(`店铺体检报告缺少逐竞品结构化分析 competitor_benchmarks。默认至少需要 ${minCompetitors} 个已打开/采集的 Ozon 竞品店铺或商品对象；阻断时也必须输出已完成对象和明确待验证原因。`);
+  }
+
+  benchmarks.forEach((benchmark, index) => {
+    const label = `competitor_benchmarks 第 ${index + 1} 项`;
+    const required = [
+      "competitor_name",
+      "competitor_url",
+      "page_type",
+      "sampled_products_count",
+      "visible_sku_count_estimate",
+      "category_mix",
+      "product_samples",
+      "price_distribution",
+      "promotion_signals",
+      "shop_review_signal",
+      "listing_order_insight",
+      "visual_method",
+      "seo_method",
+      "fulfillment_signal",
+    ];
+    required.forEach((field) => {
+      if (benchmark?.[field] === undefined || benchmark?.[field] === null || benchmark?.[field] === "") {
+        errors.push(`${label} 缺少 ${field} 字段。Ozon 店铺体检必须逐竞品输出商品结构、价格、促销、评价、排序口径、视觉/SEO/履约方法。`);
+      }
+    });
+    if (!Array.isArray(benchmark?.product_samples) || benchmark.product_samples.length < 2) {
+      errors.push(`${label} 的 product_samples 至少需要 2 个可见商品样本；如果只采到 1 个或页面阻断，必须在 visible_sku_count_estimate 和 limitation 中说明。`);
+    }
+    if (!urlWasCrawled(benchmark?.competitor_url, urls) && !hasBlockerText) {
+      errors.push(`${label} 的 competitor_url 未出现在本轮 collect_ozon_shop_pages / collect_ozon_competitor_shops 已采集页面证据中，不能把未打开页面写入竞品深度分析。`);
+    }
+    const evidenceRefs = [
+      ...(Array.isArray(benchmark?.evidence_refs) ? benchmark.evidence_refs : []),
+      ...(Array.isArray(benchmark?.evidence_ledger_refs) ? benchmark.evidence_ledger_refs : []),
+      benchmark?.screenshot_ref,
+    ].filter(Boolean).join(" ");
+    if (!/screenshot|artifact|页面|截图|ozon|http/i.test(evidenceRefs) && !hasBlockerText) {
+      errors.push(`${label} 缺少 evidence_refs / evidence_ledger_refs，必须指向 Ozon 页面文本、截图 artifact 或搜索证据。`);
+    }
+  });
+
+  const matrix = out.diagnostic_depth_matrix || out.depth_matrix || out.diagnosis_dimensions;
+  if (!Array.isArray(matrix) || matrix.length < 7) {
+    errors.push("店铺体检报告缺少 diagnostic_depth_matrix 深度诊断矩阵，至少需要 7 个维度，避免只给泛化运营建议。");
+  } else {
+    const matrixText = JSON.stringify(matrix);
+    const requiredDimensions = [
+      ["店铺定位与经营阶段", /定位|阶段|主营|客群|价格带|垂直/i],
+      ["视觉调性、首图与画廊", /视觉|首图|画廊|图片|调性|格调/i],
+      ["SEO 标题、描述与属性", /SEO|标题|描述|属性|关键词|Характеристики/i],
+      ["商品矩阵、SKU 与价格带", /商品矩阵|SKU|价格带|引流|利润款/i],
+      ["竞品店铺商品结构与可见排序", /竞品|对标|排序|橱窗|可见样本/i],
+      ["Ozon 站内搜索与俄罗斯站外需求", /Ozon|站内|Yandex|Google|趋势|站外/i],
+      ["信任资产、评价、政策与履约", /信任|评价|评论|政策|履约|FBO|FBS|物流/i],
+    ];
+    for (const [label, regex] of requiredDimensions) {
+      if (!regex.test(matrixText)) errors.push(`diagnostic_depth_matrix 缺少 ${label} 维度。`);
+    }
+    matrix.forEach((item, index) => {
+      ["dimension", "finding", "evidence", "gap", "action"].forEach((field) => {
+        if (!item?.[field]) errors.push(`diagnostic_depth_matrix 第 ${index + 1} 项缺少 ${field} 字段。`);
+      });
+    });
+  }
+
+  if (crawlAttempted && screenshotRefs.size > 0 && !screenshotAnalysisAttempted) {
+    errors.push("本轮已采集 Ozon 竞品页面截图，但还没有调用 analyze_ozon_shop_crawl_screenshots 做独立视觉解读。请先分析已缓存截图，再把阶段结论写入 competitor_benchmarks、diagnostic_depth_matrix 和 evidence_ledger。");
+  }
+  if (screenshotAnalysisAttempted && screenshotRefs.size > 0) {
+    const unanalyzed = [...screenshotRefs].filter((ref) => !analyzedRefs.has(ref));
+    if (unanalyzed.length > 0) {
+      errors.push(`本轮仍有 ${unanalyzed.length} 张 Ozon 竞品截图没有成功进入 analyze_ozon_shop_crawl_screenshots 结果，请重新分析或在报告中降级为待人工确认。`);
+    }
+  }
+
   return errors;
 }
 
@@ -428,8 +599,26 @@ function validateReport(parsed, userInstruction, skillId, toolHistory = [], page
     });
 
     const allLedgerEntries = out.data.flatMap((item) => Array.isArray(item.evidence_ledger) ? item.evidence_ledger : []);
+    const hasOwnedPositionEvidence = hasAnyLedgerType(allLedgerEntries, ["page_dom", "ozon_api"]) || hasAssumptionFallback(allLedgerEntries, /店铺|定位|主营|类目|价格带|客群|调性|格调|垂直/i);
+    const hasCompetitorStoreLearning = hasLedgerTopic(allLedgerEntries, /竞品店铺|头部店铺|同类店铺|高排名店铺|高销店铺|店铺页|seller|витрина|магазин|橱窗|垂直度|主图风格|评价门槛/i) || hasAssumptionFallback(allLedgerEntries, /竞品店铺|头部店铺|同类店铺|高排名|店铺页|橱窗|对标/i);
+    const hasOnlyScreenshotEvidence = allLedgerEntries.length > 0 && allLedgerEntries.every((entry) =>
+      String(entry?.source_type || "").toLowerCase() === "screenshot_visual"
+    );
+
+    if (!/平台属性|店铺定位|定位|主营|价格带|目标客群|调性|格调|垂直度/i.test(combinedReportText)) {
+      errors.push("店铺体检报告缺少平台属性与店铺定位判断。必须先说明主营类目、价格带、目标客群、使用场景、视觉调性/格调、垂直度和定位是否成立，不能只凭截图输出运营细节。");
+    }
+    if (!hasOwnedPositionEvidence) {
+      errors.push("店铺体检报告缺少当前店铺属性/定位底稿证据。请使用当前页面文本或 Seller API 证据支撑主营类目、价格带、客群和调性判断；若不可用，必须降级为待验证假设。");
+    }
+    if (hasOnlyScreenshotEvidence) {
+      errors.push("店铺体检报告不能只依赖截图视觉证据。至少需要当前页面文本/API、Ozon 站内搜索或竞品店铺学习之一来支撑定位与增长优先级。");
+    }
     if (!hasLedgerType(allLedgerEntries, "ozon_search") && !hasAssumptionFallback(allLedgerEntries, /Ozon|站内|热卖榜|竞品|榜单/i)) {
       errors.push("店铺优化报告缺少 Ozon 站内搜索/热卖榜对标证据。请调用 Ozon 搜索/榜单，或用 assumption 明确说明当前无法访问并列为待验证。");
+    }
+    if (!hasCompetitorStoreLearning) {
+      errors.push("店铺体检报告缺少 2-3 个同类高排名店铺/头部竞品页面的学习证据。请通过 Ozon 搜索/热卖榜打开可对标店铺或商品页，结合截图分析其橱窗、调性、标题、主图、评价门槛、价格带和履约承诺；阻断时必须写成待验证。");
     }
     if (!hasAnyLedgerType(allLedgerEntries, ["yandex_search", "google_search", "google_trends"]) && !hasAssumptionFallback(allLedgerEntries, /Yandex|Google|谷歌|站外|趋势|季节|需求/i)) {
       errors.push("店铺优化报告缺少俄罗斯站外需求趋势证据。请至少使用 Yandex.ru、Google RU 或 Google Trends RU 之一，或用 assumption 明确说明工具/网络不可用并列为待验证。");
@@ -437,6 +626,7 @@ function validateReport(parsed, userInstruction, skillId, toolHistory = [], page
     if (!hasAnyLedgerType(allLedgerEntries, ["yandex_search", "google_search", "google_trends"]) && hasAssumptionFallback(allLedgerEntries, /Yandex|Google|谷歌|站外|趋势|季节|需求/i) && /呈现|显示|证明|同比|环比|增长|下降|热度高|趋势上升/i.test(combinedReportText)) {
       errors.push("店铺优化报告的站外趋势只有 assumption，正文不能写成已验证事实。请把趋势判断降级为待验证假设，或先调用 Yandex.ru / Google RU / Google Trends RU 获取真实证据。");
     }
+    errors.push(...validateOzonShopDiagnosisDepth(out, toolHistory));
   }
 
   if (isOzonBusinessSkill(skillId) && !isShopOptimizerOnly(skillId)) {
@@ -611,6 +801,26 @@ export function clearSessionCache(tabId) {
   }
 }
 
+function compactMessageContentForCheckpoint(content) {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content.map((part) => {
+      if (part?.type === "image_url") {
+        return { type: "text", text: "[断点续跑提示：上一轮截图已省略；系统会在恢复时附加最新页面截图。]" };
+      }
+      return part;
+    });
+  }
+  return content;
+}
+
+function compactMessagesForCheckpoint(messages = []) {
+  return messages.map((message) => ({
+    ...message,
+    content: compactMessageContentForCheckpoint(message.content),
+  }));
+}
+
 function buildPromptContext(pageContext = {}) {
   const ctx = { ...pageContext };
   if (ctx.targetImageUrl && String(ctx.targetImageUrl).startsWith("data:")) {
@@ -625,7 +835,86 @@ function buildPromptContext(pageContext = {}) {
   return ctx;
 }
 
-export async function runAgentLoop({ tabId, skillId, skillMarkdown, userInstruction, pageContext, sendProgress, continueSession, highRandomness, negativeFilter, maxLoopSteps }) {
+function getToolTimeoutMs(toolName = "") {
+  if (["open_new_tab", "close_tab", "read_current_page"].includes(toolName)) return 45_000;
+  if (["search_in_browser", "collect_ozon_shop_pages"].includes(toolName)) return 120_000;
+  if (toolName === "collect_ozon_competitor_shops") return 300_000;
+  if (toolName === "analyze_ozon_shop_crawl_screenshots") return 180_000;
+  if (/image_search|prepare_clean_product_image/i.test(toolName)) return 180_000;
+  return 120_000;
+}
+
+function describeToolAction(toolName = "", toolArgs = {}, toolResult = null) {
+  const engine = String(toolArgs.engine || "").toLowerCase();
+  const url = String(toolArgs.url || toolResult?.finalUrl || toolResult?.url || toolResult?.pageData?.url || "");
+  if (toolName === "search_in_browser") {
+    if (engine === "ozon") return { actionKind: "ozon_search_results", actionLabel: "Ozon 搜索/榜单取证", lifecycle: "搜索页在保存页面文本和截图证据后会继续进入竞品采集或关闭" };
+    if (engine === "google_trends") return { actionKind: "trend_chart", actionLabel: "Google Trends RU 趋势图取证", lifecycle: "趋势页在保存截图证据后会自动关闭或进入证据复核" };
+    if (engine === "google" || engine === "google_ru") return { actionKind: "web_search", actionLabel: "Google RU 搜索结果取证", lifecycle: "搜索页在保存页面文本和截图证据后会自动关闭或进入证据复核" };
+    if (engine === "yandex") return { actionKind: "web_search", actionLabel: "Yandex.ru 搜索结果取证", lifecycle: "搜索页在保存页面文本和截图证据后会自动关闭或进入证据复核" };
+    if (engine === "1688" || engine === "taobao") return { actionKind: "sourcing_search", actionLabel: "采购平台搜索结果页取证", lifecycle: "平台页可能保留用于人工验证或继续筛选" };
+    return { actionKind: "browser_search", actionLabel: "浏览器搜索取证", lifecycle: "临时搜索页可能在证据保存后自动关闭" };
+  }
+  if (toolName === "open_new_tab") {
+    if (/ozon\.ru\/product\//i.test(url)) return { actionKind: "product_detail", actionLabel: "Ozon 商品详情页取证", lifecycle: "详情页会保持打开，除非后续显式关闭或工具超时回收" };
+    if (/ozon\.ru\/seller\/|ozon\.ru\/shop\//i.test(url)) return { actionKind: "shop_detail", actionLabel: "Ozon 店铺页取证", lifecycle: "店铺页会保持打开，用于后续竞品采集或截图分析" };
+    return { actionKind: "detail_page", actionLabel: "详情页取证", lifecycle: "详情页会保持打开，除非后续显式关闭或工具超时回收" };
+  }
+  if (toolName === "collect_ozon_shop_pages") return { actionKind: "shop_page_crawl", actionLabel: "Ozon 店铺/商品页面采集", lifecycle: "采集会打开页面、保存页面文本/截图/商品卡片后关闭临时页" };
+  if (toolName === "collect_ozon_competitor_shops") return { actionKind: "competitor_shop_crawl", actionLabel: "Ozon 竞品页面批量采集", lifecycle: "批量采集会读取竞品页面和截图证据" };
+  if (toolName === "analyze_ozon_shop_crawl_screenshots") return { actionKind: "screenshot_interpretation", actionLabel: "Ozon 竞品截图独立解读", lifecycle: "不打开新标签页，只分析已缓存截图 artifact" };
+  if (toolName === "close_tab") return { actionKind: "tab_close", actionLabel: "关闭已完成取证的标签页", lifecycle: "关闭由 workflow 创建或指定的标签页" };
+  return { actionKind: toolName || "tool", actionLabel: toolName || "工具执行", lifecycle: "" };
+}
+
+async function runToolWithTimeout(toolName, toolArgs) {
+  const timeoutMs = getToolTimeoutMs(toolName);
+  let timeoutId = null;
+  const key = toolRunKey(toolName, toolArgs);
+  let operation = inFlightToolRuns.get(key);
+  if (!operation) {
+    operation = Promise.resolve()
+      .then(() => tools[toolName](toolArgs))
+      .finally(() => {
+        if (inFlightToolRuns.get(key) === operation) inFlightToolRuns.delete(key);
+      });
+    inFlightToolRuns.set(key, operation);
+  }
+  try {
+    return await Promise.race([
+      operation,
+      new Promise((_, reject) => {
+        timeoutId = setTimeout(() => {
+          reject(new Error(`${toolName} timed out after ${Math.round(timeoutMs / 1000)} seconds`));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+}
+
+async function snapshotTabIds() {
+  if (typeof chrome === "undefined" || !chrome.tabs?.query) return new Set();
+  const tabs = await new Promise((resolve) => chrome.tabs.query({}, (items) => resolve(items || [])));
+  return new Set(tabs.map((tab) => tab.id).filter((id) => Number.isInteger(id)));
+}
+
+async function closeTabsCreatedDuringTimedOutTool(beforeTabIds = new Set()) {
+  if (typeof chrome === "undefined" || !chrome.tabs?.query) return [];
+  const tabs = await new Promise((resolve) => chrome.tabs.query({}, (items) => resolve(items || [])));
+  const candidates = tabs.filter((tab) => {
+    if (!Number.isInteger(tab.id) || beforeTabIds.has(tab.id)) return false;
+    const url = String(tab.url || "");
+    return /ozon\.ru|google\.|yandex\.ru|bing\.com|1688\.com|taobao\.com/i.test(url);
+  });
+  await Promise.all(candidates.map((tab) => new Promise((resolve) => {
+    chrome.tabs.remove(tab.id, () => resolve());
+  })));
+  return candidates.map((tab) => tab.id);
+}
+
+export async function runAgentLoop({ tabId, skillId, skillMarkdown, userInstruction, pageContext, sendProgress, continueSession, highRandomness, negativeFilter, maxLoopSteps, resumeState = null, onCheckpoint = null, workflowId = "", workflowGeneration = "" }) {
   const settings = await getSettings();
   const maxSteps = maxLoopSteps || Math.max(parseInt(settings.maxLoopSteps) || 25, 25);
 
@@ -642,7 +931,7 @@ export async function runAgentLoop({ tabId, skillId, skillMarkdown, userInstruct
     return true;
   });
   const availableTools = filteredToolList.join(", ");
-  const toolHistory = [];
+  let toolHistory = Array.isArray(resumeState?.toolHistory) ? [...resumeState.toolHistory] : [];
 
   const actualTargetImageUrl = pageContext?.targetImageUrl || "";
   const ctxForPrompt = buildPromptContext(pageContext);
@@ -674,6 +963,7 @@ ${availableTools}
 }
 \`\`\`
 
+${isShopOptimizerOnly(skillId) ? `\n\n## Ozon 店铺体检额外强制结构\n当前是 Ozon 店铺体检/全店优化任务，final.output 除了 overview、analysis、summary、data 之外，必须额外包含：\n- competitor_benchmarks: 数组，逐竞品输出 Ozon 店铺/商品结构、可见样本、价格分布、促销/评价/履约、视觉/SEO 方法和证据引用。\n- diagnostic_depth_matrix: 数组，至少 7 个维度，覆盖定位阶段、视觉、SEO/属性、商品矩阵、竞品结构、Ozon/站外需求、信任/履约。\n没有完成 Ozon 竞品采集和截图阶段分析时，不得输出完整店铺健康评级，只能降级为待验证阻断说明。` : ""}
 
 ## 当前页面上下文
 ${JSON.stringify(ctxForPrompt, null, 2)}
@@ -700,8 +990,51 @@ ${(skillId || "").includes("tiktok_shop_monitor") ? `\n\n## ⚠️ TikTok 监控
 
   let messages = [];
   const sessionKey = `${tabId}`;
+  const checkpoint = async (status, extra = {}) => {
+    if (typeof onCheckpoint !== "function") return;
+    await onCheckpoint({
+      status,
+      tabId,
+      skillId,
+      userInstruction,
+      step: extra.step || 0,
+      maxSteps,
+      messages: compactMessagesForCheckpoint(messages),
+      toolHistory,
+      updatedAt: new Date().toISOString(),
+      ...extra,
+    });
+  };
 
-  if (continueSession && globalSessionCache[sessionKey]) {
+  if (continueSession && Array.isArray(resumeState?.messages) && resumeState.messages.length > 0) {
+    messages = resumeState.messages;
+    if (messages.length > 0 && messages[0].role === "system") {
+      messages[0].content = systemPrompt;
+    }
+    const newCtx = buildPromptContext(pageContext);
+    delete newCtx.screenshot;
+    let resumeInstruction = `[断点续跑] 请从上次中断节点继续，不要重复已经完成的搜索、开页、筛选或已获得的工具证据。`;
+    if (userInstruction) {
+      resumeInstruction += `\n\n用户最新补充信息：\n"${userInstruction}"`;
+    }
+    resumeInstruction += `\n\n最新页面上下文：\n${JSON.stringify(newCtx, null, 2)}`;
+    if (pageContext.screenshot) {
+      messages.push({
+        role: "user",
+        content: [
+          { type: "text", text: resumeInstruction },
+          { type: "image_url", image_url: { url: pageContext.screenshot } },
+        ],
+      });
+    } else {
+      messages.push({ role: "user", content: resumeInstruction });
+    }
+    sendProgress({
+      type: "reflection",
+      step: resumeState.step || 0,
+      message: `已恢复上次中断的工作流节点：${resumeState.lastStage || resumeState.status || "checkpoint"}，继续沿用 ${toolHistory.length} 条工具证据。`,
+    });
+  } else if (continueSession && globalSessionCache[sessionKey]) {
     messages = globalSessionCache[sessionKey];
     if (messages.length > 0 && messages[0].role === "system") {
       messages[0].content = systemPrompt;
@@ -747,10 +1080,17 @@ ${(skillId || "").includes("tiktok_shop_monitor") ? `\n\n## ⚠️ TikTok 监控
     ];
   }
 
+  await checkpoint("running", { step: 0, lastStage: continueSession && resumeState?.messages ? "resume_start" : "start" });
   sendProgress({ type: "start", step: 0, maxSteps });
 
   for (let step = 1; step <= maxSteps; step++) {
+    if (workflowId && await isWorkflowCancellationRequested(workflowId)) {
+      await checkpoint("cancelled", { step: step - 1, lastStage: "workflow_cancellation_requested" });
+      throw new Error("workflow cancellation requested");
+    }
+
     sendProgress({ type: "thinking", step, maxSteps });
+    await checkpoint("running", { step, lastStage: "thinking" });
 
     let assistantContent = "";
     assistantContent = await callLLM(messages, ({ chunk, fullText, isReasoning }) => {
@@ -758,10 +1098,12 @@ ${(skillId || "").includes("tiktok_shop_monitor") ? `\n\n## ⚠️ TikTok 监控
     }, highRandomness);
 
     sendProgress({ type: "llm_done", step, content: assistantContent });
+    await checkpoint("running", { step, lastStage: "llm_done", lastAssistantContent: assistantContent.slice(0, 4000) });
 
     const parsed = extractJSONBlock(assistantContent);
 
     if (!parsed) {
+      await checkpoint("completed", { step, lastStage: "text_final" });
       return {
         ok: true,
         type: "text",
@@ -780,6 +1122,7 @@ ${(skillId || "").includes("tiktok_shop_monitor") ? `\n\n## ⚠️ TikTok 监控
           finalParsed = sanitizedParsed;
           validationErrors = [];
           sendProgress({ type: "reflection", step, message: "Critic 已自动清理报告中的内部技术措辞，保留本轮取证结果并继续完成。" });
+          await checkpoint("running", { step, lastStage: "critic_sanitized" });
         } else {
           validationErrors = sanitizedErrors;
         }
@@ -796,6 +1139,7 @@ ${(skillId || "").includes("tiktok_shop_monitor") ? `\n\n## ⚠️ TikTok 监控
             role: "user",
             content: `【Critic Agent 报告质量审计拒绝】\n你的报告未能通过系统的自动合规自检，发现了以下问题：\n${validationErrors.map((err, i) => `${i + 1}. ${err}`).join("\n")}\n\n${domesticVisualActive ? "【非标视觉寻源硬约束】本轮已经启动目标主图/以图搜图路径。请继续基于图片搜索结果页 productCards 和截图做视觉相似度修正，补齐 candidate_image_url、list_page_visual_score、visual_match_evidence；严禁回到 1688/淘宝文本框关键词搜索来凑结果。\n\n" : ""}请严格对照系统提示词规范，在脑海中进行深度反思（如补充筛选数量、使用真实详情单页链接、清除技术黑话等），并重新调用工具或重新输出一份完美修正了以上所有问题的 \`{"type":"final", "output": {...}}\` 报告！`
           });
+          await checkpoint("running", { step, lastStage: "critic_reject", validationErrors });
           continue;
         }
       }
@@ -809,10 +1153,12 @@ ${(skillId || "").includes("tiktok_shop_monitor") ? `\n\n## ⚠️ TikTok 监控
           role: "user",
           content: `【Critic Agent 报告质量审计与反思】\n请根据本会话系统提示词（System Prompt）头部的【报告设计审计与规划基座 Skill】中的质量审计检查单（Auditor Checklist），对你刚才生成的最终报告进行最严苛的自检审查：\n1. 结构完整性：是否严格包含并对齐了该 Skill 要求的分析模块（如概述、推演、数据结构化卡片）？\n2. 深度审计：内容是否流于表面？是否对消费者痛点、产品改良策略或运营动作进行了多维度的场景化推演？\n3. 格式规范性：数据视图（data 数组）中的键名和键值是否合规（无 [object Object] 等序列化错误，且已翻译为中文）？\n\n【重要要求】在输出优化后的 JSON 时，严禁在 output 内部的字段（如 overview, analysis, summary）中写入任何有关 AI 自我审计、自检表格或自评文字。报告正文必须纯净、专业，不留任何自检草稿痕迹，直接呈现面向 Ozon 卖家的运营/商业诊断方案。\n\n如果你发现可以改进的地方，请进行深度反思，并输出优化后的 \`{"type":"final", "output": {...}}\`。\n如果你确信当前版本已经完美无缺，请直接原样再次输出 \`{"type":"final", "output": {...}}\` 即可通过审查。`
         });
+        await checkpoint("running", { step, lastStage: "deep_reflection" });
         continue;
       } else {
         messages.push({ role: "assistant", content: JSON.stringify(finalParsed) });
         globalSessionCache[sessionKey] = messages;
+        await checkpoint("completed", { step, lastStage: "final" });
         return {
           ok: true,
           type: "final",
@@ -825,6 +1171,8 @@ ${(skillId || "").includes("tiktok_shop_monitor") ? `\n\n## ⚠️ TikTok 监控
     if (parsed.type === "tool_call") {
       const toolName = parsed.tool;
       const toolArgs = parsed.arguments || {};
+      if (workflowId) toolArgs.workflowId = workflowId;
+      if (workflowGeneration) toolArgs.workflowGeneration = workflowGeneration;
 
       if (toolName === "prepare_clean_product_image") {
         if ((!toolArgs.imageUrl || toolArgs.imageUrl === "__TARGET_IMAGE_URL__") && actualTargetImageUrl) {
@@ -854,6 +1202,7 @@ ${(skillId || "").includes("tiktok_shop_monitor") ? `\n\n## ⚠️ TikTok 监控
               error: "当前任务是 Ozon 店铺优化诊断，不是寻源流程。第一步必须围绕店铺健康评级、页面/截图/自营 API 数据、Ozon 站内竞品、Yandex.ru / Google RU / Google Trends RU 需求证据构建 ABC 优化方案；除非用户明确要求 1688/货源/采购，否则禁止调用采购平台搜索或生成供应商链接。",
             }),
           });
+          await checkpoint("running", { step, lastStage: "tool_guard_rejected", blockedTool: toolName });
           continue;
         }
       }
@@ -872,6 +1221,7 @@ ${(skillId || "").includes("tiktok_shop_monitor") ? `\n\n## ⚠️ TikTok 监控
           role: "user",
           content: JSON.stringify(sourcingWorkflowGuardError),
         });
+        await checkpoint("running", { step, lastStage: "sourcing_workflow_guard", blockedTool: toolName });
         continue;
       }
 
@@ -891,6 +1241,7 @@ ${(skillId || "").includes("tiktok_shop_monitor") ? `\n\n## ⚠️ TikTok 监控
               },
             }),
           });
+          await checkpoint("running", { step, lastStage: "incomplete_image_search_guard", blockedTool: toolName });
           continue;
         }
 
@@ -904,6 +1255,7 @@ ${(skillId || "").includes("tiktok_shop_monitor") ? `\n\n## ⚠️ TikTok 监控
               error: "本轮国内寻源已经进入非标视觉/以图搜图路径。对于非标外观、模具、造型类商品，Critic 打回后也严格禁止回到文本框关键词搜索。请继续使用 productCards、截图和候选主图做视觉相似度筛选；如 1688 自动框选主体不完整且已配置生图模型，请先调用 prepare_clean_product_image，再把返回的 image_search_argument.imageUrl 传给 image_search_1688/image_search_taobao。",
             }),
           });
+          await checkpoint("running", { step, lastStage: "visual_route_guard", blockedTool: toolName });
           continue;
         }
       }
@@ -924,6 +1276,7 @@ ${(skillId || "").includes("tiktok_shop_monitor") ? `\n\n## ⚠️ TikTok 监控
               query,
             }),
           });
+          await checkpoint("running", { step, lastStage: "agentic_search_guard", blockedTool: toolName });
           continue;
         }
       }
@@ -933,6 +1286,7 @@ ${(skillId || "").includes("tiktok_shop_monitor") ? `\n\n## ⚠️ TikTok 监控
         progressToolArgs.imageUrl = "__UPLOADED_IMAGE_DATA__";
       }
       sendProgress({ type: "tool_call", step, toolName, toolArgs: progressToolArgs });
+      await checkpoint("running", { step, lastStage: "before_tool", currentTool: toolName, currentToolArgs: progressToolArgs });
 
       if (!tools[toolName]) {
         const errMsg = `Unknown tool: ${toolName}. Available: ${availableTools}`;
@@ -961,14 +1315,77 @@ ${(skillId || "").includes("tiktok_shop_monitor") ? `\n\n## ⚠️ TikTok 监控
       }
 
       let toolResult;
+      let toolTimedOut = false;
+      let toolHeartbeatTimer = null;
+      const toolStartedAt = Date.now();
+      const toolTimeoutMs = getToolTimeoutMs(toolName);
+      const toolAction = describeToolAction(toolName, toolArgs);
+      const tabsBeforeTool = await snapshotTabIds();
       try {
-        toolResult = await tools[toolName](toolArgs);
+        toolHeartbeatTimer = setInterval(() => {
+          const elapsedSeconds = Math.max(1, Math.round((Date.now() - toolStartedAt) / 1000));
+          sendProgress({
+            type: "tool_heartbeat",
+            step,
+            toolName,
+            actionKind: toolAction.actionKind,
+            actionLabel: toolAction.actionLabel,
+            tabLifecycle: toolAction.lifecycle,
+            elapsedSeconds,
+            timeoutSeconds: Math.round(toolTimeoutMs / 1000),
+            message: `${toolAction.actionLabel} 已运行 ${elapsedSeconds} 秒，最长等待 ${Math.round(toolTimeoutMs / 1000)} 秒；${toolAction.lifecycle || "若超时会返回阶段错误并保留 workflow 上下文。"}。`,
+          });
+        }, 30000);
+        toolResult = await runToolWithTimeout(toolName, toolArgs);
+        if (workflowId && workflowGeneration && !(await isWorkflowGenerationCurrent(workflowId, workflowGeneration))) {
+          toolResult = {
+            ok: false,
+            stale: true,
+            error: "workflow generation changed while the tool was running; late tool result discarded",
+          };
+        }
       } catch (err) {
-        toolResult = { error: err.message };
+        toolTimedOut = / timed out after /i.test(String(err.message || ""));
+        toolResult = {
+          ok: false,
+          error: err.message,
+          timedOut: toolTimedOut,
+          elapsedMs: Date.now() - toolStartedAt,
+        };
+        if (toolTimedOut) {
+          const closedTabIds = await closeTabsCreatedDuringTimedOutTool(tabsBeforeTool);
+          toolResult.closedTabIds = closedTabIds;
+          toolResult.actionKind = toolAction.actionKind;
+          toolResult.actionLabel = toolAction.actionLabel;
+          toolResult.tabLifecycle = toolAction.lifecycle;
+          toolResult.timeoutPolicy = "tool_timeout_does_not_cancel_workflow";
+          sendProgress({
+            type: "tool_timeout",
+            step,
+            toolName,
+            actionKind: toolAction.actionKind,
+            actionLabel: toolAction.actionLabel,
+            tabLifecycle: toolAction.lifecycle,
+            closedTabIds,
+            elapsedSeconds: Math.round((Date.now() - toolStartedAt) / 1000),
+            message: `${toolAction.actionLabel} 已超过本阶段等待时间；这表示该阶段未形成稳定返回，不等于页面没有数据。已回收本次工具新增的临时标签页 ${closedTabIds.length} 个，workflow 未被取消，可继续修复或重试该证据阶段。`,
+          });
+        }
+      } finally {
+        if (toolHeartbeatTimer) clearInterval(toolHeartbeatTimer);
+      }
+      if (toolResult?.stale) {
+        sendProgress({
+          type: "stale_tool_result_discarded",
+          step,
+          toolName,
+          message: "旧 workflow 的迟到工具结果已丢弃，避免污染当前会话。",
+        });
       }
       toolHistory.push({ tool: toolName, arguments: toolArgs, result: toolResult });
 
       sendProgress({ type: "tool_result", step, toolName, toolResult });
+      await checkpoint("running", { step, lastStage: toolTimedOut ? "tool_timeout" : "tool_result", currentTool: toolName });
 
       if (toolResult && toolResult.isCaptcha) {
         sendProgress({
@@ -979,7 +1396,7 @@ ${(skillId || "").includes("tiktok_shop_monitor") ? `\n\n## ⚠️ TikTok 监控
       }
 
       let nextScreenshot = null;
-      const pageModifyingTools = ["open_new_tab", "navigate_to", "search_in_browser", "click_by_text", "input_text_and_search", "click_by_selector", "image_search_1688", "image_search_taobao", "image_search_in_browser", "click_by_coordinate"];
+      const pageModifyingTools = ["open_new_tab", "navigate_to", "search_in_browser", "collect_ozon_shop_pages", "collect_ozon_competitor_shops", "click_by_text", "input_text_and_search", "click_by_selector", "image_search_1688", "image_search_taobao", "image_search_in_browser", "click_by_coordinate"];
       if (pageModifyingTools.includes(toolName)) {
         try {
           const tId = (toolResult && toolResult.tabId) ? toolResult.tabId : tabId;
@@ -1014,6 +1431,15 @@ ${(skillId || "").includes("tiktok_shop_monitor") ? `\n\n## ⚠️ TikTok 监控
         userResultObj.visual_candidate_summary = summarizeProductCards(productCards);
         userResultObj.next_step_instruction = "当前页面已经抽取到带主图与屏幕坐标的 productCards。下一步必须停止继续搜索，先对照目标商品主图和最新截图，把这些卡片按外观/材质/结构视觉相似度排序；只允许打开视觉排名最高且未触发材质/造型红线的 1-3 个详情页。最终 data 每项必须写入 candidate_image_url、list_page_visual_score、visual_match_evidence，禁止只按标题关键词选择。";
       }
+      if (isShopOptimizerOnly(skillId) && toolName === "collect_ozon_competitor_shops") {
+        userResultObj.next_step_instruction = "批量 Ozon 竞品页面采集已完成。下一步不要重复打开这些页面；请把 allPages 或 screenshotRefs 传给 analyze_ozon_shop_crawl_screenshots 做独立视觉解读，然后基于 shops[].pages[].productCards 逐竞品输出 competitor_benchmarks、价格分布、商品样本、促销/评价/履约信号和 diagnostic_depth_matrix。";
+      }
+      if (isShopOptimizerOnly(skillId) && toolName === "collect_ozon_shop_pages") {
+        userResultObj.next_step_instruction = "Ozon 单页采集已完成。若已有 2-3 个竞品 URL，请优先调用 collect_ozon_competitor_shops 批量采集；若当前就是补采页面，请把 pages 或 screenshotRefs 传给 analyze_ozon_shop_crawl_screenshots。最终报告必须包含 competitor_benchmarks 和 diagnostic_depth_matrix。";
+      }
+      if (isShopOptimizerOnly(skillId) && toolName === "analyze_ozon_shop_crawl_screenshots") {
+        userResultObj.next_step_instruction = "Ozon 竞品截图阶段分析已完成。最终报告必须沿用 stage_observations、stage_synthesis、stage_report_inputs，补齐 final.output.competitor_benchmarks、diagnostic_depth_matrix 和 data[].evidence_ledger；不要重新凭截图印象泛写策略。";
+      }
 
       let userMsgContent;
       if (nextScreenshot) {
@@ -1030,11 +1456,13 @@ ${(skillId || "").includes("tiktok_shop_monitor") ? `\n\n## ⚠️ TikTok 监控
         content: userMsgContent,
       });
 
+      await checkpoint("running", { step, lastStage: "after_tool", currentTool: toolName });
       continue;
     }
 
     messages.push({ role: "assistant", content: assistantContent });
     globalSessionCache[sessionKey] = messages;
+    await checkpoint("completed", { step, lastStage: "json_final" });
     return {
       ok: true,
       type: "json",

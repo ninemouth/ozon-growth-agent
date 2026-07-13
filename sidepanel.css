@@ -513,6 +513,112 @@ body {
 }
 
 /* ── Continue Session Checkbox ── */
+.session-control {
+  margin-top: 10px;
+  padding: 10px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.session-control-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.session-label {
+  font-size: 10px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--text3);
+  font-weight: 700;
+}
+.session-mode-text {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text2);
+  line-height: 1.35;
+}
+.session-mode-text.resume {
+  color: var(--warning);
+}
+.session-btn,
+.session-history-toggle,
+.session-resume-btn {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg3);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all .16s ease;
+}
+.session-btn {
+  padding: 7px 10px;
+  white-space: nowrap;
+}
+.session-btn.primary {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-glow);
+}
+.session-history-toggle {
+  width: 100%;
+  margin-top: 8px;
+  padding: 7px 8px;
+  text-align: left;
+}
+.session-btn:hover,
+.session-history-toggle:hover,
+.session-resume-btn:hover {
+  border-color: var(--accent);
+}
+.session-history-panel {
+  margin-top: 8px;
+  max-height: 190px;
+  overflow: auto;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+.session-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.session-history-item {
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+}
+.session-history-title {
+  font-size: 12px;
+  color: var(--text);
+  font-weight: 700;
+  line-height: 1.35;
+}
+.session-history-meta {
+  margin-top: 3px;
+  font-size: 10px;
+  color: var(--text3);
+  line-height: 1.35;
+}
+.session-history-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 7px;
+}
+.session-resume-btn {
+  padding: 5px 8px;
+  color: var(--warning);
+}
+.session-empty {
+  color: var(--text3);
+  font-size: 12px;
+  padding: 8px 2px;
+}
+
 .continue-session-wrapper {
   margin-top: 10px;
 }
@@ -1056,6 +1162,12 @@ body {
   margin-top: 4px;
 }
 
+.settings-section-title.compact {
+  border-top: 0;
+  padding-top: 0;
+  margin-top: 0;
+}
+
 .settings-about {
   font-size: 12px;
   color: var(--text3);
@@ -1068,6 +1180,117 @@ body {
   padding: 1px 5px;
   border-radius: 3px;
   color: var(--text2);
+}
+
+.update-card {
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg2);
+}
+
+.update-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.update-status-text {
+  margin-top: 4px;
+  color: var(--text2);
+  font-size: 12px;
+}
+
+.update-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 58px;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text2);
+  background: var(--bg3);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.update-badge.available {
+  color: #065f46;
+  background: #d1fae5;
+  border-color: #a7f3d0;
+}
+
+.update-badge.current {
+  color: #1e40af;
+  background: #dbeafe;
+  border-color: #bfdbfe;
+}
+
+.update-badge.failed {
+  color: #991b1b;
+  background: #fee2e2;
+  border-color: #fecaca;
+}
+
+.update-version-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-top: 10px;
+  color: var(--text2);
+  font-size: 12px;
+}
+
+.update-version-row b {
+  color: var(--text);
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.update-checked-at,
+.update-note,
+.update-error {
+  margin-top: 8px;
+  color: var(--text3);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.update-error {
+  color: var(--danger);
+}
+
+.update-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.secondary-btn,
+.secondary-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg3);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.secondary-btn:hover,
+.secondary-link:hover {
+  border-color: var(--border-hover);
 }
 
 /* ── Library View ── */

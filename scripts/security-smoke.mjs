@@ -134,9 +134,11 @@ assert.match(clean, /rel="noopener noreferrer"/, "blank target links must get sa
 assert.match(clean, /padding: 10px/, "safe report layout CSS should be preserved");
 assert.match(clean, /text-align: left/, "safe report alignment CSS should be preserved");
 
-const masked = maskApiKeys('Bearer sk-live1234567890abcdef token="github_pat_1234567890abcdef" apiKey: secret-value');
+const fakeOpenAiKey = "sk-" + "live1234567890abcdef";
+const fakeGithubToken = "github_" + "pat_1234567890abcdef";
+const masked = maskApiKeys(`Bearer ${fakeOpenAiKey} token="${fakeGithubToken}" apiKey: secret-value`);
 assert.equal(masked.includes("secret-value"), false, "plain apiKey value must be masked");
-assert.equal(masked.includes("github_pat_1234567890abcdef"), false, "GitHub token must be masked");
-assert.equal(masked.includes("sk-live1234567890abcdef"), false, "Bearer token must be masked");
+assert.equal(masked.includes(fakeGithubToken), false, "GitHub token must be masked");
+assert.equal(masked.includes(fakeOpenAiKey), false, "Bearer token must be masked");
 
 console.log("security smoke passed");
