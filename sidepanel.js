@@ -595,7 +595,9 @@ async function runSkill() {
         const msg = message.data;
         if (msg) {
           if (msg.type === "tool_call") {
-            addLog("info", "⚙️", `调用动作: ${msg.actionLabel || msg.toolName}`);
+            addLog("info", "⚙️", msg.message || `准备调用动作: ${msg.actionLabel || msg.toolName}`);
+          } else if (msg.type === "tool_stage") {
+            addLog("info", "↪", msg.message || `${msg.actionLabel || msg.toolName || "工具"} 正在执行`);
           } else if (msg.type === "checkpoint_restored") {
             addLog("info", "↩", msg.message || "已恢复上次中断的 workflow");
           } else if (msg.type === "tool_heartbeat") {

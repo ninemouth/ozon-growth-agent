@@ -42,6 +42,8 @@ function toolRunKey(toolName, toolArgs = {}) {
   const workflowId = String(toolArgs.workflowId || "default");
   const dedupeArgs = { ...toolArgs };
   delete dedupeArgs.workflowGeneration;
+  delete dedupeArgs.__progress;
+  delete dedupeArgs.__sourceTabId;
   return `${workflowId}:${toolName}:${JSON.stringify(stableToolValue(dedupeArgs))}`;
 }
 
@@ -867,6 +869,13 @@ function describeToolAction(toolName = "", toolArgs = {}, toolResult = null) {
   return { actionKind: toolName || "tool", actionLabel: toolName || "工具执行", lifecycle: "" };
 }
 
+function stripRuntimeToolArgs(toolArgs = {}) {
+  const clean = { ...toolArgs };
+  delete clean.__progress;
+  delete clean.__sourceTabId;
+  return clean;
+}
+
 async function runToolWithTimeout(toolName, toolArgs) {
   const timeoutMs = getToolTimeoutMs(toolName);
   let timeoutId = null;
@@ -1285,7 +1294,17 @@ ${(skillId || "").includes("tiktok_shop_monitor") ? `\n\n## ⚠️ TikTok 监控
       if (progressToolArgs.imageUrl && String(progressToolArgs.imageUrl).startsWith("data:")) {
         progressToolArgs.imageUrl = "__UPLOADED_IMAGE_DATA__";
       }
-      sendProgress({ type: "tool_call", step, toolName, toolArgs: progressToolArgs });
+      const plannedToolAction = describeToolAction(toolName, toolArgs);
+      sendProgress({
+        type: "tool_call",
+        step,
+        toolName,
+        toolArgs: progressToolArgs,
+        actionKind: plannedToolAction.actionKind,
+        actionLabel: plannedToolAction.actionLabel,
+        tabLifecycle: plannedToolAction.lifecycle,
+        message: `准备调用动作: ${plannedToolAction.actionLabel}`,
+      });
       await checkpoint("running", { step, lastStage: "before_tool", currentTool: toolName, currentToolArgs: progressToolArgs });
 
       if (!tools[toolName]) {
@@ -1322,6 +1341,26 @@ ${(skillId || "").includes("tiktok_shop_monitor") ? `\n\n## ⚠️ TikTok 监控
       const toolAction = describeToolAction(toolName, toolArgs);
       const tabsBeforeTool = await snapshotTabIds();
       try {
+        const executableToolArgs = {
+          ...toolArgs,
+          __sourceTabId: tabId,
+          __progress: (stage = {}) => {
+            const stageMessage = stage.message || `${toolAction.actionLabel} 正在执行`;
+            sendProgress({
+              type: "tool_stage",
+              step,
+              toolName,
+              actionKind: stage.actionKind || toolAction.actionKind,
+              actionLabel: stage.actionLabel || toolAction.actionLabel,
+              tabLifecycle: stage.tabLifecycle || toolAction.lifecycle,
+              stage: stage.stage || "tool_stage",
+              tabId: stage.tabId,
+              searchUrl: stage.searchUrl,
+              elapsedSeconds: Math.max(0, Math.round((Date.now() - toolStartedAt) / 1000)),
+              message: stageMessage,
+            });
+          },
+        };
         toolHeartbeatTimer = setInterval(() => {
           const elapsedSeconds = Math.max(1, Math.round((Date.now() - toolStartedAt) / 1000));
           sendProgress({
@@ -1336,7 +1375,7 @@ ${(skillId || "").includes("tiktok_shop_monitor") ? `\n\n## ⚠️ TikTok 监控
             message: `${toolAction.actionLabel} 已运行 ${elapsedSeconds} 秒，最长等待 ${Math.round(toolTimeoutMs / 1000)} 秒；${toolAction.lifecycle || "若超时会返回阶段错误并保留 workflow 上下文。"}。`,
           });
         }, 30000);
-        toolResult = await runToolWithTimeout(toolName, toolArgs);
+        toolResult = await runToolWithTimeout(toolName, executableToolArgs);
         if (workflowId && workflowGeneration && !(await isWorkflowGenerationCurrent(workflowId, workflowGeneration))) {
           toolResult = {
             ok: false,
@@ -1382,7 +1421,7 @@ ${(skillId || "").includes("tiktok_shop_monitor") ? `\n\n## ⚠️ TikTok 监控
           message: "旧 workflow 的迟到工具结果已丢弃，避免污染当前会话。",
         });
       }
-      toolHistory.push({ tool: toolName, arguments: toolArgs, result: toolResult });
+      toolHistory.push({ tool: toolName, arguments: stripRuntimeToolArgs(toolArgs), result: toolResult });
 
       sendProgress({ type: "tool_result", step, toolName, toolResult });
       await checkpoint("running", { step, lastStage: toolTimedOut ? "tool_timeout" : "tool_result", currentTool: toolName });

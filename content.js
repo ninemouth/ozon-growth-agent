@@ -2953,6 +2953,8 @@
     let overlaySessionMode = "new";
     let overlaySelectedResumeSessionKey = "";
     let overlaySelectedResumeSessionMeta = null;
+    let overlayPendingGrowthAction = null;
+    let overlayNewSessionConfirmed = false;
     const WORKFLOW_CHECKPOINTS_KEY = "agentWorkflowCheckpoints";
 
     const escapeHtmlText = (value = "") => String(value)
@@ -2985,6 +2987,7 @@
       overlaySessionMode = "new";
       overlaySelectedResumeSessionKey = "";
       overlaySelectedResumeSessionMeta = null;
+      overlayNewSessionConfirmed = true;
       updateOverlaySessionModeUI();
     };
 
@@ -2996,10 +2999,36 @@
         .sort((a, b) => new Date(b.checkpoint.updatedAt || 0) - new Date(a.checkpoint.updatedAt || 0));
     };
 
-    const renderOverlaySessionHistory = async () => {
+    const getOverlayCheckpointEntriesForAction = async (growthActionId = "") => {
+      const entries = await getOverlayCheckpointEntries();
+      if (!growthActionId) return entries;
+      const matched = entries.filter(({ checkpoint }) => String(checkpoint.growthActionId || "") === String(growthActionId));
+      return matched.length ? matched : entries;
+    };
+
+    const runOverlayGrowthActionNow = async ({ actionId, instruction, resume = false } = {}) => {
+      if (!actionId || activeGrowthRun) return;
+      const action = GROWTH_ACTIONS[actionId] || GROWTH_ACTIONS.diagnose_store_growth;
+      const runInstruction = resume ? "继续" : instruction;
+      addMessage("user", resume ? `恢复「${action.label}」` : `运行「${action.label}」`);
+      const run = await persistGrowthActionRun(actionId, runInstruction || instruction || action.instruction);
+      await setActiveGrowthRun(run);
+      overlayPendingGrowthAction = null;
+      overlayNewSessionConfirmed = false;
+      if (!resume && actionId === "scan_competitor_changes") {
+        try {
+          await processCompetitorBaseline();
+        } catch (err) {
+          showToast(`竞品基线预处理失败，AI 诊断继续运行：${err.message}`);
+        }
+      }
+      runSelectedSkill(runInstruction || instruction, actionId);
+    };
+
+    const renderOverlaySessionHistory = async (entriesOverride = null) => {
       const list = shadow.getElementById("chat-session-history-list");
       if (!list) return;
-      const entries = await getOverlayCheckpointEntries();
+      const entries = Array.isArray(entriesOverride) ? entriesOverride : await getOverlayCheckpointEntries();
       if (!entries.length) {
         list.className = "chat-session-empty";
         list.innerHTML = "暂无可恢复会话。";
@@ -3029,6 +3058,13 @@
           updateOverlaySessionModeUI();
           shadow.getElementById("chat-session-history-panel")?.classList.add("hidden");
           showToast(`已选择历史会话：${getOverlaySessionTitle(match.checkpoint)}`);
+          if (overlayPendingGrowthAction) {
+            runOverlayGrowthActionNow({
+              actionId: overlayPendingGrowthAction.actionId,
+              instruction: overlayPendingGrowthAction.instruction,
+              resume: true,
+            }).catch((err) => showToast(`恢复会话失败：${err.message}`));
+          }
         });
       });
     };
@@ -3171,20 +3207,23 @@
       const instruction = `${contextPrefix}\n\n${action.instruction}`;
       chatOverlay.classList.remove("hidden");
       settingsDrawer.classList.add("hidden");
-      if (!getOverlayActiveResumeSessionKey()) {
-        startOverlayNewSessionMode();
+
+      const selectedResumeSessionKey = getOverlayActiveResumeSessionKey();
+      const resumableEntries = selectedResumeSessionKey ? [] : await getOverlayCheckpointEntriesForAction(actionId);
+      if (!selectedResumeSessionKey && !overlayNewSessionConfirmed && resumableEntries.length > 0) {
+        overlayPendingGrowthAction = { actionId, instruction };
+        await renderOverlaySessionHistory(resumableEntries);
+        shadow.getElementById("chat-session-history-panel")?.classList.remove("hidden");
+        addMessage("assistant", `已找到「${action.label}」相关历史会话。请选择“恢复这个会话”，或点击“+ 新会话”后重新开始。`);
+        showToast("已暂停自动运行，请先选择历史会话或新会话。");
+        return;
       }
-      addMessage("user", `运行「${action.label}」`);
-      const run = await persistGrowthActionRun(actionId, instruction);
-      await setActiveGrowthRun(run);
-      if (actionId === "scan_competitor_changes") {
-        try {
-          await processCompetitorBaseline();
-        } catch (err) {
-          showToast(`竞品基线预处理失败，AI 诊断继续运行：${err.message}`);
-        }
-      }
-      runSelectedSkill(instruction, actionId);
+
+      await runOverlayGrowthActionNow({
+        actionId,
+        instruction,
+        resume: Boolean(selectedResumeSessionKey),
+      });
     };
 
     // Draggable Functionality
@@ -3662,7 +3701,9 @@
                 log(`🕵️ ${msg}`);
               }
             } else if (data.type === "tool_call") {
-              log(`⚙️ 调用指令: ${data.toolName}`);
+              log(`⚙️ ${data.message || `准备调用动作: ${data.actionLabel || data.toolName}`}`);
+            } else if (data.type === "tool_stage") {
+              log(`↪ ${data.message || `${data.actionLabel || data.toolName || "工具"} 正在执行`}`);
             } else if (data.type === "tool_result") {
               log(`📥 执行完毕，获取到相关数据。`);
             } else if (data.type === "reflection" && data.message) {
@@ -4064,6 +4105,13 @@
       startOverlayNewSessionMode();
       shadow.getElementById("chat-session-history-panel")?.classList.add("hidden");
       showToast("已切换为新会话，下一次运行不会沿用旧断点。");
+      if (overlayPendingGrowthAction && !activeGrowthRun) {
+        runOverlayGrowthActionNow({
+          actionId: overlayPendingGrowthAction.actionId,
+          instruction: overlayPendingGrowthAction.instruction,
+          resume: false,
+        }).catch((err) => showToast(`启动新会话失败：${err.message}`));
+      }
     });
 
     shadow.getElementById("chat-session-history-btn")?.addEventListener("click", async () => {

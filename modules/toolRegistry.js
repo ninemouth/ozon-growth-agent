@@ -33,6 +33,49 @@ async function getCurrentTab() {
   return tab;
 }
 
+async function getSourceOrCurrentTab(sourceTabId = null) {
+  if (Number.isInteger(Number(sourceTabId))) {
+    try {
+      const tab = await chrome.tabs.get(Number(sourceTabId));
+      if (tab?.id) return tab;
+    } catch (_) {}
+  }
+  return await getCurrentTab();
+}
+
+async function restoreSourceTabFocus(sourceTabId = null) {
+  if (!Number.isInteger(Number(sourceTabId))) return false;
+  try {
+    const tab = await chrome.tabs.get(Number(sourceTabId));
+    if (!tab?.id) return false;
+    await new Promise((resolve) => chrome.tabs.update(Number(sourceTabId), { active: true }, () => resolve()));
+    if (Number.isInteger(Number(tab.windowId)) && chrome.windows?.update) {
+      await new Promise((resolve) => chrome.windows.update(tab.windowId, { focused: true }, () => resolve()));
+    }
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function createBrowserTab({ url, active = true, openerTabId = null }, callback) {
+  const createArgs = { url: safeEncodeURI(url), active };
+  if (Number.isInteger(Number(openerTabId))) {
+    createArgs.openerTabId = Number(openerTabId);
+  }
+  chrome.tabs.create(createArgs, callback);
+}
+
+async function closeTabQuietly(tabId) {
+  if (!Number.isInteger(Number(tabId))) return false;
+  try {
+    await new Promise((resolve) => chrome.tabs.remove(Number(tabId), () => resolve()));
+    return !chrome.runtime?.lastError;
+  } catch (_) {
+    return false;
+  }
+}
+
 function cachePreparedImage(dataUrl) {
   const ref = `__CLEAN_PRODUCT_IMAGE_${Date.now()}_${Math.random().toString(36).slice(2, 8)}__`;
   preparedImageCache.set(ref, dataUrl);
@@ -561,8 +604,8 @@ async function visualClickImageSearchSubmit(tabId) {
 }
 
 export const tools = {
-  read_current_page: async () => {
-    const tab = await getCurrentTab();
+  read_current_page: async (args = {}) => {
+    const tab = await getSourceOrCurrentTab(args.__sourceTabId);
     if (!tab) throw new Error("No active tab found");
     
     let cachedSelectors = null;
@@ -801,16 +844,16 @@ ${JSON.stringify(readable.map((item, index) => ({
     };
   },
 
-  extract_product_info: async () => {
-    const tab = await getCurrentTab();
+  extract_product_info: async (args = {}) => {
+    const tab = await getSourceOrCurrentTab(args.__sourceTabId);
     if (!tab) throw new Error("No active tab found");
     const result = await sendToContentScript(tab.id, { type: "EXTRACT_PRODUCT_INFO" });
     if (!result?.ok) throw new Error(result?.error || "Failed to extract product");
     return result.data;
   },
 
-  get_selected_text: async () => {
-    const tab = await getCurrentTab();
+  get_selected_text: async (args = {}) => {
+    const tab = await getSourceOrCurrentTab(args.__sourceTabId);
     if (!tab) throw new Error("No active tab found");
     const result = await sendToContentScript(tab.id, { type: "GET_SELECTED_TEXT" });
     if (!result?.ok) throw new Error(result?.error || "Failed to get selection");
@@ -852,9 +895,9 @@ ${JSON.stringify(readable.map((item, index) => ({
   },
 
   click_by_text: async (args) => {
-    const { text } = args;
+    const { text, __sourceTabId = null } = args;
     if (!text) throw new Error("text is required");
-    const tab = await getCurrentTab();
+    const tab = await getSourceOrCurrentTab(__sourceTabId);
     if (!tab) throw new Error("No active tab found");
     const result = await sendToContentScript(tab.id, { type: "CLICK_BY_TEXT", text });
     if (result.ok) {
@@ -864,8 +907,8 @@ ${JSON.stringify(readable.map((item, index) => ({
   },
 
   scroll_page: async (args) => {
-    const { direction = "down", amount = 800 } = args || {};
-    const tab = await getCurrentTab();
+    const { direction = "down", amount = 800, __sourceTabId = null } = args || {};
+    const tab = await getSourceOrCurrentTab(__sourceTabId);
     if (!tab) throw new Error("No active tab found");
     const result = await sendToContentScript(tab.id, {
       type: "SCROLL_PAGE",
@@ -885,9 +928,9 @@ ${JSON.stringify(readable.map((item, index) => ({
   },
 
   navigate_to: async (args) => {
-    const { url } = args;
+    const { url, __sourceTabId = null } = args;
     if (!url) throw new Error("url is required");
-    const tab = await getCurrentTab();
+    const tab = await getSourceOrCurrentTab(__sourceTabId);
     if (!tab) throw new Error("No active tab found");
     
     return new Promise((resolve) => {
@@ -1089,14 +1132,21 @@ ${JSON.stringify(readable.map((item, index) => ({
   },
 
   search_in_browser: async (args) => {
-    const { query, engine = "google" } = args;
+    const { query, engine = "google", __progress, __sourceTabId = null } = args;
     if (!query) throw new Error("query is required");
+    const normalizedEngine = String(engine || "google").toLowerCase();
+    const emitSearchProgress = (stage, message, extra = {}) => {
+      if (typeof __progress !== "function") return;
+      try {
+        __progress({ stage, message, ...extra });
+      } catch (_) {}
+    };
     
     let targetQuery = query;
-    const isForeignPlatform = ["amazon", "etsy", "google", "google_ru", "google_trends", "bing", "yandex", "ozon"].includes(engine);
+    const isForeignPlatform = ["amazon", "etsy", "google", "google_ru", "google_trends", "bing", "yandex", "ozon"].includes(normalizedEngine);
     const hasChinese = /[\u4e00-\u9fa5]/.test(query);
 
-    if (isForeignPlatform && (hasChinese || engine === "etsy" || engine === "amazon" || engine === "yandex" || engine === "ozon" || engine === "google_trends" || engine === "google_ru")) {
+    if (isForeignPlatform && (hasChinese || normalizedEngine === "etsy" || normalizedEngine === "amazon" || normalizedEngine === "yandex" || normalizedEngine === "ozon" || normalizedEngine === "google_trends" || normalizedEngine === "google_ru")) {
       try {
         console.log(`Localizing query "${query}" for ${engine}...`);
         const messages = [
@@ -1106,7 +1156,7 @@ ${JSON.stringify(readable.map((item, index) => ({
           },
           {
             role: "user",
-            content: `The user wants to search for "${query}" on the ${engine} platform.
+            content: `The user wants to search for "${query}" on the ${normalizedEngine} platform.
 Please brainstorm the top 3 most common local search terms used by shoppers on this platform for this product category.
 Output ONLY the single best, highest-volume local search term (in English or the platform's local language).
 Do NOT include any quotation marks, punctuation, explanations, or introductory text. Output the raw term directly.`
@@ -1135,10 +1185,47 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
       jd: `https://search.jd.com/Search?keyword=${encodeURIComponent(targetQuery)}&enc=utf-8`,
       pinduoduo: `https://mobile.yangkeduo.com/search_result.html?search_key=${encodeURIComponent(targetQuery)}`,
     };
-    if (engine === "1688") {
+    const searchActionLabel = normalizedEngine === "google_trends"
+      ? "Google Trends RU 趋势图取证"
+      : normalizedEngine === "google" || normalizedEngine === "google_ru"
+        ? "Google 搜索结果取证"
+        : normalizedEngine === "yandex"
+          ? "Yandex.ru 搜索结果取证"
+          : "浏览器搜索结果取证";
+    const shouldAutoCloseSearchTab = ["google", "google_ru", "google_trends", "bing", "yandex"].includes(normalizedEngine);
+    const attachSearchScreenshotArtifact = async (payload, tabId) => {
+      if (!shouldAutoCloseSearchTab || payload.screenshotRef || payload.screenshotCaptured) return payload;
+      try {
+        emitSearchProgress("search_screenshot_started", `${searchActionLabel} 正在保存搜索页截图证据。`, { tabId, searchUrl: payload.searchUrl });
+        const screenshot = await _captureTabScreenshot(tabId);
+        const artifact = await putDataUrlArtifact(screenshot, {
+          namespace: "search-evidence-screenshot",
+          metadata: {
+            engine: normalizedEngine,
+            query: targetQuery,
+            searchUrl: payload.searchUrl,
+            capturedAt: new Date().toISOString(),
+          },
+          ttlMs: 24 * 60 * 60 * 1000,
+        });
+        return {
+          ...payload,
+          screenshotCaptured: true,
+          screenshotRef: artifact.ref,
+          artifactStore: "indexeddb_blob_with_memory_fallback",
+        };
+      } catch (err) {
+        emitSearchProgress("search_screenshot_failed", `${searchActionLabel} 截图保存失败：${err.message}`, { tabId, searchUrl: payload.searchUrl });
+        return { ...payload, screenshotCaptured: false, screenshotError: err.message };
+      }
+    };
+
+    if (normalizedEngine === "1688") {
       const searchUrl = "https://s.1688.com/";
       return new Promise((resolve) => {
-        chrome.tabs.create({ url: safeEncodeURI(searchUrl), active: true }, (newTab) => {
+        emitSearchProgress("search_tab_opening", "1688 货源检索正在打开临时标签页。", { searchUrl });
+        createBrowserTab({ url: searchUrl, active: true, openerTabId: __sourceTabId }, (newTab) => {
+          emitSearchProgress("search_tab_opened", `1688 货源检索已打开 tabId=${newTab.id}，开始进入搜索页。`, { tabId: newTab.id, searchUrl });
           let attempts = 0;
           const maxAttempts = 20; // up to 10 seconds
           const checkLoad = setInterval(() => {
@@ -1158,8 +1245,10 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
                       keyword: targetQuery,
                       tabId: newTab.id
                     });
+                    await restoreSourceTabFocus(__sourceTabId);
                     resolve({ ok: true, tabId: newTab.id, searchUrl, queryUsed: targetQuery, pageData: searchRes.pageData || {} });
                   } catch (err) {
+                    await restoreSourceTabFocus(__sourceTabId);
                     resolve({ ok: true, tabId: newTab.id, searchUrl, queryUsed: targetQuery, pageData: {} });
                   }
                 }, 1500);
@@ -1170,30 +1259,63 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
       });
     }
 
-    const searchUrl = engines[engine] || engines.google;
+    const searchUrl = engines[normalizedEngine] || engines.google;
     return new Promise((resolve) => {
-      chrome.tabs.create({ url: safeEncodeURI(searchUrl), active: true }, (newTab) => {
+      emitSearchProgress("search_tab_opening", `${searchActionLabel} 正在打开临时标签页。`, { searchUrl });
+      createBrowserTab({ url: searchUrl, active: true, openerTabId: __sourceTabId }, (newTab) => {
+        emitSearchProgress("search_tab_opened", `${searchActionLabel} 已打开临时标签页 tabId=${newTab.id}，开始等待页面可读。`, { tabId: newTab.id, searchUrl });
         // Poll immediately for content script readiness and product links
         let attempts = 0;
-        const maxAttempts = engine === "google_trends" ? 44 : 20;
-        const minStablePollAttempts = engine === "google_trends" ? 8 : 1;
+        const maxAttempts = normalizedEngine === "google_trends" ? 44 : 20;
+        const minStablePollAttempts = normalizedEngine === "google_trends" ? 8 : 1;
+        const finish = async (payload) => {
+          const payloadWithScreenshot = await attachSearchScreenshotArtifact(payload, newTab.id);
+          if (shouldAutoCloseSearchTab) {
+            const closed = await closeTabQuietly(newTab.id);
+            emitSearchProgress(
+              closed ? "search_tab_closed" : "search_tab_close_failed",
+              closed
+                ? `${searchActionLabel} 已保存证据并关闭临时标签页 tabId=${newTab.id}。`
+                : `${searchActionLabel} 已保存证据，但临时标签页 tabId=${newTab.id} 未能自动关闭。`,
+              { tabId: newTab.id, searchUrl: payload.searchUrl }
+            );
+            await restoreSourceTabFocus(__sourceTabId);
+            resolve({ ...payloadWithScreenshot, tabClosed: closed });
+            return;
+          }
+          await restoreSourceTabFocus(__sourceTabId);
+          resolve(payloadWithScreenshot);
+        };
         const checkLoad = setInterval(async () => {
           attempts++;
           try {
+            if (attempts === 1 || attempts % 8 === 0) {
+              const trendHint = normalizedEngine === "google_trends" ? "，正在等待 Interest over time 与 Related queries/topics 模块" : "";
+              emitSearchProgress("search_page_reading", `${searchActionLabel} 正在读取页面信息${trendHint}（轮询 ${attempts}/${maxAttempts}）。`, { tabId: newTab.id, searchUrl });
+            }
             const data = await sendToContentScript(newTab.id, { type: "READ_CURRENT_PAGE" });
             const pageData = data?.data || {};
-            const payload = withSearchEvidenceStatus({ ok: true, tabId: newTab.id, searchUrl, queryUsed: targetQuery, pageData }, engine);
-            const evidenceSatisfied = searchEvidenceSatisfied(payload, engine);
-            const stableWindowSatisfied = engine !== "google_trends" || attempts >= minStablePollAttempts;
+            const payload = withSearchEvidenceStatus({ ok: true, tabId: newTab.id, searchUrl, queryUsed: targetQuery, pageData }, normalizedEngine);
+            const evidenceSatisfied = searchEvidenceSatisfied(payload, normalizedEngine);
+            const stableWindowSatisfied = normalizedEngine !== "google_trends" || attempts >= minStablePollAttempts;
             
             if ((evidenceSatisfied && stableWindowSatisfied) || attempts >= maxAttempts) {
               clearInterval(checkLoad);
-              resolve(payload);
+              emitSearchProgress(
+                evidenceSatisfied ? "search_evidence_ready" : "search_evidence_timeout",
+                evidenceSatisfied
+                  ? `${searchActionLabel} 已取得可用页面证据，准备保存截图并收尾。`
+                  : `${searchActionLabel} 已达到轮询上限，当前页面证据仍不足，将按工具结果返回质量状态。`,
+                { tabId: newTab.id, searchUrl }
+              );
+              await finish(payload);
             }
           } catch (_) {
             if (attempts >= maxAttempts) {
               clearInterval(checkLoad);
-              resolve(withSearchEvidenceStatus({ ok: true, tabId: newTab.id, searchUrl, queryUsed: targetQuery, pageData: {} }, engine));
+              const payload = withSearchEvidenceStatus({ ok: true, tabId: newTab.id, searchUrl, queryUsed: targetQuery, pageData: {} }, normalizedEngine);
+              emitSearchProgress("search_evidence_timeout", `${searchActionLabel} 页面读取失败或证据不足，将按工具结果返回质量状态。`, { tabId: newTab.id, searchUrl });
+              await finish(payload);
             }
           }
         }, 500);
@@ -1307,7 +1429,7 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
   },
 
   image_search_1688: async (args) => {
-    const { engine = "1688" } = args;
+    const { engine = "1688", __sourceTabId = null } = args;
     const imageUrl = resolvePreparedImageUrl(args.imageUrl);
     if (!imageUrl) throw new Error("imageUrl is required");
 
@@ -1316,7 +1438,7 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
       ? "https://s.taobao.com/search"
       : "https://s.1688.com/";
     return new Promise((resolve, reject) => {
-      chrome.tabs.create({ url: safeEncodeURI(searchUrl), active: true }, (newTab) => {
+      createBrowserTab({ url: searchUrl, active: true, openerTabId: __sourceTabId }, (newTab) => {
         if (chrome.runtime.lastError) {
           reject(new Error(chrome.runtime.lastError.message));
           return;
@@ -1356,12 +1478,12 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
 
   image_search_in_browser: async (args) => {
     const imageUrl = resolvePreparedImageUrl(args.imageUrl);
-    const { tabId } = args;
+    const { tabId, __sourceTabId = null } = args;
     if (!imageUrl) throw new Error("imageUrl is required");
 
     let targetTabId = tabId;
     if (!targetTabId) {
-      const tab = await getCurrentTab();
+      const tab = await getSourceOrCurrentTab(__sourceTabId);
       if (!tab) throw new Error("No active tab found");
       targetTabId = tab.id;
     }
@@ -1484,12 +1606,12 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
   },
 
   click_by_coordinate: async (args) => {
-    const { x, y, tabId, learnKind } = args;
+    const { x, y, tabId, learnKind, __sourceTabId = null } = args;
     if (x === undefined || y === undefined) throw new Error("x and y coordinates are required");
 
     let targetTabId = tabId;
     if (!targetTabId) {
-      const tab = await getCurrentTab();
+      const tab = await getSourceOrCurrentTab(__sourceTabId);
       if (!tab) throw new Error("No active tab found");
       targetTabId = tab.id;
     }
@@ -1500,11 +1622,11 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
   },
 
   open_new_tab: async (args) => {
-    const { url } = args;
+    const { url, __sourceTabId = null } = args;
     if (!url) throw new Error("url is required");
     
     return new Promise((resolve, reject) => {
-      chrome.tabs.create({ url: safeEncodeURI(url), active: true }, (tab) => {
+      createBrowserTab({ url, active: true, openerTabId: __sourceTabId }, (tab) => {
         if (chrome.runtime.lastError) {
           reject(new Error(chrome.runtime.lastError.message));
           return;
@@ -1541,9 +1663,11 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
               clearInterval(poll);
               setTimeout(async () => {
                 try {
-                  const data = await tools.read_current_page();
+                  const data = await readPageFromTab(tab.id);
+                  await restoreSourceTabFocus(__sourceTabId);
                   resolve({ ok: true, tabId: tab.id, pageData: data || "" });
                 } catch (err) {
+                  await restoreSourceTabFocus(__sourceTabId);
                   resolve({ ok: true, tabId: tab.id, pageData: "Failed to read DOM (Script injection restricted)" });
                 }
               }, 1500);
@@ -1555,9 +1679,13 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
   },
 
   close_tab: async (args) => {
-    const { tabId } = args;
+    const { tabId, __sourceTabId = null } = args;
     if (!tabId) throw new Error("tabId is required");
+    if (Number.isInteger(Number(__sourceTabId)) && Number(tabId) === Number(__sourceTabId)) {
+      return { ok: false, protectedSourceTab: true, message: `Refused to close source tab ${tabId}.` };
+    }
     await chrome.tabs.remove(parseInt(tabId));
+    await restoreSourceTabFocus(__sourceTabId);
     return { ok: true, message: `Tab ${tabId} closed.` };
   },
 

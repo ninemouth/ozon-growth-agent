@@ -41,20 +41,33 @@ assert.match(contentSource, /chat-new-session-btn[\s\S]*\+ 新会话[\s\S]*chat-
 assert.match(contentSource, /pickLatestOverlayResumableSessionForContinue[\s\S]*legacyContinueInstruction[\s\S]*pickLatestOverlayResumableSessionForContinue/, "floating overlay plain continue messages should auto-select the latest resumable checkpoint");
 assert.match(contentSource, /workflowSessionId[\s\S]*continueSession[\s\S]*forceNewSession/, "floating overlay should pass explicit session intent into RUN_SKILL");
 assert.match(contentSource, /startOverlayNewSessionMode[\s\S]*不会沿用旧断点/, "floating overlay should make fresh-session mode visible");
+assert.match(contentSource, /resumableEntries\.length > 0[\s\S]*已暂停自动运行[\s\S]*return;[\s\S]*runOverlayGrowthActionNow/, "floating overlay action clicks should pause for session choice when resumable checkpoints exist");
+assert.match(contentSource, /chat-session-resume-btn[\s\S]*overlayPendingGrowthAction[\s\S]*resume:\s*true/, "choosing a history item from the floating overlay should resume the pending action");
+assert.match(contentSource, /chat-new-session-btn[\s\S]*overlayPendingGrowthAction[\s\S]*resume:\s*false/, "clicking + new session from a pending floating action should start a fresh run explicitly");
 assert.doesNotMatch(contentSource, /Привет|Здравствуйте|Спасибо|Пожалуйста/, "content overlay should not contain Russian greeting copy");
 
 assert.match(agentLoop, /runToolWithTimeout/, "agent loop must run tools through the timeout wrapper");
 assert.match(agentLoop, /tool_timeout_does_not_cancel_workflow/, "tool timeout must not cancel the workflow");
 assert.match(agentLoop, /tool_heartbeat/, "agent loop must send heartbeat progress for long tools");
+assert.match(agentLoop, /type:\s*"tool_stage"/, "agent loop must emit concrete browser tool stage progress");
+assert.match(agentLoop, /__sourceTabId:\s*tabId/, "agent loop must pass the original source tab id into runtime tools");
+assert.match(agentLoop, /stripRuntimeToolArgs[\s\S]*__progress[\s\S]*__sourceTabId/, "agent loop must keep runtime-only tool args out of persisted tool history");
 assert.match(agentLoop, /closeTabsCreatedDuringTimedOutTool/, "agent loop must clean tabs created by timed-out tools");
 assert.match(agentLoop, /isWorkflowGenerationCurrent/, "agent loop must discard late results from stale workflow generations");
 assert.match(background, /workflowGeneration: lease\.generation/, "background must pass workflow generation into the agent loop");
+assert.match(sidepanelJs, /msg\.type === "tool_stage"/, "sidepanel should show concrete browser tool stages");
+assert.match(contentSource, /data\.type === "tool_stage"/, "floating overlay should show concrete browser tool stages");
 
 assert.match(platformTrends, /证据阶段完成条件/, "Ozon platform trends must define stage completion conditions");
 assert.match(platformTrends, /不是无限搜索循环/, "Ozon platform trends must guard against repeated search loops");
 assert.match(platformTrends, /stage_observations/, "Ozon platform trends must require staged screenshot evidence");
 assert.match(toolRegistry, /minStablePollAttempts[\s\S]*google_trends/, "Google Trends polling must wait for a stable evidence window");
 assert.match(toolRegistry, /trendsEvidenceState/, "Google Trends search result should expose evidence readiness state");
+assert.match(toolRegistry, /search_tab_opening[\s\S]*search_tab_opened[\s\S]*search_page_reading[\s\S]*search_evidence_ready/, "browser search should report real tab-open/read/evidence stages");
+assert.match(toolRegistry, /getSourceOrCurrentTab[\s\S]*read_current_page/, "current-page tools should prefer the workflow source tab over whichever temporary tab is active");
+assert.match(toolRegistry, /restoreSourceTabFocus[\s\S]*search_tab_closed/, "browser searches should restore focus to the source Ozon tab after closing temporary evidence tabs");
+assert.match(toolRegistry, /protectedSourceTab[\s\S]*Refused to close source tab/, "close_tab must refuse to close the original source tab");
+assert.match(toolRegistry, /openerTabId[\s\S]*chrome\.tabs\.create/, "workflow-created tabs should preserve the source tab as opener");
 assert.equal(hasValidGoogleTrendsEvidence({
   ok: true,
   searchUrl: "https://trends.google.com/trends/explore?date=today%2012-m&geo=RU&q=%D0%BF%D0%BE%D0%BB%D0%BA%D0%B0",
