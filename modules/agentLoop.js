@@ -909,11 +909,18 @@ async function snapshotTabIds() {
   return new Set(tabs.map((tab) => tab.id).filter((id) => Number.isInteger(id)));
 }
 
-async function closeTabsCreatedDuringTimedOutTool(beforeTabIds = new Set()) {
+function isProtectedRuntimeTab(tabId, protectedTabIds = []) {
+  if (!Number.isInteger(Number(tabId))) return false;
+  return (Array.isArray(protectedTabIds) ? protectedTabIds : [protectedTabIds])
+    .some((protectedTabId) => Number.isInteger(Number(protectedTabId)) && Number(protectedTabId) === Number(tabId));
+}
+
+async function closeTabsCreatedDuringTimedOutTool(beforeTabIds = new Set(), protectedTabIds = []) {
   if (typeof chrome === "undefined" || !chrome.tabs?.query) return [];
   const tabs = await new Promise((resolve) => chrome.tabs.query({}, (items) => resolve(items || [])));
   const candidates = tabs.filter((tab) => {
     if (!Number.isInteger(tab.id) || beforeTabIds.has(tab.id)) return false;
+    if (isProtectedRuntimeTab(tab.id, protectedTabIds)) return false;
     const url = String(tab.url || "");
     return /ozon\.ru|google\.|yandex\.ru|bing\.com|1688\.com|taobao\.com/i.test(url);
   });
@@ -1392,7 +1399,7 @@ ${(skillId || "").includes("tiktok_shop_monitor") ? `\n\n## ⚠️ TikTok 监控
           elapsedMs: Date.now() - toolStartedAt,
         };
         if (toolTimedOut) {
-          const closedTabIds = await closeTabsCreatedDuringTimedOutTool(tabsBeforeTool);
+          const closedTabIds = await closeTabsCreatedDuringTimedOutTool(tabsBeforeTool, [tabId]);
           toolResult.closedTabIds = closedTabIds;
           toolResult.actionKind = toolAction.actionKind;
           toolResult.actionLabel = toolAction.actionLabel;

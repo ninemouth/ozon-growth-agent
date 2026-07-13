@@ -552,7 +552,7 @@ chrome.runtime.onConnect.addListener((port) => {
         }
         runInFlight = true;
         try {
-          const tab = await getCurrentTab();
+          const tab = port.sender?.tab?.id ? port.sender.tab : await getCurrentTab();
           if (!tab) throw new Error("无法获取当前活动的标签页，请确保浏览器焦点在目标网页上。");
 
           // Reset the session data cache at the start of a new run
@@ -561,7 +561,7 @@ chrome.runtime.onConnect.addListener((port) => {
           // Step 1: Read current page context
           let pageContext = {};
           try {
-            pageContext = await tools.read_current_page();
+            pageContext = await tools.read_current_page({ __sourceTabId: tab.id });
           } catch (err) {
             console.warn("Could not read page context:", err.message);
             if (err.message.includes("Receiving end does not exist") || err.message.toLowerCase().includes("connection") || err.message.toLowerCase().includes("context invalidated")) {

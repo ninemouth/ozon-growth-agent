@@ -66,8 +66,15 @@ function createBrowserTab({ url, active = true, openerTabId = null }, callback) 
   chrome.tabs.create(createArgs, callback);
 }
 
-async function closeTabQuietly(tabId) {
+function isProtectedTabId(tabId, protectedTabIds = []) {
   if (!Number.isInteger(Number(tabId))) return false;
+  return (Array.isArray(protectedTabIds) ? protectedTabIds : [protectedTabIds])
+    .some((protectedTabId) => Number.isInteger(Number(protectedTabId)) && Number(protectedTabId) === Number(tabId));
+}
+
+async function closeTabQuietly(tabId, protectedTabIds = []) {
+  if (!Number.isInteger(Number(tabId))) return false;
+  if (isProtectedTabId(tabId, protectedTabIds)) return false;
   try {
     await new Promise((resolve) => chrome.tabs.remove(Number(tabId), () => resolve()));
     return !chrome.runtime?.lastError;
@@ -1271,16 +1278,19 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
         const finish = async (payload) => {
           const payloadWithScreenshot = await attachSearchScreenshotArtifact(payload, newTab.id);
           if (shouldAutoCloseSearchTab) {
-            const closed = await closeTabQuietly(newTab.id);
+            const protectedSourceTab = isProtectedTabId(newTab.id, [__sourceTabId]);
+            const closed = protectedSourceTab ? false : await closeTabQuietly(newTab.id, [__sourceTabId]);
             emitSearchProgress(
-              closed ? "search_tab_closed" : "search_tab_close_failed",
-              closed
+              protectedSourceTab ? "search_source_tab_protected" : closed ? "search_tab_closed" : "search_tab_close_failed",
+              protectedSourceTab
+                ? `${searchActionLabel} 检测到待关闭 tabId=${newTab.id} 是源页面，已拒绝关闭主页面。`
+                : closed
                 ? `${searchActionLabel} 已保存证据并关闭临时标签页 tabId=${newTab.id}。`
                 : `${searchActionLabel} 已保存证据，但临时标签页 tabId=${newTab.id} 未能自动关闭。`,
               { tabId: newTab.id, searchUrl: payload.searchUrl }
             );
             await restoreSourceTabFocus(__sourceTabId);
-            resolve({ ...payloadWithScreenshot, tabClosed: closed });
+            resolve({ ...payloadWithScreenshot, tabClosed: closed, protectedSourceTab });
             return;
           }
           await restoreSourceTabFocus(__sourceTabId);
@@ -1681,7 +1691,7 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
   close_tab: async (args) => {
     const { tabId, __sourceTabId = null } = args;
     if (!tabId) throw new Error("tabId is required");
-    if (Number.isInteger(Number(__sourceTabId)) && Number(tabId) === Number(__sourceTabId)) {
+    if (isProtectedTabId(tabId, [__sourceTabId])) {
       return { ok: false, protectedSourceTab: true, message: `Refused to close source tab ${tabId}.` };
     }
     await chrome.tabs.remove(parseInt(tabId));
