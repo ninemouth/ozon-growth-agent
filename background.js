@@ -501,6 +501,46 @@ chrome.runtime.onConnect.addListener((port) => {
     });
 
     port.onMessage.addListener(async (message) => {
+      if (message.type === "CANCEL_WORKFLOW") {
+        if (!activeCheckpointKey) {
+          try {
+            port.postMessage({
+              type: "ERROR",
+              error: "当前没有可暂停的运行中 workflow。",
+              resumable: false,
+            });
+          } catch (_) {}
+          return;
+        }
+        try {
+          await requestWorkflowCancellation(activeCheckpointKey, message.reason || "user_paused");
+          await setWorkflowCheckpoint(activeCheckpointKey, {
+            status: "interrupted",
+            lastStage: "user_paused",
+            pausedAt: new Date().toISOString(),
+            interruptionReason: "user_paused",
+          });
+          port.postMessage({
+            type: "PROGRESS",
+            data: {
+              type: "workflow_timeout",
+              step: 0,
+              message: "已收到暂停请求，正在保存当前断点。当前工具或 AI 请求完成边界后会停止，可发送“继续”恢复。",
+            },
+          });
+        } catch (err) {
+          try {
+            port.postMessage({
+              type: "ERROR",
+              error: `暂停失败：${err.message}`,
+              resumable: true,
+              resumeHint: "如已保存断点，可发送“继续”恢复。",
+            });
+          } catch (_) {}
+        }
+        return;
+      }
+
       if (message.type === "RUN_SKILL") {
         if (runInFlight) {
           port.postMessage({
@@ -726,6 +766,29 @@ chrome.runtime.onConnect.addListener((port) => {
             activeCheckpointKey = "";
           }
         } catch (err) {
+          const workflowPaused = /workflow cancellation requested|user_paused/i.test(String(err.message || ""));
+          if (workflowPaused && activeCheckpointKey) {
+            await setWorkflowCheckpoint(activeCheckpointKey, {
+              status: "interrupted",
+              error: "",
+              lastStage: "user_paused",
+              interruptedAt: new Date().toISOString(),
+              interruptionReason: "user_paused",
+            });
+            releaseWorkflowLease(activeCheckpointKey, portId, "interrupted").catch((leaseErr) => console.warn("Could not release interrupted workflow lease:", leaseErr.message));
+            if (leaseRenewTimer) clearInterval(leaseRenewTimer);
+            leaseRenewTimer = null;
+            try {
+              port.postMessage({
+                type: "INTERRUPTED",
+                result: { type: "interrupted", result: "工作流已暂停并保存断点。" },
+                resumable: true,
+                resumeHint: "发送“继续”或从历史会话选择该断点即可恢复。",
+              });
+            } catch (_) {}
+            activeCheckpointKey = "";
+            return;
+          }
           if (activeCheckpointKey) {
             await setWorkflowCheckpoint(activeCheckpointKey, {
               status: "failed",
@@ -740,7 +803,13 @@ chrome.runtime.onConnect.addListener((port) => {
           if (leaseRenewTimer) clearInterval(leaseRenewTimer);
           leaseRenewTimer = null;
           if (!isCancelled) {
-            port.postMessage({ type: "ERROR", error: err.message });
+            port.postMessage({
+              type: "ERROR",
+              error: err.message,
+              errorCode: err.code || "WORKFLOW_ERROR",
+              resumable: true,
+              resumeHint: "本次 workflow 已尽量保存断点。可输入“继续”恢复上次中断节点。",
+            });
           }
         } finally {
           runInFlight = false;

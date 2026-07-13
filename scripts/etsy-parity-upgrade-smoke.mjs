@@ -43,7 +43,9 @@ assert.match(contentSource, /workflowSessionId[\s\S]*continueSession[\s\S]*force
 assert.match(contentSource, /startOverlayNewSessionMode[\s\S]*不会沿用旧断点/, "floating overlay should make fresh-session mode visible");
 assert.match(contentSource, /resumableEntries\.length > 0[\s\S]*已暂停自动运行[\s\S]*return;[\s\S]*runOverlayGrowthActionNow/, "floating overlay action clicks should pause for session choice when resumable checkpoints exist");
 assert.match(contentSource, /chat-session-resume-btn[\s\S]*overlayPendingGrowthAction[\s\S]*resume:\s*true/, "choosing a history item from the floating overlay should resume the pending action");
-assert.match(contentSource, /chat-new-session-btn[\s\S]*overlayPendingGrowthAction[\s\S]*resume:\s*false/, "clicking + new session from a pending floating action should start a fresh run explicitly");
+assert.match(contentSource, /chat-new-session-btn[\s\S]*overlayPendingGrowthAction \|\| overlayLastGrowthAction[\s\S]*resume:\s*false/, "clicking + new session from a pending or last floating action should start a fresh run explicitly");
+assert.match(contentSource, /activeAgentPort[\s\S]*CANCEL_WORKFLOW[\s\S]*pauseActiveWorkflow/, "floating overlay pause button should request workflow cancellation through the active port");
+assert.match(contentSource, /sendBtn\.innerText = pausing \? "暂停中" : "暂停"/, "floating overlay send button should become a pause button while a workflow is running");
 assert.doesNotMatch(contentSource, /Привет|Здравствуйте|Спасибо|Пожалуйста/, "content overlay should not contain Russian greeting copy");
 
 assert.match(agentLoop, /runToolWithTimeout/, "agent loop must run tools through the timeout wrapper");
@@ -52,9 +54,12 @@ assert.match(agentLoop, /tool_heartbeat/, "agent loop must send heartbeat progre
 assert.match(agentLoop, /type:\s*"tool_stage"/, "agent loop must emit concrete browser tool stage progress");
 assert.match(agentLoop, /__sourceTabId:\s*tabId/, "agent loop must pass the original source tab id into runtime tools");
 assert.match(agentLoop, /stripRuntimeToolArgs[\s\S]*__progress[\s\S]*__sourceTabId/, "agent loop must keep runtime-only tool args out of persisted tool history");
+assert.match(agentLoop, /checkpoint\("interrupted"[\s\S]*workflow_cancellation_requested/, "user-paused workflows should stay resumable instead of becoming cancelled checkpoints");
 assert.match(agentLoop, /closeTabsCreatedDuringTimedOutTool/, "agent loop must clean tabs created by timed-out tools");
 assert.match(agentLoop, /isWorkflowGenerationCurrent/, "agent loop must discard late results from stale workflow generations");
 assert.match(background, /workflowGeneration: lease\.generation/, "background must pass workflow generation into the agent loop");
+assert.match(background, /message\.type === "CANCEL_WORKFLOW"[\s\S]*requestWorkflowCancellation[\s\S]*lastStage:\s*"user_paused"/, "background should persist user-paused workflows as resumable checkpoints");
+assert.match(background, /workflowPaused[\s\S]*type:\s*"INTERRUPTED"[\s\S]*resumeHint/, "background should report explicit interrupted state instead of overwriting user pause as failed");
 assert.match(sidepanelJs, /msg\.type === "tool_stage"/, "sidepanel should show concrete browser tool stages");
 assert.match(contentSource, /data\.type === "tool_stage"/, "floating overlay should show concrete browser tool stages");
 

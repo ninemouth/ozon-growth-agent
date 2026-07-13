@@ -1094,7 +1094,7 @@ ${(skillId || "").includes("tiktok_shop_monitor") ? `\n\n## ⚠️ TikTok 监控
 
   for (let step = 1; step <= maxSteps; step++) {
     if (workflowId && await isWorkflowCancellationRequested(workflowId)) {
-      await checkpoint("cancelled", { step: step - 1, lastStage: "workflow_cancellation_requested" });
+      await checkpoint("interrupted", { step: step - 1, lastStage: "workflow_cancellation_requested" });
       throw new Error("workflow cancellation requested");
     }
 

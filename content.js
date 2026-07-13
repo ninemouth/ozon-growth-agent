@@ -2409,6 +2409,9 @@
       .send-btn:hover {
         opacity: 0.9;
       }
+      .send-btn.pause {
+        background: #ef4444;
+      }
 
       /* Settings Flyout Drawer */
       .settings-drawer {
@@ -2954,7 +2957,10 @@
     let overlaySelectedResumeSessionKey = "";
     let overlaySelectedResumeSessionMeta = null;
     let overlayPendingGrowthAction = null;
+    let overlayLastGrowthAction = null;
     let overlayNewSessionConfirmed = false;
+    let activeAgentPort = null;
+    let activePauseRequested = false;
     const WORKFLOW_CHECKPOINTS_KEY = "agentWorkflowCheckpoints";
 
     const escapeHtmlText = (value = "") => String(value)
@@ -2980,6 +2986,42 @@
       } else {
         modeText.innerText = "新会话：不会沿用旧断点";
         modeText.classList.remove("resume");
+      }
+    };
+
+    const updateChatRunControls = ({ running = false, pausing = false } = {}) => {
+      const sendBtn = shadow.getElementById("chat-send-btn");
+      const inputEl = shadow.getElementById("chat-input-el");
+      if (!sendBtn || !inputEl) return;
+      if (running) {
+        sendBtn.disabled = Boolean(pausing);
+        sendBtn.innerText = pausing ? "暂停中" : "暂停";
+        sendBtn.classList.toggle("pause", !pausing);
+        inputEl.disabled = true;
+        return;
+      }
+      sendBtn.disabled = false;
+      sendBtn.innerText = "发送";
+      sendBtn.classList.remove("pause");
+      inputEl.disabled = false;
+      activePauseRequested = false;
+    };
+
+    const pauseActiveWorkflow = () => {
+      if (!activeGrowthRun || !activeAgentPort || activePauseRequested) return;
+      activePauseRequested = true;
+      updateChatRunControls({ running: true, pausing: true });
+      try {
+        activeAgentPort.postMessage({
+          type: "CANCEL_WORKFLOW",
+          reason: "user_paused_from_overlay",
+        });
+        showToast("已发送暂停请求，正在保存断点。");
+      } catch (err) {
+        showToast(/Extension context invalidated|context invalidated/i.test(err.message || "")
+          ? "扩展上下文已失效，请刷新 Ozon 页面后从历史会话恢复。"
+          : `暂停请求失败：${err.message}`);
+        updateChatRunControls({ running: false });
       }
     };
 
@@ -3022,7 +3064,7 @@
           showToast(`竞品基线预处理失败，AI 诊断继续运行：${err.message}`);
         }
       }
-      runSelectedSkill(runInstruction || instruction, actionId);
+      await runSelectedSkill(runInstruction || instruction, actionId);
     };
 
     const renderOverlaySessionHistory = async (entriesOverride = null) => {
@@ -3207,11 +3249,12 @@
       const instruction = `${contextPrefix}\n\n${action.instruction}`;
       chatOverlay.classList.remove("hidden");
       settingsDrawer.classList.add("hidden");
+      overlayPendingGrowthAction = { actionId, instruction };
+      overlayLastGrowthAction = { actionId, instruction };
 
       const selectedResumeSessionKey = getOverlayActiveResumeSessionKey();
       const resumableEntries = selectedResumeSessionKey ? [] : await getOverlayCheckpointEntriesForAction(actionId);
       if (!selectedResumeSessionKey && !overlayNewSessionConfirmed && resumableEntries.length > 0) {
-        overlayPendingGrowthAction = { actionId, instruction };
         await renderOverlaySessionHistory(resumableEntries);
         shadow.getElementById("chat-session-history-panel")?.classList.remove("hidden");
         addMessage("assistant", `已找到「${action.label}」相关历史会话。请选择“恢复这个会话”，或点击“+ 新会话”后重新开始。`);
@@ -3641,12 +3684,9 @@
       }
       const skillPath = "";
       const statusDot = shadow.getElementById("chat-status-dot");
-      const sendBtn = shadow.getElementById("chat-send-btn");
-      const inputEl = shadow.getElementById("chat-input-el");
 
       statusDot.className = "status-dot active";
-      sendBtn.disabled = true;
-      inputEl.disabled = true;
+      updateChatRunControls({ running: true });
 
       const legacyContinueInstruction = /^(继续|继续推进|恢复|resume|continue)$/i.test(String(instruction || "").trim());
       let resumeSessionKey = getOverlayActiveResumeSessionKey();
@@ -3689,6 +3729,7 @@
 
       try {
         const port = chrome.runtime.connect({ name: "ozon-agent-loop" });
+        activeAgentPort = port;
         
         port.onMessage.addListener((message) => {
           if (message.type === "PROGRESS") {
@@ -3711,8 +3752,8 @@
             }
           } else if (message.type === "SUCCESS") {
             statusDot.className = "status-dot";
-            sendBtn.disabled = false;
-            inputEl.disabled = false;
+            activeAgentPort = null;
+            updateChatRunControls({ running: false });
             log("✅ Ozon AI 运营闭环工作流执行成功！");
             
             const result = message.result || {};
@@ -3724,10 +3765,21 @@
             finishGrowthRun("completed").catch((err) => console.warn("Failed to finish growth run:", err.message));
           } else if (message.type === "ERROR") {
             statusDot.className = "status-dot";
-            sendBtn.disabled = false;
-            inputEl.disabled = false;
+            activeAgentPort = null;
+            updateChatRunControls({ running: false });
             log(`❌ 执行失败: ${message.error}`);
+            if (message.resumable && message.resumeHint) {
+              log(`↩ ${message.resumeHint}`);
+            }
             finishGrowthRun("failed", message.error || "unknown error").catch((err) => console.warn("Failed to finish growth run:", err.message));
+          } else if (message.type === "INTERRUPTED") {
+            statusDot.className = "status-dot";
+            activeAgentPort = null;
+            updateChatRunControls({ running: false });
+            const reason = message.result?.result || message.resumeHint || "工作流已保存断点，可发送“继续”恢复。";
+            log(`⏸ ${reason}`);
+            log(`↩ ${message.resumeHint || "发送“继续”从当前节点恢复。"}`);
+            finishGrowthRun("interrupted").catch((err) => console.warn("Failed to mark interrupted growth run:", err.message));
           }
         });
 
@@ -3744,9 +3796,13 @@
 
       } catch (err) {
         statusDot.className = "status-dot";
-        sendBtn.disabled = false;
-        inputEl.disabled = false;
-        log(`❌ 无法发起后台连接: ${err.message}`);
+        activeAgentPort = null;
+        updateChatRunControls({ running: false });
+        const contextInvalidated = /Extension context invalidated|context invalidated/i.test(err.message || "");
+        log(`❌ 无法发起后台连接: ${contextInvalidated ? "扩展上下文已失效，请在 chrome://extensions 重新加载插件后刷新当前 Ozon 页面。" : err.message}`);
+        if (contextInvalidated) {
+          addMessage("assistant", "检测到扩展刚刚更新或重载，当前页面里的旧插件脚本已失效。请刷新当前 Ozon 页面后重新打开对话框，再从历史会话恢复或开启新会话。");
+        }
         await finishGrowthRun("failed", err.message);
       }
     };
@@ -4105,10 +4161,11 @@
       startOverlayNewSessionMode();
       shadow.getElementById("chat-session-history-panel")?.classList.add("hidden");
       showToast("已切换为新会话，下一次运行不会沿用旧断点。");
-      if (overlayPendingGrowthAction && !activeGrowthRun) {
+      const actionToRun = overlayPendingGrowthAction || overlayLastGrowthAction;
+      if (actionToRun && !activeGrowthRun) {
         runOverlayGrowthActionNow({
-          actionId: overlayPendingGrowthAction.actionId,
-          instruction: overlayPendingGrowthAction.instruction,
+          actionId: actionToRun.actionId,
+          instruction: actionToRun.instruction,
           resume: false,
         }).catch((err) => showToast(`启动新会话失败：${err.message}`));
       }
@@ -4157,13 +4214,13 @@
 
     // Chat sending message
     const sendMessage = () => {
+      if (activeGrowthRun) {
+        pauseActiveWorkflow();
+        return;
+      }
       const inputEl = shadow.getElementById("chat-input-el");
       const text = inputEl.value.trim();
       if (!text) return;
-      if (activeGrowthRun) {
-        showToast(`当前「${activeGrowthRun.title || "Ozon 任务"}」仍在运行，请等待完成后再继续反馈。`);
-        return;
-      }
 
       addMessage("user", text);
       inputEl.value = '';
@@ -4173,7 +4230,7 @@
 
     shadow.getElementById("chat-send-btn").addEventListener("click", sendMessage);
     shadow.getElementById("chat-input-el").addEventListener("keydown", (e) => {
-      if (e.key === "Enter") sendMessage();
+      if (e.key === "Enter" && !activeGrowthRun) sendMessage();
     });
 
     // Toast Notification helper
