@@ -72,6 +72,21 @@
             <strong id="sidepanelDataLedger">前台页面真实读取；Seller API 需在 Dashboard 绑定；无真实数据时保持空状态。</strong>
           </div>
         </div>
+        <div class="session-control session-control-top">
+          <div class="session-control-head">
+            <div>
+              <div class="session-label">会话模式</div>
+              <div id="sessionModeText" class="session-mode-text">新会话：不会沿用旧断点</div>
+            </div>
+            <button type="button" id="newSessionBtn" class="session-btn primary">+ 新会话</button>
+          </div>
+          <button type="button" id="sessionHistoryBtn" class="session-history-toggle">历史会话 / 恢复断点</button>
+          <div id="sessionHistoryPanel" class="session-history-panel hidden">
+            <div id="sessionHistoryList" class="session-history-list">
+              <div class="session-empty">暂无可恢复会话。</div>
+            </div>
+          </div>
+        </div>
       </section>
 
       <section class="section advanced-skill-section">
@@ -153,21 +168,6 @@
           </div>
         </div>
         <textarea id="instruction" class="textarea" rows="3" placeholder="描述你想要分析的内容，或留空使用 skill 默认流程..."></textarea>
-        <div class="session-control">
-          <div class="session-control-head">
-            <div>
-              <div class="session-label">会话模式</div>
-              <div id="sessionModeText" class="session-mode-text">新会话：不会沿用旧断点</div>
-            </div>
-            <button type="button" id="newSessionBtn" class="session-btn primary">+ 新会话</button>
-          </div>
-          <button type="button" id="sessionHistoryBtn" class="session-history-toggle">历史会话 / 恢复断点</button>
-          <div id="sessionHistoryPanel" class="session-history-panel hidden">
-            <div id="sessionHistoryList" class="session-history-list">
-              <div class="session-empty">暂无可恢复会话。</div>
-            </div>
-          </div>
-        </div>
         <div id="targetImageInputs" class="target-image-inputs hidden">
           <div class="target-image-label">目标商品图兜底 <span class="optional">(默认自动读取当前页主图)</span></div>
           <input type="url" id="targetImageUrl" class="form-input compact-input" placeholder="自动识别失败时，可粘贴商品主图 URL" />

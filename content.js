@@ -2010,6 +2010,99 @@
         opacity: 1;
       }
 
+      .chat-session-control {
+        padding: 10px 14px;
+        border-bottom: 1px solid var(--border-main);
+        background: var(--header-bg);
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .chat-session-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+      .chat-session-label {
+        font-size: 10px;
+        color: var(--text-secondary);
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: 0;
+      }
+      .chat-session-mode-text {
+        font-size: 11px;
+        color: var(--text-secondary);
+        line-height: 1.35;
+        margin-top: 2px;
+      }
+      .chat-session-mode-text.resume {
+        color: #005bff;
+        font-weight: 700;
+      }
+      .chat-session-actions {
+        display: flex;
+        gap: 6px;
+        flex-shrink: 0;
+      }
+      .chat-session-btn {
+        border: 1px solid var(--border-main);
+        background: var(--input-bg);
+        color: var(--text-color);
+        border-radius: 8px;
+        padding: 6px 9px;
+        font-size: 11px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      .chat-session-btn:hover {
+        border-color: #005bff;
+        color: #005bff;
+      }
+      .chat-session-history-panel.hidden {
+        display: none !important;
+      }
+      .chat-session-history-panel {
+        max-height: 190px;
+        overflow-y: auto;
+        border: 1px solid var(--border-main);
+        border-radius: 10px;
+        background: var(--input-bg);
+        padding: 8px;
+      }
+      .chat-session-history-item {
+        border-bottom: 1px solid var(--border-main);
+        padding: 8px 0;
+      }
+      .chat-session-history-item:last-child {
+        border-bottom: none;
+      }
+      .chat-session-history-title {
+        font-size: 11px;
+        font-weight: 800;
+        color: var(--text-color);
+        line-height: 1.35;
+      }
+      .chat-session-history-meta,
+      .chat-session-empty {
+        font-size: 10px;
+        color: var(--text-secondary);
+        line-height: 1.45;
+        margin-top: 3px;
+      }
+      .chat-session-resume-btn {
+        margin-top: 6px;
+        border: 1px solid rgba(0,91,255,0.32);
+        background: rgba(0,91,255,0.08);
+        color: #005bff;
+        border-radius: 7px;
+        padding: 5px 8px;
+        font-size: 10px;
+        font-weight: 800;
+        cursor: pointer;
+      }
+
       /* Chat Overlay Window */
       .chat-overlay {
         position: fixed;
@@ -2797,9 +2890,24 @@
       <div class="chat-body" id="chat-messages-container">
         <div class="msg assistant">
           <div class="bubble">
-            Привет! 我已感知当前 Ozon 页面。右侧悬浮栏会根据页面场景提供可运行动作；这里主要用于查看结果、复制内容、继续反馈和推进改进。
+            我已感知当前 Ozon 页面。右侧悬浮栏会根据页面场景提供可运行动作；这里主要用于查看结果、复制内容、继续反馈和推进改进。
           </div>
           <div class="msg-meta">Ozon 智脑舱 • ${new Date().toLocaleTimeString()}</div>
+        </div>
+      </div>
+      <div class="chat-session-control">
+        <div class="chat-session-row">
+          <div>
+            <div class="chat-session-label">会话模式</div>
+            <div class="chat-session-mode-text" id="chat-session-mode-text">新会话：不会沿用旧断点</div>
+          </div>
+          <div class="chat-session-actions">
+            <button type="button" class="chat-session-btn" id="chat-new-session-btn">+ 新会话</button>
+            <button type="button" class="chat-session-btn" id="chat-session-history-btn">历史会话</button>
+          </div>
+        </div>
+        <div class="chat-session-history-panel hidden" id="chat-session-history-panel">
+          <div id="chat-session-history-list" class="chat-session-empty">暂无可恢复会话。</div>
         </div>
       </div>
       <div class="chat-footer">
@@ -2842,6 +2950,107 @@
     dock.title = `${contextSummary.title}：${contextSummary.subtitle}`;
 
     let activeGrowthRun = null;
+    let overlaySessionMode = "new";
+    let overlaySelectedResumeSessionKey = "";
+    let overlaySelectedResumeSessionMeta = null;
+    const WORKFLOW_CHECKPOINTS_KEY = "agentWorkflowCheckpoints";
+
+    const escapeHtmlText = (value = "") => String(value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+
+    const createOverlayWorkflowSessionId = () => `workflow_session_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+
+    const getOverlaySessionTitle = (checkpoint = {}) => {
+      const skillName = String(checkpoint.skillPath || checkpoint.skillId || "").split("/").pop()?.replace(".skill.md", "") || "Ozon workflow";
+      const stage = checkpoint.lastStage || checkpoint.lastNode || checkpoint.status || "checkpoint";
+      return `${skillName} · ${stage}`;
+    };
+
+    const updateOverlaySessionModeUI = () => {
+      const modeText = shadow.getElementById("chat-session-mode-text");
+      if (!modeText) return;
+      if (overlaySessionMode === "resume" && overlaySelectedResumeSessionKey) {
+        modeText.innerText = `恢复历史会话：${getOverlaySessionTitle(overlaySelectedResumeSessionMeta || {})}`;
+        modeText.classList.add("resume");
+      } else {
+        modeText.innerText = "新会话：不会沿用旧断点";
+        modeText.classList.remove("resume");
+      }
+    };
+
+    const startOverlayNewSessionMode = () => {
+      overlaySessionMode = "new";
+      overlaySelectedResumeSessionKey = "";
+      overlaySelectedResumeSessionMeta = null;
+      updateOverlaySessionModeUI();
+    };
+
+    const getOverlayCheckpointEntries = async () => {
+      const data = await new Promise((resolve) => chrome.storage.local.get([WORKFLOW_CHECKPOINTS_KEY], resolve));
+      return Object.entries(data[WORKFLOW_CHECKPOINTS_KEY] || {})
+        .map(([key, checkpoint]) => ({ key, checkpoint: checkpoint || {} }))
+        .filter(({ checkpoint }) => !["completed", "cancelled"].includes(String(checkpoint.status || "")))
+        .sort((a, b) => new Date(b.checkpoint.updatedAt || 0) - new Date(a.checkpoint.updatedAt || 0));
+    };
+
+    const renderOverlaySessionHistory = async () => {
+      const list = shadow.getElementById("chat-session-history-list");
+      if (!list) return;
+      const entries = await getOverlayCheckpointEntries();
+      if (!entries.length) {
+        list.className = "chat-session-empty";
+        list.innerHTML = "暂无可恢复会话。";
+        return;
+      }
+      list.className = "";
+      list.innerHTML = entries.slice(0, 12).map(({ key, checkpoint }) => {
+        const updatedAt = checkpoint.updatedAt ? new Date(checkpoint.updatedAt).toLocaleString() : "未知时间";
+        const status = checkpoint.status || "checkpoint";
+        const step = checkpoint.step !== undefined ? ` · step ${checkpoint.step}` : "";
+        return `
+          <div class="chat-session-history-item" data-session-key="${escapeHtmlText(key)}">
+            <div class="chat-session-history-title">${escapeHtmlText(getOverlaySessionTitle(checkpoint))}</div>
+            <div class="chat-session-history-meta">${escapeHtmlText(status)}${escapeHtmlText(step)} · ${escapeHtmlText(updatedAt)}</div>
+            <button type="button" class="chat-session-resume-btn" data-session-key="${escapeHtmlText(key)}">恢复这个会话</button>
+          </div>
+        `;
+      }).join("");
+      list.querySelectorAll(".chat-session-resume-btn").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const key = btn.dataset.sessionKey || "";
+          const match = entries.find((entry) => entry.key === key);
+          if (!match) return;
+          overlaySessionMode = "resume";
+          overlaySelectedResumeSessionKey = key;
+          overlaySelectedResumeSessionMeta = match.checkpoint;
+          updateOverlaySessionModeUI();
+          shadow.getElementById("chat-session-history-panel")?.classList.add("hidden");
+          showToast(`已选择历史会话：${getOverlaySessionTitle(match.checkpoint)}`);
+        });
+      });
+    };
+
+    const getOverlayActiveResumeSessionKey = () => (
+      overlaySessionMode === "resume" && overlaySelectedResumeSessionKey ? overlaySelectedResumeSessionKey : ""
+    );
+
+    const pickLatestOverlayResumableSessionForContinue = async ({ growthActionId = "" } = {}) => {
+      const entries = await getOverlayCheckpointEntries();
+      const matched = entries.find(({ checkpoint }) => {
+        const checkpointAction = String(checkpoint.growthActionId || "");
+        if (growthActionId && checkpointAction === growthActionId) return true;
+        return false;
+      }) || entries[0];
+      if (!matched) return "";
+      overlaySessionMode = "resume";
+      overlaySelectedResumeSessionKey = matched.key;
+      overlaySelectedResumeSessionMeta = matched.checkpoint;
+      updateOverlaySessionModeUI();
+      return matched.key;
+    };
 
     const setDockBusy = (busy, actionId = "") => {
       dockActionButtons.forEach((btn) => {
@@ -2962,6 +3171,9 @@
       const instruction = `${contextPrefix}\n\n${action.instruction}`;
       chatOverlay.classList.remove("hidden");
       settingsDrawer.classList.add("hidden");
+      if (!getOverlayActiveResumeSessionKey()) {
+        startOverlayNewSessionMode();
+      }
       addMessage("user", `运行「${action.label}」`);
       const run = await persistGrowthActionRun(actionId, instruction);
       await setActiveGrowthRun(run);
@@ -3397,6 +3609,14 @@
       sendBtn.disabled = true;
       inputEl.disabled = true;
 
+      const legacyContinueInstruction = /^(继续|继续推进|恢复|resume|continue)$/i.test(String(instruction || "").trim());
+      let resumeSessionKey = getOverlayActiveResumeSessionKey();
+      if (!resumeSessionKey && legacyContinueInstruction) {
+        resumeSessionKey = await pickLatestOverlayResumableSessionForContinue({ growthActionId });
+      }
+      const shouldContinueSession = Boolean(resumeSessionKey || legacyContinueInstruction);
+      const workflowSessionId = resumeSessionKey || createOverlayWorkflowSessionId();
+
       // Add a System Harness Log terminal bubble
       const logMsgDiv = document.createElement("div");
       logMsgDiv.className = "msg assistant";
@@ -3474,8 +3694,11 @@
         port.postMessage({
           type: "RUN_SKILL",
           skillPath: skillPath,
+          workflowSessionId,
           growthActionId,
-          userInstruction: instruction
+          userInstruction: instruction,
+          continueSession: Boolean(shouldContinueSession),
+          forceNewSession: !shouldContinueSession
         });
 
       } catch (err) {
@@ -3835,6 +4058,20 @@
 
     dashBtn.addEventListener("click", () => {
       chrome.runtime.sendMessage({ type: "OPEN_DASHBOARD" });
+    });
+
+    shadow.getElementById("chat-new-session-btn")?.addEventListener("click", () => {
+      startOverlayNewSessionMode();
+      shadow.getElementById("chat-session-history-panel")?.classList.add("hidden");
+      showToast("已切换为新会话，下一次运行不会沿用旧断点。");
+    });
+
+    shadow.getElementById("chat-session-history-btn")?.addEventListener("click", async () => {
+      const panel = shadow.getElementById("chat-session-history-panel");
+      if (!panel) return;
+      const willShow = panel.classList.contains("hidden");
+      panel.classList.toggle("hidden", !willShow);
+      if (willShow) await renderOverlaySessionHistory();
     });
 
     // Track Current Product

@@ -205,6 +205,78 @@ function summarizeOzonProductCards(cards = []) {
   }));
 }
 
+export function hasValidGoogleTrendsEvidence(result = {}) {
+  const pageData = result?.pageData || {};
+  const text = [
+    pageData.title,
+    pageData.h1,
+    pageData.visibleText,
+    pageData.metaDescription,
+    pageData.text,
+  ].filter(Boolean).join("\n");
+  const hasTrendShell = /google trends|explore|趋势/i.test(text);
+  const hasCoreTrendModule = /interest over time|趋势变化|随时间变化/i.test(text);
+  const hasRelatedModule = /related queries|related topics|相关查询|相关主题/i.test(text);
+  const visibleTextLength = String(pageData.visibleText || pageData.text || "").trim().length;
+  return hasTrendShell && ((hasCoreTrendModule && hasRelatedModule) || visibleTextLength >= 320);
+}
+
+function getGoogleTrendsEvidenceState(result = {}) {
+  const pageData = result?.pageData || {};
+  const text = [
+    pageData.title,
+    pageData.h1,
+    pageData.visibleText,
+    pageData.metaDescription,
+    pageData.text,
+  ].filter(Boolean).join("\n");
+  const visibleTextLength = String(pageData.visibleText || pageData.text || "").trim().length;
+  const hasTrendShell = /google trends|explore|趋势/i.test(text);
+  const hasCoreTrendModule = /interest over time|趋势变化|随时间变化/i.test(text);
+  const hasRelatedModule = /related queries|related topics|相关查询|相关主题/i.test(text);
+  return {
+    hasTrendShell,
+    hasCoreTrendModule,
+    hasRelatedModule,
+    visibleTextLength,
+    stableEnough: hasValidGoogleTrendsEvidence(result),
+    readiness: hasCoreTrendModule && hasRelatedModule
+      ? "core_modules_visible"
+      : hasTrendShell
+        ? "trend_shell_visible"
+        : "not_trends_ready",
+  };
+}
+
+function withSearchEvidenceStatus(payload, engine) {
+  const normalizedEngine = String(engine || "").toLowerCase();
+  if (normalizedEngine !== "google_trends") return payload;
+  const trendsEvidenceState = getGoogleTrendsEvidenceState(payload);
+  const evidenceOk = hasValidGoogleTrendsEvidence(payload);
+  return {
+    ...payload,
+    ok: evidenceOk,
+    evidenceOk,
+    evidenceType: "google_trends",
+    trendsEvidenceState,
+    evidenceStatus: evidenceOk ? "valid" : "invalid_or_blocked",
+    message: evidenceOk
+      ? (payload.message || "Valid Google Trends RU evidence captured.")
+      : "Google Trends RU 页面只看到壳页或模块未稳定加载，不能作为趋势/季节性结论证据。请等待核心模块、截图后重试，或降级为待验证假设。",
+  };
+}
+
+function searchEvidenceSatisfied(payload, engine) {
+  const normalizedEngine = String(engine || "").toLowerCase();
+  if (normalizedEngine === "google_trends") return hasValidGoogleTrendsEvidence(payload);
+  const pageData = payload?.pageData || {};
+  return Boolean(
+    (pageData.productLinks && pageData.productLinks.length > 0) ||
+    (pageData.productCards && pageData.productCards.length > 0) ||
+    String(pageData.visibleText || pageData.text || "").trim().length >= 160
+  );
+}
+
 function extractOzonCandidateUrls(pageData = {}, limit = 6) {
   const urls = [];
   const pushUrl = (raw) => {
@@ -1103,23 +1175,25 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
       chrome.tabs.create({ url: safeEncodeURI(searchUrl), active: true }, (newTab) => {
         // Poll immediately for content script readiness and product links
         let attempts = 0;
-        const maxAttempts = 20; // up to 10 seconds for new tab load
+        const maxAttempts = engine === "google_trends" ? 44 : 20;
+        const minStablePollAttempts = engine === "google_trends" ? 8 : 1;
         const checkLoad = setInterval(async () => {
           attempts++;
           try {
             const data = await sendToContentScript(newTab.id, { type: "READ_CURRENT_PAGE" });
             const pageData = data?.data || {};
-            const hasProducts = (pageData.productLinks && pageData.productLinks.length > 0) ||
-              (pageData.productCards && pageData.productCards.length > 0);
+            const payload = withSearchEvidenceStatus({ ok: true, tabId: newTab.id, searchUrl, queryUsed: targetQuery, pageData }, engine);
+            const evidenceSatisfied = searchEvidenceSatisfied(payload, engine);
+            const stableWindowSatisfied = engine !== "google_trends" || attempts >= minStablePollAttempts;
             
-            if (hasProducts || attempts >= maxAttempts) {
+            if ((evidenceSatisfied && stableWindowSatisfied) || attempts >= maxAttempts) {
               clearInterval(checkLoad);
-              resolve({ ok: true, tabId: newTab.id, searchUrl, queryUsed: targetQuery, pageData });
+              resolve(payload);
             }
           } catch (_) {
             if (attempts >= maxAttempts) {
               clearInterval(checkLoad);
-              resolve({ ok: true, tabId: newTab.id, searchUrl, queryUsed: targetQuery, pageData: {} });
+              resolve(withSearchEvidenceStatus({ ok: true, tabId: newTab.id, searchUrl, queryUsed: targetQuery, pageData: {} }, engine));
             }
           }
         }, 500);

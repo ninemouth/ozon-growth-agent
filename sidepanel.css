@@ -520,6 +520,12 @@ body {
   border: 1px solid var(--border);
   border-radius: var(--radius);
 }
+.session-control-top {
+  margin-top: 12px;
+  background: linear-gradient(180deg, rgba(16,185,129,0.12), rgba(99,102,241,0.08));
+  border-color: rgba(16,185,129,0.28);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.14);
+}
 .session-control-head {
   display: flex;
   align-items: center;
@@ -530,7 +536,7 @@ body {
   font-size: 10px;
   letter-spacing: .04em;
   text-transform: uppercase;
-  color: var(--text3);
+  color: var(--success);
   font-weight: 700;
 }
 .session-mode-text {
@@ -567,7 +573,8 @@ body {
   width: 100%;
   margin-top: 8px;
   padding: 7px 8px;
-  text-align: left;
+  text-align: center;
+  background: rgba(255,255,255,0.05);
 }
 .session-btn:hover,
 .session-history-toggle:hover,
