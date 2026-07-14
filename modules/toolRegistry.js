@@ -337,6 +337,138 @@ function searchEvidenceSatisfied(payload, engine) {
   );
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isVerificationUrl(url = "") {
+  return /sec\.1688\.com|login|verify|passport|captcha|challenge/i.test(String(url || ""));
+}
+
+function pageDataSignature(pageData = {}) {
+  const text = String(pageData.visibleText || pageData.text || pageData.bodyText || "");
+  return [
+    pageData.url || "",
+    pageData.title || "",
+    text.length,
+    Array.isArray(pageData.productLinks) ? pageData.productLinks.length : 0,
+    Array.isArray(pageData.productCards) ? pageData.productCards.length : 0,
+  ].join("|");
+}
+
+function pageDataLooksReady(pageData = {}, engine = "") {
+  const normalizedEngine = String(engine || "").toLowerCase();
+  if (normalizedEngine === "google_trends") {
+    return hasValidGoogleTrendsEvidence({ pageData });
+  }
+  const productLinks = Array.isArray(pageData.productLinks) ? pageData.productLinks.length : 0;
+  const productCards = Array.isArray(pageData.productCards) ? pageData.productCards.length : 0;
+  const textLength = String(pageData.visibleText || pageData.text || pageData.bodyText || "").trim().length;
+  if (productLinks > 0 || productCards > 0) return true;
+  if (["ozon", "1688", "taobao", "jd", "pinduoduo"].includes(normalizedEngine)) return textLength >= 120;
+  return textLength >= 160 || Boolean(pageData.title);
+}
+
+async function getTabQuietly(tabId) {
+  return await new Promise((resolve) => {
+    chrome.tabs.get(tabId, (tabInfo) => {
+      if (chrome.runtime.lastError || !tabInfo) resolve(null);
+      else resolve(tabInfo);
+    });
+  });
+}
+
+async function readPageFromTabQuietly(tabId) {
+  try {
+    return await readPageFromTab(tabId);
+  } catch (_) {
+    return null;
+  }
+}
+
+async function waitForPageCaptureReady(tabId, {
+  engine = "",
+  maxAttempts = 24,
+  pollMs = 500,
+  minQuietMs = 1200,
+  minStableReads = 2,
+  progress = null,
+  progressStage = "page_capture_waiting",
+  progressLabel = "页面",
+} = {}) {
+  const startedAt = Date.now();
+  let lastTab = null;
+  let lastPageData = null;
+  let lastSignature = "";
+  let stableReads = 0;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const tab = await getTabQuietly(tabId);
+    if (!tab) {
+      return {
+        ok: false,
+        tab: null,
+        pageData: lastPageData,
+        attempts: attempt,
+        readyReason: "tab_closed_or_missing",
+      };
+    }
+    lastTab = tab;
+
+    if (isVerificationUrl(tab.url)) {
+      return {
+        ok: false,
+        tab,
+        pageData: lastPageData,
+        attempts: attempt,
+        isVerification: true,
+        readyReason: "verification_page",
+      };
+    }
+
+    const pageComplete = tab.status === "complete";
+    const quietEnough = Date.now() - startedAt >= minQuietMs;
+    if (pageComplete && quietEnough) {
+      const pageData = await readPageFromTabQuietly(tabId);
+      if (pageData) {
+        lastPageData = pageData;
+        const signature = pageDataSignature(pageData);
+        stableReads = signature === lastSignature ? stableReads + 1 : 1;
+        lastSignature = signature;
+        const contentReady = pageDataLooksReady(pageData, engine);
+        if (contentReady && stableReads >= Math.max(1, Number(minStableReads) || 1)) {
+          return {
+            ok: true,
+            tab,
+            pageData,
+            attempts: attempt,
+            stableReads,
+            readyReason: "content_stable",
+          };
+        }
+      }
+    }
+
+    if (typeof progress === "function" && (attempt === 1 || attempt % 6 === 0)) {
+      progress(progressStage, `${progressLabel} 正在等待加载稳定（${attempt}/${maxAttempts}）。`, {
+        tabId,
+        tabStatus: tab.status,
+        quietMs: Date.now() - startedAt,
+      });
+    }
+    await sleep(pollMs);
+  }
+
+  return {
+    ok: Boolean(lastPageData),
+    tab: lastTab,
+    pageData: lastPageData,
+    attempts: maxAttempts,
+    stableReads,
+    readyReason: lastPageData ? "timeout_with_last_read" : "timeout_without_read",
+  };
+}
+
 function extractOzonCandidateUrls(pageData = {}, limit = 6) {
   const urls = [];
   const pushUrl = (raw) => {
@@ -411,12 +543,25 @@ async function collectOzonEvidencePage({
   let openedByTool = false;
   try {
     if (tabId) {
-      evidenceTab = await waitForTabLoaded(Number(tabId));
+      const ready = await waitForPageCaptureReady(Number(tabId), {
+        engine: "ozon",
+        maxAttempts: 28,
+        minQuietMs: 1800,
+        minStableReads: 2,
+        progressLabel: "Ozon 证据页",
+      });
+      evidenceTab = ready.tab || await waitForTabLoaded(Number(tabId));
     } else if (url) {
       evidenceTab = await openOzonEvidenceTab(url, false);
       openedByTool = true;
-      await waitForTabLoaded(evidenceTab.id);
-      await new Promise((resolve) => setTimeout(resolve, 1600));
+      const ready = await waitForPageCaptureReady(evidenceTab.id, {
+        engine: "ozon",
+        maxAttempts: 32,
+        minQuietMs: 2200,
+        minStableReads: 2,
+        progressLabel: "Ozon 证据页",
+      });
+      evidenceTab = ready.tab || evidenceTab;
     } else {
       evidenceTab = await getCurrentTab();
     }
@@ -427,7 +572,14 @@ async function collectOzonEvidencePage({
       throw new Error(`collect_ozon_shop_pages only supports ozon.ru pages. Current URL: ${finalUrl || "unknown"}`);
     }
 
-    const pageData = await readPageFromTab(evidenceTab.id);
+    const ready = await waitForPageCaptureReady(evidenceTab.id, {
+      engine: "ozon",
+      maxAttempts: 12,
+      minQuietMs: 800,
+      minStableReads: 1,
+      progressLabel: "Ozon 证据页",
+    });
+    const pageData = ready.pageData || await readPageFromTab(evidenceTab.id);
     const screenshot = await captureAndStoreOzonScreenshot(evidenceTab.id, {
       url: finalUrl,
       pageIndex,
@@ -1241,37 +1393,32 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
       const searchUrl = "https://s.1688.com/";
       return new Promise((resolve) => {
         emitSearchProgress("search_tab_opening", "1688 货源检索正在打开临时标签页。", { searchUrl });
-        createBrowserTab({ url: searchUrl, active: true, openerTabId: __sourceTabId }, (newTab) => {
+        createBrowserTab({ url: searchUrl, active: true, openerTabId: __sourceTabId }, async (newTab) => {
           emitSearchProgress("search_tab_opened", `1688 货源检索已打开 tabId=${newTab.id}，开始进入搜索页。`, { tabId: newTab.id, searchUrl });
-          let attempts = 0;
-          const maxAttempts = 20; // up to 10 seconds
-          const checkLoad = setInterval(() => {
-            attempts++;
-            chrome.tabs.get(newTab.id, (t) => {
-              if (chrome.runtime.lastError || !t) {
-                clearInterval(checkLoad);
-                resolve({ ok: true, tabId: newTab?.id, searchUrl, queryUsed: targetQuery, pageData: {} });
-                return;
-              }
-              
-              if (t.status === "complete" || attempts >= maxAttempts) {
-                clearInterval(checkLoad);
-                setTimeout(async () => {
-                  try {
-                    const searchRes = await tools.input_text_and_search({
-                      keyword: targetQuery,
-                      tabId: newTab.id
-                    });
-                    await restoreSourceTabFocus(__sourceTabId);
-                    resolve({ ok: true, tabId: newTab.id, searchUrl, queryUsed: targetQuery, pageData: searchRes.pageData || {} });
-                  } catch (err) {
-                    await restoreSourceTabFocus(__sourceTabId);
-                    resolve({ ok: true, tabId: newTab.id, searchUrl, queryUsed: targetQuery, pageData: {} });
-                  }
-                }, 1500);
-              }
+          const ready = await waitForPageCaptureReady(newTab.id, {
+            engine: "1688",
+            maxAttempts: 24,
+            minQuietMs: 1800,
+            minStableReads: 1,
+            progress: emitSearchProgress,
+            progressStage: "search_page_reading",
+            progressLabel: "1688 货源检索页",
+          });
+          if (!ready.tab) {
+            resolve({ ok: true, tabId: newTab?.id, searchUrl, queryUsed: targetQuery, pageData: {}, loadState: ready.readyReason });
+            return;
+          }
+          try {
+            const searchRes = await tools.input_text_and_search({
+              keyword: targetQuery,
+              tabId: newTab.id
             });
-          }, 500);
+            await restoreSourceTabFocus(__sourceTabId);
+            resolve({ ok: true, tabId: newTab.id, searchUrl, queryUsed: targetQuery, pageData: searchRes.pageData || {}, loadState: ready.readyReason });
+          } catch (err) {
+            await restoreSourceTabFocus(__sourceTabId);
+            resolve({ ok: true, tabId: newTab.id, searchUrl, queryUsed: targetQuery, pageData: {}, loadState: ready.readyReason });
+          }
         });
       });
     }
@@ -1279,10 +1426,8 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
     const searchUrl = engines[normalizedEngine] || engines.google;
     return new Promise((resolve) => {
       emitSearchProgress("search_tab_opening", `${searchActionLabel} 正在打开临时标签页。`, { searchUrl });
-      createBrowserTab({ url: searchUrl, active: true, openerTabId: __sourceTabId }, (newTab) => {
+      createBrowserTab({ url: searchUrl, active: true, openerTabId: __sourceTabId }, async (newTab) => {
         emitSearchProgress("search_tab_opened", `${searchActionLabel} 已打开临时标签页 tabId=${newTab.id}，开始等待页面可读。`, { tabId: newTab.id, searchUrl });
-        // Poll immediately for content script readiness and product links
-        let attempts = 0;
         const maxAttempts = normalizedEngine === "google_trends" ? 44 : 20;
         const minStablePollAttempts = normalizedEngine === "google_trends" ? 8 : 1;
         const finish = async (payload) => {
@@ -1306,39 +1451,36 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
           await restoreSourceTabFocus(__sourceTabId);
           resolve(payloadWithScreenshot);
         };
-        const checkLoad = setInterval(async () => {
-          attempts++;
-          try {
-            if (attempts === 1 || attempts % 8 === 0) {
-              const trendHint = normalizedEngine === "google_trends" ? "，正在等待 Interest over time 与 Related queries/topics 模块" : "";
-              emitSearchProgress("search_page_reading", `${searchActionLabel} 正在读取页面信息${trendHint}（轮询 ${attempts}/${maxAttempts}）。`, { tabId: newTab.id, searchUrl });
-            }
-            const data = await sendToContentScript(newTab.id, { type: "READ_CURRENT_PAGE" });
-            const pageData = data?.data || {};
-            const payload = withSearchEvidenceStatus({ ok: true, tabId: newTab.id, searchUrl, queryUsed: targetQuery, pageData }, normalizedEngine);
-            const evidenceSatisfied = searchEvidenceSatisfied(payload, normalizedEngine);
-            const stableWindowSatisfied = normalizedEngine !== "google_trends" || attempts >= minStablePollAttempts;
-            
-            if ((evidenceSatisfied && stableWindowSatisfied) || attempts >= maxAttempts) {
-              clearInterval(checkLoad);
-              emitSearchProgress(
-                evidenceSatisfied ? "search_evidence_ready" : "search_evidence_timeout",
-                evidenceSatisfied
-                  ? `${searchActionLabel} 已取得可用页面证据，准备保存截图并收尾。`
-                  : `${searchActionLabel} 已达到轮询上限，当前页面证据仍不足，将按工具结果返回质量状态。`,
-                { tabId: newTab.id, searchUrl }
-              );
-              await finish(payload);
-            }
-          } catch (_) {
-            if (attempts >= maxAttempts) {
-              clearInterval(checkLoad);
-              const payload = withSearchEvidenceStatus({ ok: true, tabId: newTab.id, searchUrl, queryUsed: targetQuery, pageData: {} }, normalizedEngine);
-              emitSearchProgress("search_evidence_timeout", `${searchActionLabel} 页面读取失败或证据不足，将按工具结果返回质量状态。`, { tabId: newTab.id, searchUrl });
-              await finish(payload);
-            }
-          }
-        }, 500);
+        const trendHint = normalizedEngine === "google_trends" ? "，正在等待 Interest over time 与 Related queries/topics 模块" : "";
+        emitSearchProgress("search_page_reading", `${searchActionLabel} 正在读取页面信息${trendHint}。`, { tabId: newTab.id, searchUrl });
+        const ready = await waitForPageCaptureReady(newTab.id, {
+          engine: normalizedEngine,
+          maxAttempts,
+          minQuietMs: normalizedEngine === "google_trends" ? 3800 : 1800,
+          minStableReads: normalizedEngine === "google_trends" ? Math.max(2, minStablePollAttempts) : 2,
+          progress: emitSearchProgress,
+          progressStage: "search_page_reading",
+          progressLabel: searchActionLabel,
+        });
+        const payload = withSearchEvidenceStatus({
+          ok: true,
+          tabId: newTab.id,
+          searchUrl,
+          queryUsed: targetQuery,
+          pageData: ready.pageData || {},
+          loadState: ready.readyReason,
+          loadAttempts: ready.attempts,
+          stableReads: ready.stableReads,
+        }, normalizedEngine);
+        const evidenceSatisfied = searchEvidenceSatisfied(payload, normalizedEngine);
+        emitSearchProgress(
+          evidenceSatisfied ? "search_evidence_ready" : "search_evidence_timeout",
+          evidenceSatisfied
+            ? `${searchActionLabel} 已取得稳定页面证据，准备保存截图并收尾。`
+            : `${searchActionLabel} 已等待加载稳定但证据仍不足，将按工具结果返回质量状态。`,
+          { tabId: newTab.id, searchUrl, loadState: ready.readyReason }
+        );
+        await finish(payload);
       });
     });
   },
@@ -1458,36 +1600,29 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
       ? "https://s.taobao.com/search"
       : "https://s.1688.com/";
     return new Promise((resolve, reject) => {
-      createBrowserTab({ url: searchUrl, active: true, openerTabId: __sourceTabId }, (newTab) => {
+      createBrowserTab({ url: searchUrl, active: true, openerTabId: __sourceTabId }, async (newTab) => {
         if (chrome.runtime.lastError) {
           reject(new Error(chrome.runtime.lastError.message));
           return;
         }
 
-        let attempts = 0;
-        const maxAttempts = 20;
-        const checkLoad = setInterval(() => {
-          attempts++;
-          chrome.tabs.get(newTab.id, (t) => {
-            if (chrome.runtime.lastError || !t) {
-              clearInterval(checkLoad);
-              resolve({ ok: true, tabId: newTab?.id, searchUrl, pageData: {}, message: "1688 tab closed or not found" });
-              return;
-            }
-
-            if (t.status === "complete" || attempts >= maxAttempts) {
-              clearInterval(checkLoad);
-              setTimeout(async () => {
-                try {
-                  const result = await tools.image_search_in_browser({ imageUrl, tabId: newTab.id });
-                  resolve({ ...result, searchUrl, imageSearchEntry: normalizedEngine === "taobao" ? "taobao" : "1688" });
-                } catch (err) {
-                  resolve({ ok: false, tabId: newTab.id, searchUrl, pageData: {}, error: err.message });
-                }
-              }, 1500);
-            }
-          });
-        }, 500);
+        const ready = await waitForPageCaptureReady(newTab.id, {
+          engine: normalizedEngine,
+          maxAttempts: 26,
+          minQuietMs: 2000,
+          minStableReads: 1,
+          progressLabel: normalizedEngine === "taobao" ? "淘宝图片搜索入口页" : "1688 图片搜索入口页",
+        });
+        if (!ready.tab) {
+          resolve({ ok: true, tabId: newTab?.id, searchUrl, pageData: {}, loadState: ready.readyReason, message: "1688/Taobao tab closed or not found" });
+          return;
+        }
+        try {
+          const result = await tools.image_search_in_browser({ imageUrl, tabId: newTab.id });
+          resolve({ ...result, searchUrl, imageSearchEntry: normalizedEngine === "taobao" ? "taobao" : "1688", loadState: ready.readyReason });
+        } catch (err) {
+          resolve({ ok: false, tabId: newTab.id, searchUrl, pageData: {}, loadState: ready.readyReason, error: err.message });
+        }
       });
     });
   },
@@ -1646,54 +1781,36 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
     if (!url) throw new Error("url is required");
     
     return new Promise((resolve, reject) => {
-      createBrowserTab({ url, active: true, openerTabId: __sourceTabId }, (tab) => {
+      createBrowserTab({ url, active: true, openerTabId: __sourceTabId }, async (tab) => {
         if (chrome.runtime.lastError) {
           reject(new Error(chrome.runtime.lastError.message));
           return;
         }
-        
-        // Poll for tab load and captcha/verification checks
-        let attempts = 0;
-        const maxAttempts = 20; // up to 10 seconds total
-        const poll = setInterval(() => {
-          attempts++;
-          chrome.tabs.get(tab.id, (t) => {
-            if (chrome.runtime.lastError || !t) {
-              clearInterval(poll);
-              resolve({ ok: true, tabId: tab.id, pageData: "Tab closed or not found" });
-              return;
-            }
-            
-            const currentUrl = t.url || "";
-            const isVerification = currentUrl.includes("sec.1688.com") || currentUrl.includes("login") || currentUrl.includes("verify") || currentUrl.includes("passport");
-            
-            if (isVerification) {
-              // Focus tab to foreground so user can login/solve captcha
-              chrome.tabs.update(tab.id, { active: true });
-              chrome.runtime.sendMessage({ type: "CAPTCHA_DETECTED", url: currentUrl });
-              // We do not resolve yet, let the user solve it
-              if (attempts >= maxAttempts) {
-                clearInterval(poll);
-                resolve({ ok: true, tabId: tab.id, isCaptcha: true, pageData: "Verification timeout" });
-              }
-              return;
-            }
-            
-            if (t.status === "complete" || attempts >= maxAttempts) {
-              clearInterval(poll);
-              setTimeout(async () => {
-                try {
-                  const data = await readPageFromTab(tab.id);
-                  await restoreSourceTabFocus(__sourceTabId);
-                  resolve({ ok: true, tabId: tab.id, pageData: data || "" });
-                } catch (err) {
-                  await restoreSourceTabFocus(__sourceTabId);
-                  resolve({ ok: true, tabId: tab.id, pageData: "Failed to read DOM (Script injection restricted)" });
-                }
-              }, 1500);
-            }
-          });
-        }, 500);
+        const ready = await waitForPageCaptureReady(tab.id, {
+          engine: isOzonPageUrl(url) ? "ozon" : "",
+          maxAttempts: 28,
+          minQuietMs: 2000,
+          minStableReads: 2,
+          progressLabel: "新开详情页",
+        });
+        if (ready.isVerification) {
+          chrome.tabs.update(tab.id, { active: true });
+          chrome.runtime.sendMessage({ type: "CAPTCHA_DETECTED", url: ready.tab?.url || url });
+          resolve({ ok: true, tabId: tab.id, isCaptcha: true, pageData: "Verification timeout", loadState: ready.readyReason });
+          return;
+        }
+        if (!ready.tab) {
+          resolve({ ok: true, tabId: tab.id, pageData: "Tab closed or not found", loadState: ready.readyReason });
+          return;
+        }
+        try {
+          const data = ready.pageData || await readPageFromTab(tab.id);
+          await restoreSourceTabFocus(__sourceTabId);
+          resolve({ ok: true, tabId: tab.id, pageData: data || "", loadState: ready.readyReason, loadAttempts: ready.attempts });
+        } catch (err) {
+          await restoreSourceTabFocus(__sourceTabId);
+          resolve({ ok: true, tabId: tab.id, pageData: "Failed to read DOM (Script injection restricted)", loadState: ready.readyReason });
+        }
       });
     });
   },

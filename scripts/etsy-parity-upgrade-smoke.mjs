@@ -95,6 +95,14 @@ assert.match(agentLoop, /blocked/, "platform trend validator must allow explicit
 assert.match(toolRegistry, /minStablePollAttempts[\s\S]*google_trends/, "Google Trends polling must wait for a stable evidence window");
 assert.match(toolRegistry, /trendsEvidenceState/, "Google Trends search result should expose evidence readiness state");
 assert.match(toolRegistry, /search_tab_opening[\s\S]*search_tab_opened[\s\S]*search_page_reading[\s\S]*search_evidence_ready/, "browser search should report real tab-open/read/evidence stages");
+assert.match(toolRegistry, /function waitForPageCaptureReady/, "browser tools must wait for new tabs to become capture-ready");
+assert.match(toolRegistry, /content_stable/, "new-tab capture waiting must require stable readable content");
+assert.match(toolRegistry, /minQuietMs/, "new-tab capture waiting must include a quiet period after tab load");
+assert.match(toolRegistry, /pageDataLooksReady/, "new-tab capture waiting must inspect DOM evidence readiness, not just chrome tab status");
+assert.match(toolRegistry, /open_new_tab:[\s\S]*waitForPageCaptureReady/, "open_new_tab must wait for stable page capture before reading DOM");
+assert.match(toolRegistry, /search_in_browser:[\s\S]*waitForPageCaptureReady/, "search_in_browser must wait for stable page capture before returning evidence");
+assert.match(toolRegistry, /collectOzonEvidencePage[\s\S]*waitForPageCaptureReady/, "Ozon evidence collection must wait for stable page capture before screenshots and DOM reads");
+assert.match(toolRegistry, /image_search_1688:[\s\S]*waitForPageCaptureReady/, "image-search entry tabs must wait for stable page capture before upload/search actions");
 assert.match(toolRegistry, /getSourceOrCurrentTab[\s\S]*read_current_page/, "current-page tools should prefer the workflow source tab over whichever temporary tab is active");
 assert.match(toolRegistry, /closeTabQuietly\(tabId, protectedTabIds[\s\S]*isProtectedTabId\(tabId, protectedTabIds\)[\s\S]*return false/, "low-level tab close helper should refuse protected source tabs");
 assert.match(toolRegistry, /search_source_tab_protected[\s\S]*protectedSourceTab/, "browser search auto-close should refuse to close the source tab and report the protection state");
