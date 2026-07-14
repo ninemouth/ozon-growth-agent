@@ -18,7 +18,7 @@ const businessSkills = [
 
 const base = read("skills/base_report_auditor.skill.md");
 
-for (const field of ["report_status", "blocking_gaps", "follow_up_tasks", "workflow_nodes"]) {
+for (const field of ["report_status", "research_scope", "blocking_gaps", "follow_up_tasks", "workflow_nodes"]) {
   assert.match(base, new RegExp(field), `base report auditor must require ${field}`);
 }
 

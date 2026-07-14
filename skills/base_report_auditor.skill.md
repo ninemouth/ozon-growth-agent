@@ -30,7 +30,8 @@
    - **字段汉化与自适应**：每个字段的属性名必须符合标准英文 Key，属性值必须为具体翻译好的中文或标准化数据，**绝对禁止输出 `[object Object]` 或未序列化的 JSON**。
 
 5. **增长工作流回写字段 (Workflow-Ready Output)**:
-   - 所有 Ozon 业务 Skill 的 `final.output` 顶层都必须包含 `report_status`、`blocking_gaps`、`follow_up_tasks` 和 `workflow_nodes`，让首页增长工作流画布可以继续推进，而不是只保存一份静态报告。
+   - 所有 Ozon 业务 Skill 的 `final.output` 顶层都必须包含 `report_status`、`research_scope`、`blocking_gaps`、`follow_up_tasks` 和 `workflow_nodes`，让首页增长工作流画布可以继续推进，而不是只保存一份静态报告。
+   - `research_scope` 必须原样保留系统提供的页面角色识别对象，包含 `entry_page_type`、`source_page_role`、`analysis_scope`、`scope_confidence`、`allowed_conclusions`、`forbidden_conclusions` 和 `needs_user_clarification`。
    - `report_status` 只能是 `completed`、`partial`、`blocked` 或 `assumption_only`。关键证据不足时不得写 `completed`。
    - `blocking_gaps` 必须列出影响判断的证据缺口，例如 API 未授权、Ozon 页面阻断、Google Trends 数据不足、评论页未展开、供应商详情页未打开、法规官方来源未取得。
    - `follow_up_tasks` 必须是运营人员可执行或可确认的任务，每个任务包含 `task_id`、`task_type`、`priority`、`target`、`reason`、`required_evidence`、`expected_output`、`requires_manual_confirmation`。

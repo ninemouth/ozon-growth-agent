@@ -53,6 +53,15 @@
 ## 工业级交付状态
 
 - 最终报告必须显式给出 `report_status`：`completed`、`partial`、`blocked` 或 `assumption_only`。
+- 最终报告必须显式给出 `research_scope` 和 `trend_context_type`。`trend_context_type` 只能是 `store_trend_fit`、`platform_trend`、`category_opportunity`、`product_opportunity`、`competitor_learning`、`sourcing_validation` 或 `unknown`。
+- 不同入口必须输出不同分析边界：
+  - `store_trend_fit`：从自营店铺或店铺体检案件出发，必须额外判断 `store_fit`，说明趋势是否适合当前店铺定位、价格带、商品矩阵和履约能力。
+  - `platform_trend`：从 Ozon 首页或平台入口出发，只能输出公开需求窗口；没有店铺适配证据时不得直接给当前店铺采购/上架建议。
+  - `category_opportunity`：从搜索页/类目页出发，围绕当前关键词、价格带、评价门槛和竞品结构判断。
+  - `product_opportunity`：从商品详情页出发，围绕单品机会、评论、合规和寻源路径判断。
+  - `competitor_learning`：从竞品页出发，必须标注当前页是竞品参考，不能把它写成自营店铺。
+  - `sourcing_validation`：从 1688/淘宝或供应商页出发，只能作为供应商可行性参考，不能当作 Ozon 平台趋势。
+- 如果 `research_scope.needs_user_clarification=true` 或 `scope_confidence=low`，不得输出 `completed`，必须生成“研究范围确认/补证”任务。
 - `completed` 只允许在 Ozon 公开搜索、至少 2 个竞品详情页、必要的站外趋势/搜索证据和法规/物流证据均满足本轮结论范围时使用。
 - 任何关键证据缺口都必须进入 `blocking_gaps`，不能藏在正文一句“有局限”里。包括但不限于：Google Trends 数据不足、Yandex/Google RU 超时、竞品详情页未打开、评论页未读取、法规来源未取得、物流来源未取得。
 - 仍可交付的机会必须拆成 `validated_opportunities` 与 `assumption_opportunities`。前者只能放真实证据已覆盖的机会；后者必须写明待验证动作，不能使用“高增长”“低竞争”“爆品”等确定性词。
@@ -67,6 +76,19 @@
   "type": "final",
   "output": {
     "report_status": "completed|partial|blocked|assumption_only",
+    "research_scope": {},
+    "trend_context_type": "store_trend_fit|platform_trend|category_opportunity|product_opportunity|competitor_learning|sourcing_validation|unknown",
+    "platform_signal": {
+      "status": "observed|assumption|blocked",
+      "summary": "Ozon/Yandex/Google RU/Google Trends 公开需求信号",
+      "evidence_refs": []
+    },
+    "store_fit": {
+      "fit": "fit|partial_fit|not_fit|unknown",
+      "fit_reason": "只有 store_trend_fit 或已有自营店铺证据时才能输出确定判断",
+      "required_store_changes": [],
+      "recommended_next_case": "listing_experiment|sourcing_validation|compliance_precheck|positioning_rebuild|observe_only"
+    },
     "overview": "平台趋势概览，明确研究范围、目标市场和证据覆盖",
     "analysis": "Ozon 搜索、Yandex.ru、Google RU、Google Trends RU、公开竞品页面和视觉证据的分步分析",
     "summary": "趋势结论、证据限制、下一步验证动作",

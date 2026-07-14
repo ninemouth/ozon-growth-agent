@@ -600,6 +600,7 @@ async function refreshAllData() {
     taskState: data.growthWorkflowTaskState || {},
     activeShop,
     skuAnalyticsSnapshot: data.ozonSkuAnalyticsSnapshot || null,
+    growthCases: data.growthCases || [],
   });
 
   growthRuntimeState = {
@@ -932,7 +933,43 @@ function buildTasksFromReports(reports = [], taskState = {}) {
   return tasks;
 }
 
-function buildWorkflowTasks({ skuRows = [], opportunities = [], events = [], reports = [], experiments = [], taskState = {}, activeShop = null, skuAnalyticsSnapshot = null }) {
+function workflowKindFromCaseTask(task = {}, caseItem = {}) {
+  const text = `${task.task_type || ""} ${caseItem.type || ""}`.toLowerCase();
+  if (/trend|platform|category/.test(text)) return "platform_trend";
+  if (/supplier|sourcing|sample|certificate|margin/.test(text)) return "supplier_sourcing";
+  if (/review|comment|package|description/.test(text)) return "review";
+  if (/listing|title|attribute|image_copy/.test(text)) return "listing";
+  if (/baseline|observation|experiment|metric/.test(text)) return "experiment_review";
+  if (/policy|compliance|ip|label/.test(text)) return "compliance";
+  if (/opportunity|competitor/.test(text)) return "opportunity";
+  return "diagnosis_action";
+}
+
+function buildTasksFromGrowthCases(cases = [], taskState = {}) {
+  const tasks = [];
+  cases.forEach((caseItem) => {
+    (Array.isArray(caseItem.tasks) ? caseItem.tasks : []).forEach((task, index) => {
+      const id = `case_${stableHash(`${caseItem.id}_${task.task_id || index}`)}`;
+      tasks.push(buildWorkflowTask({
+        id,
+        caseId: caseItem.id,
+        kind: workflowKindFromCaseTask(task, caseItem),
+        severity: task.priority || "P1",
+        title: task.target || task.task_id || `案件任务 ${index + 1}`,
+        reason: task.reason || `来自 ${caseItem.title || "增长案件"} 的后续任务。`,
+        actionText: task.expected_output || (Array.isArray(task.required_evidence) ? `补齐证据：${task.required_evidence.join("、")}` : "确认并推进此任务。"),
+        actionId: caseItem.actionId || "",
+        source: caseItem.title || "增长案件",
+        owner: task.requires_manual_confirmation ? "人工确认" : "AI 继续取证",
+        dueLabel: task.requires_manual_confirmation ? "确认后" : "本轮",
+        requiresManualConfirmation: Boolean(task.requires_manual_confirmation),
+      }, taskState));
+    });
+  });
+  return tasks;
+}
+
+function buildWorkflowTasks({ skuRows = [], opportunities = [], events = [], reports = [], experiments = [], taskState = {}, activeShop = null, skuAnalyticsSnapshot = null, growthCases = [] }) {
   const tasks = [];
   const hasSkuApi = !!skuAnalyticsSnapshot?.result?.data?.length;
   const foundation = assessStoreFoundation({ skuRows, reports, opportunities, activeShop });
@@ -1011,6 +1048,7 @@ function buildWorkflowTasks({ skuRows = [], opportunities = [], events = [], rep
   });
 
   tasks.push(...buildTasksFromReports(reports, taskState));
+  tasks.push(...buildTasksFromGrowthCases(growthCases, taskState));
 
   experiments
     .filter((exp) => exp.status === "observing" || exp.status === "running")
@@ -1219,6 +1257,11 @@ function mergeGrowthCasesWithRoots(storedCases = [], tasks = [], reports = [], a
         reportCount: rootReports.length,
         updatedFromRuntimeAt: new Date().toISOString(),
       },
+      research_scope: existing.research_scope || {},
+      evidence_quality: existing.evidence_quality || null,
+      nodes: Array.isArray(existing.nodes) ? existing.nodes : [],
+      tasks: Array.isArray(existing.tasks) ? existing.tasks : [],
+      blocking_gaps: Array.isArray(existing.blocking_gaps) ? existing.blocking_gaps : [],
       runs: existing.runs || [],
       createdAt: existing.createdAt || new Date().toISOString(),
       updatedAt: existing.updatedAt || new Date().toISOString(),
@@ -1763,6 +1806,50 @@ function renderWorkflowReportHtml(report) {
   return `<pre>${escapeHtml(markdown)}</pre>`;
 }
 
+function renderCaseIntelligence(caseItem = null) {
+  if (!caseItem) return "";
+  const scope = caseItem.research_scope || {};
+  const quality = caseItem.evidence_quality || {};
+  const gaps = Array.isArray(caseItem.blocking_gaps) ? caseItem.blocking_gaps : [];
+  const nodes = Array.isArray(caseItem.nodes) ? caseItem.nodes : [];
+  return `
+    <section>
+      <h4>研究范围</h4>
+      <div class="workflow-pip-meta scope-meta">
+        <span>${escapeHtml(scope.entry_page_type || "unknown")}</span>
+        <span>${escapeHtml(scope.analysis_scope || "unknown")}</span>
+        <span>置信度: ${escapeHtml(scope.scope_confidence || "unknown")}</span>
+        ${scope.needs_user_clarification ? "<span>需确认范围</span>" : "<span>范围已识别</span>"}
+      </div>
+    </section>
+    <section>
+      <h4>证据质量</h4>
+      <div class="workflow-pip-meta evidence-quality-meta">
+        <span>等级 ${escapeHtml(quality.grade || "D")}</span>
+        <span>${Number(quality.blocking_gap_count || gaps.length)} 个缺口</span>
+        <span>${escapeHtml(quality.capture_mode || "截图模式待记录")}</span>
+      </div>
+      <p>${escapeHtml(quality.summary || "暂无证据质量摘要。")}</p>
+    </section>
+    ${gaps.length ? `
+      <section>
+        <h4>阻断缺口</h4>
+        <ul class="workflow-gap-list">
+          ${gaps.slice(0, 5).map((gap) => `<li><strong>${escapeHtml(gap.evidence_missing || gap.gap_id || "证据缺口")}</strong><br><span>${escapeHtml(gap.recovery_action || gap.business_impact || "需要补证或人工确认。")}</span></li>`).join("")}
+        </ul>
+      </section>
+    ` : ""}
+    ${nodes.length ? `
+      <section>
+        <h4>案件节点</h4>
+        <div class="case-node-list">
+          ${nodes.slice(0, 8).map((node) => `<div class="case-node-pill ${escapeHtml(node.status || "queued")}"><strong>${escapeHtml(node.title || node.node_id)}</strong><span>${escapeHtml(node.status || "queued")}</span></div>`).join("")}
+        </div>
+      </section>
+    ` : ""}
+  `;
+}
+
 function openWorkflowPip({ rootId = "", taskId = "" } = {}) {
   const pip = document.getElementById("workflow-pip");
   if (!pip) return;
@@ -1814,6 +1901,7 @@ function openWorkflowPip({ rootId = "", taskId = "" } = {}) {
           <h4>运行前证据检查</h4>
           ${renderEvidenceChecklist(root?.evidenceStatus || [])}
         </section>
+        ${renderCaseIntelligence(rootCase)}
         <section>
           <h4>关联报告</h4>
           <div class="workflow-report-rendered md-report">${reportHtml}</div>
@@ -1844,7 +1932,11 @@ function openWorkflowPip({ rootId = "", taskId = "" } = {}) {
     btn.addEventListener("click", () => handleGrowthAction(btn.dataset.action, btn.dataset.sku || ""));
   });
   pip.querySelectorAll(".workflow-state-btn").forEach((btn) => {
-    btn.addEventListener("click", () => updateWorkflowTaskState(btn.dataset.id, { status: btn.dataset.status }));
+    btn.addEventListener("click", () => updateWorkflowTaskState(btn.dataset.id, {
+      status: btn.dataset.status,
+      manualConfirmedAt: btn.dataset.status === "confirmed" ? new Date().toISOString() : undefined,
+      observationWindow: btn.dataset.status === "observing" ? "7 天" : undefined,
+    }));
   });
   pip.querySelectorAll(".workflow-exp-btn").forEach((btn) => {
     const selectedTask = (growthRuntimeState.workflowTasks || []).find(item => item.id === btn.dataset.id);
@@ -1923,9 +2015,10 @@ async function updateWorkflowTaskState(taskId, patch = {}) {
   if (!taskId) return;
   const stored = await new Promise((r) => chrome.storage.local.get(["growthWorkflowTaskState"], r));
   const state = stored.growthWorkflowTaskState || {};
+  const cleanPatch = Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined));
   state[taskId] = {
     ...(state[taskId] || {}),
-    ...patch,
+    ...cleanPatch,
     updatedAt: new Date().toISOString(),
   };
   await new Promise((r) => chrome.storage.local.set({ growthWorkflowTaskState: state }, r));

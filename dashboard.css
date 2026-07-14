@@ -1730,6 +1730,68 @@ body {
 .badge.warning { background: rgba(245, 158, 11, 0.1); color: var(--warning); }
 .badge.danger { background: rgba(239, 68, 68, 0.1); color: var(--danger); }
 
+.scope-meta,
+.evidence-quality-meta {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.workflow-gap-list {
+  display: grid;
+  gap: 8px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.workflow-gap-list li {
+  background: var(--surface-soft);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 10px;
+}
+
+.workflow-gap-list span {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.case-node-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.case-node-pill {
+  align-items: center;
+  background: var(--surface-soft);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: inline-flex;
+  gap: 8px;
+  padding: 7px 9px;
+}
+
+.case-node-pill.blocked {
+  border-color: rgba(220, 38, 38, 0.35);
+}
+
+.case-node-pill.manual_confirm {
+  border-color: rgba(217, 119, 6, 0.38);
+}
+
+.case-node-pill.validated,
+.case-node-pill.done {
+  border-color: rgba(22, 163, 74, 0.32);
+}
+
+.case-node-pill span {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
 @media (max-width: 1180px) {
   .growth-hero,
   .growth-work-grid,

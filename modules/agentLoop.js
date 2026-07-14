@@ -488,6 +488,19 @@ function validateOzonPlatformTrendReport(out = {}, toolHistory = [], pageContext
   if (!Array.isArray(out.workflow_nodes) || out.workflow_nodes.length === 0) {
     errors.push("Ozon 平台趋势报告缺少 workflow_nodes。平台趋势结论必须能进入首页增长工作流画布继续推进。");
   }
+  const allowedTrendContexts = ["store_trend_fit", "platform_trend", "category_opportunity", "product_opportunity", "competitor_learning", "sourcing_validation", "unknown"];
+  if (!allowedTrendContexts.includes(String(out.trend_context_type || ""))) {
+    errors.push("Ozon 平台趋势报告缺少有效 trend_context_type，必须根据当前页面输出 store_trend_fit / platform_trend / category_opportunity / product_opportunity / competitor_learning / sourcing_validation / unknown。");
+  }
+  if (!out.research_scope || typeof out.research_scope !== "object") {
+    errors.push("Ozon 平台趋势报告缺少 research_scope，必须声明页面角色、研究范围、置信度和结论边界。");
+  }
+  if (!out.platform_signal || typeof out.platform_signal !== "object") {
+    errors.push("Ozon 平台趋势报告缺少 platform_signal，必须区分公开平台需求信号与当前店铺适配。");
+  }
+  if (!out.store_fit || typeof out.store_fit !== "object") {
+    errors.push("Ozon 平台趋势报告缺少 store_fit。即使当前不是自营店铺入口，也必须说明 fit=unknown 及原因，避免把平台趋势直接写成店铺行动。");
+  }
 
   (Array.isArray(out.follow_up_tasks) ? out.follow_up_tasks : []).forEach((task, idx) => {
     ["task_id", "task_type", "priority", "target", "reason", "required_evidence", "expected_output", "requires_manual_confirmation"].forEach((field) => {
@@ -601,6 +614,42 @@ function validateOzonPlatformTrendReport(out = {}, toolHistory = [], pageContext
     errors.push("report_status 为 completed 时，blocking_gaps 必须为空；存在关键缺口时应使用 partial / blocked / assumption_only。");
   }
 
+  return errors;
+}
+
+function validateWorkflowReadyOutput(out = {}, skillId = "", pageContext = {}) {
+  const errors = [];
+  if (!isOzonBusinessSkill(skillId)) return errors;
+  const scope = out.research_scope || pageContext.research_scope || {};
+  if (!out.research_scope || typeof out.research_scope !== "object") {
+    errors.push("Ozon 业务报告缺少 research_scope。必须声明当前页面角色、研究范围、范围置信度和结论边界。");
+  }
+  if (!out.report_status || !["completed", "partial", "blocked", "assumption_only"].includes(String(out.report_status))) {
+    errors.push("Ozon 业务报告缺少 report_status，必须是 completed / partial / blocked / assumption_only。");
+  }
+  if (!Array.isArray(out.blocking_gaps)) {
+    errors.push("Ozon 业务报告缺少 blocking_gaps 数组。证据缺口、页面阻断和人工确认点必须结构化。");
+  }
+  if (!Array.isArray(out.follow_up_tasks)) {
+    errors.push("Ozon 业务报告缺少 follow_up_tasks 数组，无法进入工作流画布继续推进。");
+  }
+  if (!Array.isArray(out.workflow_nodes)) {
+    errors.push("Ozon 业务报告缺少 workflow_nodes 数组，无法渲染为增长案件节点。");
+  }
+  (Array.isArray(out.workflow_nodes) ? out.workflow_nodes : []).forEach((node, idx) => {
+    if (!["validated", "blocked", "manual_confirm", "queued", "done"].includes(String(node?.status || ""))) {
+      errors.push(`workflow_nodes 第 ${idx + 1} 项 status 无效，必须是 validated / blocked / manual_confirm / queued / done。`);
+    }
+    if (!Array.isArray(node?.depends_on)) {
+      errors.push(`workflow_nodes 第 ${idx + 1} 项 depends_on 必须是数组。`);
+    }
+  });
+  if (scope.needs_user_clarification && out.report_status === "completed") {
+    errors.push("当前 research_scope 置信度低或需要用户确认时，report_status 不能是 completed；应输出 partial / blocked / assumption_only 并生成范围确认任务。");
+  }
+  if (scope.source_page_role === "competitor_reference" && /我的店铺|本店|自营店铺|当前店铺/.test(`${out.overview || ""}\n${out.analysis || ""}\n${out.summary || ""}`)) {
+    errors.push("当前页面被识别为竞品参考页，报告不能把它写成自营店铺；必须标注为竞品学习样本或要求切回自营店铺。");
+  }
   return errors;
 }
 
@@ -754,6 +803,8 @@ function validateReport(parsed, userInstruction, skillId, toolHistory = [], page
   if (checkJargon(out.overview) || checkJargon(out.analysis) || checkJargon(out.summary)) {
     errors.push(TECHNICAL_JARGON_ERROR);
   }
+
+  errors.push(...validateWorkflowReadyOutput(out, skillId, pageContext));
 
   if (isOzonPlatformTrendsSkill(skillId)) {
     errors.push(...validateOzonPlatformTrendReport(out, toolHistory, pageContext));
@@ -1194,6 +1245,7 @@ export async function runAgentLoop({ tabId, skillId, skillMarkdown, userInstruct
 
   const actualTargetImageUrl = pageContext?.targetImageUrl || "";
   const ctxForPrompt = buildPromptContext(pageContext);
+  const researchScope = pageContext?.research_scope || {};
   const screenshotData = ctxForPrompt.screenshot;
   delete ctxForPrompt.screenshot;
 
@@ -1212,8 +1264,13 @@ ${availableTools}
 请将你最终构思出的结果，**统一组装为标准化的分析报告结构**，完成后输出：
 \`\`\`json
 {
-  "type": "final",
-  "output": {
+    "type": "final",
+    "output": {
+    "report_status": "completed|partial|blocked|assumption_only",
+    "research_scope": { ... },
+    "blocking_gaps": [],
+    "follow_up_tasks": [],
+    "workflow_nodes": [],
     "overview": "全局概述（使用Markdown，简述你在本页面的核心发现）",
     "analysis": "深度分析过程与推演逻辑（使用Markdown，展示你的多维博弈和决策依据）",
     "summary": "最终核心结论（使用Markdown，提炼出最关键的建议或结论）",
@@ -1223,6 +1280,12 @@ ${availableTools}
 \`\`\`
 
 ${isShopOptimizerOnly(skillId) ? `\n\n## Ozon 店铺体检额外强制结构\n当前是 Ozon 店铺体检/全店优化任务，final.output 除了 overview、analysis、summary、data 之外，必须额外包含：\n- competitor_benchmarks: 数组，逐竞品输出 Ozon 店铺/商品结构、可见样本、价格分布、促销/评价/履约、视觉/SEO 方法和证据引用。\n- diagnostic_depth_matrix: 数组，至少 7 个维度，覆盖定位阶段、视觉、SEO/属性、商品矩阵、竞品结构、Ozon/站外需求、信任/履约。\n没有完成 Ozon 竞品采集和截图阶段分析时，不得输出完整店铺健康评级，只能降级为待验证阻断说明。` : ""}
+
+## 页面角色与研究范围
+本轮任务开始前已识别 research_scope。你必须在 final.output.research_scope 原样保留该对象，并严格遵守 allowed_conclusions / forbidden_conclusions：
+${JSON.stringify(researchScope, null, 2)}
+
+如果 research_scope.needs_user_clarification 为 true，或 scope_confidence 为 low，不能输出 completed；必须输出 partial / blocked / assumption_only，并在 blocking_gaps、follow_up_tasks、workflow_nodes 中生成“研究范围确认/补证”节点。
 
 ## 当前页面上下文
 ${JSON.stringify(ctxForPrompt, null, 2)}
@@ -1373,6 +1436,19 @@ ${(skillId || "").includes("tiktok_shop_monitor") ? `\n\n## ⚠️ TikTok 监控
 
     if (parsed.type === "final") {
       let finalParsed = parsed;
+      if (finalParsed.output && isOzonBusinessSkill(skillId)) {
+        finalParsed = {
+          ...finalParsed,
+          output: {
+            ...finalParsed.output,
+            research_scope: finalParsed.output.research_scope || pageContext.research_scope || {},
+            trend_context_type: finalParsed.output.trend_context_type || pageContext.trend_context_type || pageContext.research_scope?.trend_context_type || "",
+            blocking_gaps: Array.isArray(finalParsed.output.blocking_gaps) ? finalParsed.output.blocking_gaps : [],
+            follow_up_tasks: Array.isArray(finalParsed.output.follow_up_tasks) ? finalParsed.output.follow_up_tasks : [],
+            workflow_nodes: Array.isArray(finalParsed.output.workflow_nodes) ? finalParsed.output.workflow_nodes : [],
+          },
+        };
+      }
       let validationErrors = validateReport(finalParsed, userInstruction, skillId, toolHistory, pageContext);
       if (isTechnicalJargonOnlyFailure(validationErrors)) {
         const sanitizedParsed = sanitizeFinalReportForBusinessAudience(finalParsed);

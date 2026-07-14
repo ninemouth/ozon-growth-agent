@@ -4,6 +4,9 @@ import { runAgentLoop } from './modules/agentLoop.js';
 import { tools, resetSessionData } from './modules/toolRegistry.js';
 import { callLLM } from './modules/llmClient.js';
 import { cleanupOwnedTabs, protectWorkflowTab } from './modules/browserSessionManager.js';
+import { buildResearchScope } from './modules/researchScope.js';
+import { summarizeEvidenceQuality } from './modules/evidenceQuality.js';
+import { upsertGrowthCaseFromResult } from './modules/growthCaseStore.js';
 import {
   acquireWorkflowLease,
   appendWorkflowEvent,
@@ -641,6 +644,15 @@ chrome.runtime.onConnect.addListener((port) => {
             : selectedSkillPath
             ? [selectedSkillPath]
             : await dispatchOzonSkills(message.userInstruction);
+          const activeShopId = await getActiveShopId();
+          const researchScope = buildResearchScope({
+            pageContext,
+            tab,
+            userInstruction: message.userInstruction || "",
+            growthActionId: message.growthActionId || "",
+            matchedSkills,
+            activeShopId,
+          });
           activeMatchedSkills = matchedSkills;
           console.log("Matched Ozon skills:", matchedSkills);
           const checkpointKey = buildWorkflowCheckpointKey({ tabId: tab.id, matchedSkills, message });
@@ -660,6 +672,8 @@ chrome.runtime.onConnect.addListener((port) => {
             Boolean(message.userInstruction) ||
             Boolean(message.growthCaseId)
           );
+          pageContext.research_scope = existingCheckpoint?.research_scope || existingCheckpoint?.snapshot?.research_scope || researchScope;
+          pageContext.trend_context_type = pageContext.research_scope.trend_context_type;
 
           if (shouldResumeFromCheckpoint) {
             port.postMessage({
@@ -725,6 +739,7 @@ chrome.runtime.onConnect.addListener((port) => {
                 growthCaseId: message.growthCaseId || "",
                 pageUrl: tab.url || "",
                 pageTitle: tab.title || "",
+                research_scope: pageContext.research_scope,
                 workflowGeneration: lease.generation,
               });
             },
@@ -744,14 +759,27 @@ chrome.runtime.onConnect.addListener((port) => {
                 skillName: matchedNames.map(name => name.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase())).join(" + "),
                 pageUrl: tab.url || "",
                 pageTitle: tab.title || "",
+                shopId: pageContext.research_scope?.active_shop_id || "",
                 growthActionId: message.growthActionId || "",
                 growthRunId: message.growthRunId || "",
                 growthCaseId: message.growthCaseId || "",
+                research_scope: pageContext.research_scope,
+                evidence_quality: summarizeEvidenceQuality({
+                  output: result.result || {},
+                  pageContext,
+                  researchScope: pageContext.research_scope,
+                }),
                 result: result.result // The parsed final output object containing overview, analysis, and data items
               };
               
               savedResults.unshift(newEntry);
               await new Promise((r) => chrome.storage.local.set({ savedResults: savedResults.slice(0, 100) }, r));
+              await upsertGrowthCaseFromResult({
+                savedEntry: newEntry,
+                output: result.result || {},
+                researchScope: pageContext.research_scope,
+                pageContext,
+              });
               savedEntry = newEntry;
               console.log("Successfully saved run results to savedResults database for dashboard.");
             } catch (saveErr) {
