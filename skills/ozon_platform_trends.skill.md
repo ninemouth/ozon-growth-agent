@@ -41,11 +41,24 @@
 - 每个 `data` 项都必须有 `sample_count`、`coverage`、`limitation`；价格只能描述可见公开样本，不能写“完整市场”“全平台价格分布”。
 - 每个 `data` 项都必须有完整 `evidence_ledger`。账本必须写 `source_type`、`source_ref`、`observed_value`、`used_for`、`confidence`、`limitation`。
 - 使用 Google Trends、峰值、季节性或需求曲线时，必须同时有 `google_trends` 工具证据和 `screenshot_visual` 趋势图解读，写明地区、时间范围、查询词、曲线方向、related queries/topics 和局限。
+- 如果 Google Trends 显示 `not enough data`、数据不足、只加载到 Explore 壳页，或缺少核心趋势模块，`demand_signal` 必须写 `blocked` 或 `assumption`，不得写成“Google Trends 证明/表明/因此俄罗斯买家更依赖 Ozon 搜索”等因果结论。
 - 使用竞品、头部、热卖、主图点击或视觉优劣结论时，必须至少有 2 个公开竞品详情页的页面文本与截图证据；不能凭一个搜索页卡片推断“点击率更高”。
 - 评论痛点必须来自真实评论页面/截图；没有评论文本只能写“待验证假设”。
 - 物流天数必须来自实时物流主题搜索，并记录发货地、目的地、承运商/运输方式、查询日期和局限。
 - Ozon Seller API 只支持当前授权自营店铺；禁止输出竞品订单、竞品转化率、竞品 Sessions、平台搜索量或全平台 analytics。
 - EAC、TR CU、RoHS、食品接触、儿童安全、电池运输等法规/认证必须有官方来源，或明确写成 `assumption`/待验证。
+- 严禁输出 `XXXX`、`example.com`、`placeholder`、`待补链接` 等占位链接；没有真实 URL 时必须写阻断原因和下一步验证动作。
+- 不得在面向用户的报告正文中暴露工具函数名、标签页清理动作或内部技术措辞；必须翻译成“公开页面取证”“趋势页未稳定加载”“竞品详情页未完成”等业务语言。
+
+## 工业级交付状态
+
+- 最终报告必须显式给出 `report_status`：`completed`、`partial`、`blocked` 或 `assumption_only`。
+- `completed` 只允许在 Ozon 公开搜索、至少 2 个竞品详情页、必要的站外趋势/搜索证据和法规/物流证据均满足本轮结论范围时使用。
+- 任何关键证据缺口都必须进入 `blocking_gaps`，不能藏在正文一句“有局限”里。包括但不限于：Google Trends 数据不足、Yandex/Google RU 超时、竞品详情页未打开、评论页未读取、法规来源未取得、物流来源未取得。
+- 仍可交付的机会必须拆成 `validated_opportunities` 与 `assumption_opportunities`。前者只能放真实证据已覆盖的机会；后者必须写明待验证动作，不能使用“高增长”“低竞争”“爆品”等确定性词。
+- 报告必须生成 `follow_up_tasks`，用于首页工作流画布继续推进。每个任务必须包含 `task_id`、`task_type`、`priority`、`target`、`reason`、`required_evidence`、`expected_output`、`requires_manual_confirmation`。
+- 报告必须生成 `workflow_nodes`，用于画布消费。每个节点必须包含 `node_id`、`title`、`status`、`depends_on`、`next_action`。节点状态只能是 `validated`、`blocked`、`manual_confirm`、`queued`、`done`。
+- 如果报告状态不是 `completed`，`summary` 第一段必须先说明本轮交付是部分完成/阻断/仅假设，不得让用户误以为已经完成平台趋势结论。
 
 ## 输出硬结构
 
@@ -53,9 +66,42 @@
 {
   "type": "final",
   "output": {
+    "report_status": "completed|partial|blocked|assumption_only",
     "overview": "平台趋势概览，明确研究范围、目标市场和证据覆盖",
     "analysis": "Ozon 搜索、Yandex.ru、Google RU、Google Trends RU、公开竞品页面和视觉证据的分步分析",
     "summary": "趋势结论、证据限制、下一步验证动作",
+    "blocking_gaps": [
+      {
+        "gap_id": "G-1",
+        "evidence_missing": "例如：Google Trends RU 只加载壳页 / 竞品详情页不足 2 个",
+        "business_impact": "该缺口影响哪些趋势或机会判断",
+        "recovery_action": "下一步应如何恢复取证",
+        "status": "blocked|manual_required|queued"
+      }
+    ],
+    "validated_opportunities": ["T-1"],
+    "assumption_opportunities": ["T-2"],
+    "follow_up_tasks": [
+      {
+        "task_id": "TASK-1",
+        "task_type": "evidence_recovery|competitor_detail|trend_validation|policy_check|listing_experiment",
+        "priority": "P0|P1|P2",
+        "target": "",
+        "reason": "",
+        "required_evidence": ["需要补齐的页面、截图、官方政策或人工确认"],
+        "expected_output": "",
+        "requires_manual_confirmation": true
+      }
+    ],
+    "workflow_nodes": [
+      {
+        "node_id": "NODE-1",
+        "title": "",
+        "status": "validated|blocked|manual_confirm|queued|done",
+        "depends_on": [],
+        "next_action": ""
+      }
+    ],
     "data": [
       {
         "opportunity_id": "T-1",
@@ -72,7 +118,7 @@
         "limitation": "例如：未取得 Ozon 全平台搜索量和竞品后台数据",
         "evidence_ledger": [
           {
-            "source_type": "ozon_search|yandex_search|google_search|google_trends|page_dom|screenshot_visual|assumption",
+            "source_type": "ozon_search|yandex_search|google_search|google_trends|page_dom|screenshot_visual|official_policy|assumption|blocked",
             "source_ref": "",
             "observed_value": "",
             "used_for": "",

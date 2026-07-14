@@ -234,6 +234,13 @@ assert.match(backgroundSource, /releaseWorkflowLease/, "background should releas
 assert.match(backgroundSource, /ozon_platform_trends/, "background should route platform trends to the dedicated skill");
 assert.match(backgroundSource, /ozon_compliance_auditor/, "background should expose the compliance auditor skill");
 assert.match(platformTrendsSkill, /不能把自营店铺 API 数据写成平台大盘数据/, "platform trends skill should enforce API boundary");
+assert.match(platformTrendsSkill, /report_status/, "platform trends skill should require industrial report status");
+assert.match(platformTrendsSkill, /blocking_gaps/, "platform trends skill should require structured blocking gaps");
+assert.match(platformTrendsSkill, /follow_up_tasks/, "platform trends skill should generate executable follow-up tasks");
+assert.match(platformTrendsSkill, /workflow_nodes/, "platform trends skill should generate canvas workflow nodes");
+assert.match(agentLoopSource, /validateOzonPlatformTrendReport/, "agent loop should validate Ozon platform trend report quality");
+assert.match(agentLoopSource, /Google Trends 数据不足|Google Trends 证据不足|hasInvalidGoogleTrendsEvidence/, "critic should downgrade insufficient Google Trends evidence");
+assert.match(agentLoopSource, /占位链接|XXXX|placeholder/, "critic should reject placeholder URLs in trend reports");
 assert.match(complianceSkill, /EAC|TR CU|欧亚经济联盟/, "compliance auditor should cover Ozon/RU compliance risks");
 
 const run = storage.growthActionRuns[0];
