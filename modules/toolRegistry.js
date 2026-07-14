@@ -3,6 +3,7 @@
 import { callLLM, getSettings, prepareCleanProductImage } from './llmClient.js';
 import { ozonGetProductList, ozonGetProductInfo, ozonGetAnalyticsData, ozonGetFbsPostingList, ozonGetFboPostingList, ozonGetStoreSnapshot } from './ozonApi.js';
 import { getArtifactDataUrl, putDataUrlArtifact } from './artifactStore.js';
+import { isWorkflowCancellationRequested } from './workflowRuntime.js';
 
 const preparedImageCache = new Map();
 
@@ -56,6 +57,14 @@ async function restoreSourceTabFocus(sourceTabId = null) {
   } catch (_) {
     return false;
   }
+}
+
+async function restoreSourceTabFocusBounded(sourceTabId = null, timeoutMs = 1200) {
+  if (!Number.isInteger(Number(sourceTabId))) return false;
+  return await Promise.race([
+    restoreSourceTabFocus(sourceTabId),
+    new Promise((resolve) => setTimeout(() => resolve(false), Math.max(250, Number(timeoutMs) || 1200))),
+  ]);
 }
 
 function createBrowserTab({ url, active = true, openerTabId = null }, callback) {
@@ -204,9 +213,33 @@ async function sendToContentScript(tabId, message) {
   }
 }
 
-async function _captureTabScreenshot(tabId) {
-  const tab = await chrome.tabs.get(tabId);
+function isCapturableTabUrl(url = "") {
+  return /^https?:\/\//i.test(String(url || ""));
+}
+
+async function getTabForCapture(tabId, { expectedUrl = "", maxAttempts = 12, intervalMs = 250 } = {}) {
+  let lastTab = null;
+  for (let attempt = 0; attempt < Math.max(1, Number(maxAttempts) || 12); attempt += 1) {
+    try {
+      lastTab = await chrome.tabs.get(tabId);
+    } catch (_) {
+      lastTab = null;
+    }
+    if (lastTab?.windowId && isCapturableTabUrl(lastTab.url)) return lastTab;
+    await sleep(Math.max(50, Number(intervalMs) || 250));
+  }
+  if (lastTab?.windowId && isCapturableTabUrl(expectedUrl)) {
+    return { ...lastTab, url: expectedUrl };
+  }
+  return lastTab;
+}
+
+async function _captureTabScreenshot(tabId, options = {}) {
+  const tab = await getTabForCapture(tabId, options);
   if (!tab?.windowId) throw new Error("Unable to resolve tab window for screenshot");
+  if (!isCapturableTabUrl(tab.url)) {
+    throw new Error(`Tab URL is not capturable yet: ${JSON.stringify(tab.url || "")}`);
+  }
   return await new Promise((resolve, reject) => {
     chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" }, (dataUrl) => {
       if (chrome.runtime.lastError || !dataUrl) {
@@ -345,14 +378,95 @@ function isVerificationUrl(url = "") {
   return /sec\.1688\.com|login|verify|passport|captcha|challenge/i.test(String(url || ""));
 }
 
+function hasUsablePageEvidence(pageData = {}) {
+  const textLength = String(pageData.visibleText || pageData.text || pageData.bodyText || "").trim().length;
+  const productLinks = Array.isArray(pageData.productLinks) ? pageData.productLinks.length : 0;
+  const productCards = Array.isArray(pageData.productCards) ? pageData.productCards.length : 0;
+  const links = Array.isArray(pageData.links) ? pageData.links.length : 0;
+  const images = Array.isArray(pageData.images) ? pageData.images.length : 0;
+  const health = pageData.pageHealth || {};
+  return Boolean(
+    health.hasMeaningfulDom ||
+    textLength >= 120 ||
+    productLinks > 0 ||
+    productCards > 0 ||
+    links > 0 ||
+    images > 0 ||
+    pageData.title ||
+    pageData.h1
+  ) && !health.isLikelyBlocked;
+}
+
+function getReadinessProfile(url = "", label = "", engine = "") {
+  const text = `${url} ${label} ${engine}`.toLowerCase();
+  if (/trends\.google|google_trends/.test(text)) {
+    return {
+      minWaitMs: 2500,
+      timeoutMs: 24000,
+      pollMs: 700,
+      minStableReads: 2,
+      ready: (pageData) => hasValidGoogleTrendsEvidence({ ok: true, pageData }),
+      readyLabel: "google_trends_modules_ready",
+    };
+  }
+  if (/ozon\.ru|ozon/.test(text)) {
+    return {
+      minWaitMs: 2000,
+      timeoutMs: 22000,
+      pollMs: 650,
+      minStableReads: 2,
+      ready: (pageData) => hasUsablePageEvidence(pageData),
+      readyLabel: "ozon_dom_evidence_ready",
+    };
+  }
+  if (/1688|taobao|淘宝|货源|图片搜索/.test(text)) {
+    return {
+      minWaitMs: 1800,
+      timeoutMs: 18000,
+      pollMs: 650,
+      minStableReads: 1,
+      ready: (pageData) => hasUsablePageEvidence(pageData),
+      readyLabel: "sourcing_dom_evidence_ready",
+    };
+  }
+  if (/yandex|google_ru|google|bing/.test(text)) {
+    return {
+      minWaitMs: 1400,
+      timeoutMs: 16000,
+      pollMs: 600,
+      minStableReads: 1,
+      ready: (pageData) => hasUsablePageEvidence(pageData),
+      readyLabel: "search_dom_evidence_ready",
+    };
+  }
+  return {
+    minWaitMs: 1200,
+    timeoutMs: 12000,
+    pollMs: 600,
+    minStableReads: 1,
+    ready: (pageData) => hasUsablePageEvidence(pageData),
+    readyLabel: "dom_evidence_ready",
+  };
+}
+
 function pageDataSignature(pageData = {}) {
   const text = String(pageData.visibleText || pageData.text || pageData.bodyText || "");
+  const links = Array.isArray(pageData.links) ? pageData.links.length : 0;
+  const images = Array.isArray(pageData.images) ? pageData.images.length : 0;
+  const trendText = [
+    /interest over time|趋势变化|随时间变化/i.test(text) ? "trend_time" : "",
+    /related queries|related topics|相关查询|相关主题/i.test(text) ? "trend_related" : "",
+  ].filter(Boolean).join(",");
   return [
     pageData.url || "",
     pageData.title || "",
+    pageData.h1 || "",
     text.length,
+    links,
     Array.isArray(pageData.productLinks) ? pageData.productLinks.length : 0,
     Array.isArray(pageData.productCards) ? pageData.productCards.length : 0,
+    images,
+    trendText,
   ].join("|");
 }
 
@@ -366,7 +480,156 @@ function pageDataLooksReady(pageData = {}, engine = "") {
   const textLength = String(pageData.visibleText || pageData.text || pageData.bodyText || "").trim().length;
   if (productLinks > 0 || productCards > 0) return true;
   if (["ozon", "1688", "taobao", "jd", "pinduoduo"].includes(normalizedEngine)) return textLength >= 120;
-  return textLength >= 160 || Boolean(pageData.title);
+  return hasUsablePageEvidence(pageData);
+}
+
+function buildPageEvidence(pageData = {}) {
+  const url = String(pageData.url || "");
+  const health = pageData.pageHealth || {};
+  const pageType = /ozon\.ru\/product\//i.test(url)
+    ? "ozon_product"
+    : /ozon\.ru\/seller\/|ozon\.ru\/shop\//i.test(url)
+    ? "ozon_shop"
+    : /ozon\.ru\/search|ozon\.ru\/category/i.test(url)
+    ? "ozon_search"
+    : /trends\.google\./i.test(url)
+    ? "google_trends"
+    : /1688\.com|taobao\.com/i.test(url)
+    ? "sourcing_page"
+    : "web_page";
+  return {
+    pageType,
+    url,
+    readRoute: health.readRoute || "content_script",
+    frameCount: Number(health.frameCount || 1),
+    visibleTextLength: String(pageData.visibleText || pageData.text || pageData.bodyText || "").length,
+    productCardCount: Array.isArray(pageData.productCards) ? pageData.productCards.length : 0,
+    productLinkCount: Array.isArray(pageData.productLinks) ? pageData.productLinks.length : 0,
+    imageCount: Array.isArray(pageData.images) ? pageData.images.length : 0,
+    hasMeaningfulDom: Boolean(health.hasMeaningfulDom || hasUsablePageEvidence(pageData)),
+    isLikelyBlocked: Boolean(health.isLikelyBlocked),
+    limitation: health.isLikelyBlocked
+      ? "页面疑似受阻或需要人工验证"
+      : pageType === "ozon_search"
+      ? "当前证据是 Ozon 搜索结果可见样本，不代表平台全量"
+      : pageType === "ozon_shop"
+      ? "店铺页面证据代表本轮可访问页面与当前视口"
+      : pageType === "ozon_product"
+      ? "商品详情页字段仅代表当前可见页面和可访问结构"
+      : "当前页面的可见 DOM 证据",
+  };
+}
+
+async function executeGenericDomSnapshot(tabId) {
+  const snapshotFn = () => {
+    const bodyText = document.body?.innerText || "";
+    const links = Array.from(document.querySelectorAll("a[href]"))
+      .map((anchor) => ({
+        href: anchor.href,
+        text: (anchor.innerText || anchor.getAttribute("aria-label") || "").trim().slice(0, 240),
+      }))
+      .filter((link) => link.href && link.text)
+      .slice(0, 240);
+    const images = Array.from(document.images)
+      .map((image) => ({
+        src: image.currentSrc || image.src,
+        alt: image.alt || "",
+        width: image.naturalWidth || image.width || 0,
+        height: image.naturalHeight || image.height || 0,
+      }))
+      .filter((image) => image.src)
+      .slice(0, 120);
+    const jsonLd = Array.from(document.querySelectorAll('script[type="application/ld+json"]'))
+      .map((node) => node.textContent || "")
+      .filter(Boolean)
+      .slice(0, 8);
+    return {
+      url: location.href,
+      title: document.title || "",
+      h1: document.querySelector("h1")?.innerText?.trim() || "",
+      visibleText: bodyText.slice(0, 30000),
+      metaDescription: document.querySelector('meta[name="description"]')?.content || "",
+      productLinks: links.filter((link) => /ozon\.ru\/(product|seller|shop)|1688\.com|taobao\.com|product|item|shop/i.test(link.href)),
+      links,
+      images,
+      structuredDataRaw: jsonLd,
+      pageHealth: {
+        hasMeaningfulDom: bodyText.trim().length >= 120 || links.length > 0,
+        visibleTextLength: bodyText.length,
+        frameUrl: location.href,
+        readRoute: "scripting_executeScript_dom_fallback",
+      },
+    };
+  };
+
+  let results;
+  try {
+    results = await chrome.scripting.executeScript({ target: { tabId, allFrames: true }, func: snapshotFn });
+  } catch (_) {
+    results = await chrome.scripting.executeScript({ target: { tabId }, func: snapshotFn });
+  }
+  const mainFrame = results.find((item) => item.frameId === 0)?.result || results[0]?.result || {};
+  const frameText = results
+    .filter((item) => item.frameId !== 0 && item.result?.visibleText)
+    .map((item) => item.result.visibleText)
+    .join("\n")
+    .slice(0, 30000);
+  return {
+    ...mainFrame,
+    visibleText: [mainFrame.visibleText, frameText].filter(Boolean).join("\n").slice(0, 30000),
+    frameCount: results.length,
+    pageHealth: {
+      ...(mainFrame.pageHealth || {}),
+      frameCount: results.length,
+    },
+  };
+}
+
+async function readCompletePageData(tabId, message = {}) {
+  let contentResult = null;
+  let contentError = null;
+  try {
+    contentResult = await sendToContentScript(tabId, message);
+  } catch (err) {
+    contentError = err;
+  }
+  const contentData = contentResult?.ok ? (contentResult.data || {}) : {};
+  const contentHealthy = hasUsablePageEvidence(contentData);
+  if (contentHealthy && !contentData?.pageHealth?.isLikelyBlocked) {
+    return {
+      ...contentResult,
+      data: { ...contentData, pageEvidence: buildPageEvidence(contentData) },
+    };
+  }
+
+  try {
+    const fallback = await executeGenericDomSnapshot(tabId);
+    const merged = {
+      ...fallback,
+      ...contentData,
+      visibleText: String(contentData.visibleText || fallback.visibleText || "").length >= String(fallback.visibleText || "").length
+        ? contentData.visibleText || fallback.visibleText || ""
+        : fallback.visibleText,
+      productLinks: (contentData.productLinks?.length ? contentData.productLinks : fallback.productLinks) || [],
+      images: (contentData.images?.length ? contentData.images : fallback.images) || [],
+      pageHealth: {
+        ...(fallback.pageHealth || {}),
+        ...(contentData.pageHealth || {}),
+        readRoute: contentResult?.ok ? "content_script_plus_dom_fallback" : "scripting_executeScript_dom_fallback",
+        contentScriptError: contentError?.message || "",
+      },
+    };
+    return {
+      ok: Boolean(contentResult?.ok || fallback?.pageHealth?.hasMeaningfulDom),
+      data: {
+        ...merged,
+        pageEvidence: buildPageEvidence(merged),
+      },
+    };
+  } catch (fallbackError) {
+    if (contentResult?.ok) return contentResult;
+    throw new Error(contentError?.message || fallbackError.message);
+  }
 }
 
 async function getTabQuietly(tabId) {
@@ -378,31 +641,72 @@ async function getTabQuietly(tabId) {
   });
 }
 
-async function readPageFromTabQuietly(tabId) {
-  try {
-    return await readPageFromTab(tabId);
-  } catch (_) {
-    return null;
-  }
-}
-
 async function waitForPageCaptureReady(tabId, {
   engine = "",
+  workflowId = "default",
+  expectedUrl = "",
+  label = "",
+  timeoutMs,
   maxAttempts = 24,
   pollMs = 500,
   minQuietMs = 1200,
   minStableReads = 2,
+  requireEvidence = true,
   progress = null,
   progressStage = "page_capture_waiting",
   progressLabel = "页面",
 } = {}) {
+  const profile = getReadinessProfile(expectedUrl, label || progressLabel, engine);
+  const minStayMs = Math.max(250, Number(minQuietMs ?? profile.minWaitMs) || profile.minWaitMs);
+  const intervalMs = Math.max(250, Number(pollMs ?? profile.pollMs) || profile.pollMs);
+  const requiredStableReads = Math.max(1, Number(minStableReads ?? profile.minStableReads) || profile.minStableReads || 1);
+  const deadlineMs = Math.max(
+    minStayMs + 1000,
+    Number(timeoutMs) || Math.max(Number(maxAttempts || 24) * intervalMs, profile.timeoutMs)
+  );
   const startedAt = Date.now();
   let lastTab = null;
-  let lastPageData = null;
+  let lastPageData = {};
+  let lastReadError = "";
+  let completeSeenAt = 0;
+  let emittedWaiting = false;
   let lastSignature = "";
   let stableReads = 0;
+  let attempt = 0;
 
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+  const emit = (stage, message, extra = {}) => {
+    if (typeof progress !== "function") return;
+    try {
+      progress(stage, message, extra);
+    } catch (_) {}
+  };
+
+  emit("tab_readiness_wait_started", `${progressLabel} 已打开，等待页面完成加载并形成可读证据。`, {
+    tabId,
+    expectedUrl,
+    minWaitMs: minStayMs,
+    timeoutMs: deadlineMs,
+    minStableReads: requiredStableReads,
+  });
+
+  while (Date.now() - startedAt <= deadlineMs) {
+    attempt += 1;
+    if (workflowId !== "default" && await isWorkflowCancellationRequested(workflowId)) {
+      return {
+        ok: false,
+        cancelled: true,
+        tab: lastTab,
+        pageData: lastPageData,
+        attempts: attempt,
+        stableReads,
+        elapsedMs: Date.now() - startedAt,
+        readiness: "cancelled",
+        loadState: "cancelled",
+        readyReason: "workflow_cancelled",
+        readError: "Workflow cancellation requested while waiting for tab readiness",
+      };
+    }
+
     const tab = await getTabQuietly(tabId);
     if (!tab) {
       return {
@@ -410,7 +714,12 @@ async function waitForPageCaptureReady(tabId, {
         tab: null,
         pageData: lastPageData,
         attempts: attempt,
+        stableReads,
+        elapsedMs: Date.now() - startedAt,
+        readiness: "tab_missing",
+        loadState: "tab_closed_or_missing",
         readyReason: "tab_closed_or_missing",
+        readError: "Tab closed or not found",
       };
     }
     lastTab = tab;
@@ -422,50 +731,86 @@ async function waitForPageCaptureReady(tabId, {
         pageData: lastPageData,
         attempts: attempt,
         isVerification: true,
+        stableReads,
+        elapsedMs: Date.now() - startedAt,
+        readiness: "verification_required",
+        loadState: "verification_page",
         readyReason: "verification_page",
+        readError: "Verification or login page detected",
       };
     }
 
-    const pageComplete = tab.status === "complete";
-    const quietEnough = Date.now() - startedAt >= minQuietMs;
-    if (pageComplete && quietEnough) {
-      const pageData = await readPageFromTabQuietly(tabId);
-      if (pageData) {
+    if (tab.status === "complete" && !completeSeenAt) completeSeenAt = Date.now();
+    const elapsedMs = Date.now() - startedAt;
+    const minStaySatisfied = elapsedMs >= minStayMs;
+
+    if (minStaySatisfied || attempt === 1 || tab.status === "complete") {
+      try {
+        const data = await readCompletePageData(tabId, { type: "READ_CURRENT_PAGE", cachedSelectors: null });
+        const pageData = data?.data || {};
         lastPageData = pageData;
+        lastReadError = "";
         const signature = pageDataSignature(pageData);
-        stableReads = signature === lastSignature ? stableReads + 1 : 1;
+        stableReads = signature && signature === lastSignature ? stableReads + 1 : 1;
         lastSignature = signature;
-        const contentReady = pageDataLooksReady(pageData, engine);
-        if (contentReady && stableReads >= Math.max(1, Number(minStableReads) || 1)) {
+        const evidenceReady = profile.ready(pageData) || pageDataLooksReady(pageData, engine);
+        const canReturnWithoutEvidence = !requireEvidence && minStaySatisfied && (tab.status === "complete" || completeSeenAt);
+        const stableSatisfied = stableReads >= requiredStableReads;
+        if ((evidenceReady && minStaySatisfied && stableSatisfied) || (canReturnWithoutEvidence && stableSatisfied)) {
+          const readiness = evidenceReady ? "content_stable" : "load_complete_min_wait_satisfied";
+          emit("tab_readiness_ready", `${progressLabel} 已完成加载等待并取得可读页面证据。`, {
+            tabId,
+            url: pageData.url || tab.url || expectedUrl,
+            readiness,
+            readyReason: evidenceReady ? profile.readyLabel : readiness,
+            attempts: attempt,
+            stableReads,
+            elapsedMs,
+          });
           return {
-            ok: true,
+            ok: evidenceReady || canReturnWithoutEvidence,
             tab,
             pageData,
             attempts: attempt,
             stableReads,
-            readyReason: "content_stable",
+            elapsedMs,
+            readiness,
+            loadState: readiness,
+            readyReason: evidenceReady ? profile.readyLabel : readiness,
+            readError: "",
           };
         }
+      } catch (err) {
+        lastReadError = err.message || "Failed to read page";
       }
     }
 
-    if (typeof progress === "function" && (attempt === 1 || attempt % 6 === 0)) {
-      progress(progressStage, `${progressLabel} 正在等待加载稳定（${attempt}/${maxAttempts}）。`, {
+    if ((attempt === 1 || attempt % 6 === 0) || (!emittedWaiting && elapsedMs >= Math.min(3000, deadlineMs))) {
+      emittedWaiting = true;
+      emit(progressStage, `${progressLabel} 正在等待动态内容稳定，暂不采集半截页面（${attempt}/${Math.ceil(deadlineMs / intervalMs)}）。`, {
         tabId,
         tabStatus: tab.status,
-        quietMs: Date.now() - startedAt,
+        elapsedMs,
+        stableReads,
+        minStableReads: requiredStableReads,
       });
     }
-    await sleep(pollMs);
+    await sleep(intervalMs);
   }
 
+  const usable = hasUsablePageEvidence(lastPageData);
   return {
-    ok: Boolean(lastPageData),
+    ok: usable,
+    timedOut: true,
     tab: lastTab,
     pageData: lastPageData,
-    attempts: maxAttempts,
+    attempts: attempt,
     stableReads,
-    readyReason: lastPageData ? "timeout_with_last_read" : "timeout_without_read",
+    elapsedMs: Date.now() - startedAt,
+    readiness: usable ? "evidence_ready_after_timeout" : "readiness_timeout",
+    loadState: usable ? "timeout_with_last_read" : "timeout_without_read",
+    readyReason: usable ? "timeout_with_last_read" : "timeout_without_read",
+    readError: lastReadError || "Timed out waiting for stable readable page evidence",
   };
 }
 
@@ -503,7 +848,7 @@ async function waitForTabLoaded(tabId, maxAttempts = 24) {
 }
 
 async function readPageFromTab(tabId) {
-  const result = await sendToContentScript(tabId, {
+  const result = await readCompletePageData(tabId, {
     type: "READ_CURRENT_PAGE",
     cachedSelectors: null,
   });
@@ -524,7 +869,7 @@ async function openOzonEvidenceTab(url, active = false) {
 }
 
 async function captureAndStoreOzonScreenshot(tabId, metadata = {}) {
-  const dataUrl = await _captureTabScreenshot(tabId);
+  const dataUrl = await _captureTabScreenshot(tabId, { expectedUrl: metadata.url || "" });
   return await putDataUrlArtifact(dataUrl, {
     namespace: "ozon-competitor-screenshot",
     metadata,
@@ -538,6 +883,7 @@ async function collectOzonEvidencePage({
   pageIndex = 1,
   closeAfter = false,
   source = "manual",
+  workflowId = "default",
 } = {}) {
   let evidenceTab = null;
   let openedByTool = false;
@@ -545,6 +891,8 @@ async function collectOzonEvidencePage({
     if (tabId) {
       const ready = await waitForPageCaptureReady(Number(tabId), {
         engine: "ozon",
+        workflowId,
+        expectedUrl: evidenceTab?.url || url || "",
         maxAttempts: 28,
         minQuietMs: 1800,
         minStableReads: 2,
@@ -556,6 +904,8 @@ async function collectOzonEvidencePage({
       openedByTool = true;
       const ready = await waitForPageCaptureReady(evidenceTab.id, {
         engine: "ozon",
+        workflowId,
+        expectedUrl: normalizeOzonUrl(url),
         maxAttempts: 32,
         minQuietMs: 2200,
         minStableReads: 2,
@@ -574,6 +924,8 @@ async function collectOzonEvidencePage({
 
     const ready = await waitForPageCaptureReady(evidenceTab.id, {
       engine: "ozon",
+      workflowId,
+      expectedUrl: finalUrl,
       maxAttempts: 12,
       minQuietMs: 800,
       minStableReads: 1,
@@ -785,7 +1137,7 @@ export const tools = {
       cachedSelectors = memory[domain] || null;
     } catch (_) {}
 
-    const result = await sendToContentScript(tab.id, { 
+    const result = await readCompletePageData(tab.id, {
       type: "READ_CURRENT_PAGE",
       cachedSelectors
     });
@@ -823,6 +1175,7 @@ export const tools = {
       maxPages = 1,
       closeAfter = true,
       source = "ozon_competitor_crawl",
+      workflowId = "default",
     } = args || {};
     if (!url && !tabId) {
       const activeTab = await getCurrentTab();
@@ -838,6 +1191,7 @@ export const tools = {
       pageIndex: 1,
       closeAfter,
       source,
+      workflowId,
     });
     pages.push(firstPage);
 
@@ -865,6 +1219,7 @@ export const tools = {
       maxCompetitors = 3,
       maxPagesPerCompetitor = 1,
       closeAfter = true,
+      workflowId = "default",
     } = args || {};
     const rawUrls = [...urls, ...competitorUrls].map(normalizeOzonUrl).filter(Boolean);
     const uniqueUrls = Array.from(new Set(rawUrls)).filter(isOzonPageUrl).slice(0, Math.max(1, Number(maxCompetitors) || 3));
@@ -879,6 +1234,7 @@ export const tools = {
         maxPages: maxPagesPerCompetitor,
         closeAfter,
         source: "ozon_competitor_batch",
+        workflowId,
       });
       const readablePages = (crawl.pages || []).filter((page) => page.ok);
       shops.push({
@@ -1301,7 +1657,7 @@ ${JSON.stringify(readable.map((item, index) => ({
   },
 
   search_in_browser: async (args) => {
-    const { query, engine = "google", __progress, __sourceTabId = null } = args;
+    const { query, engine = "google", workflowId = "default", __progress, __sourceTabId = null } = args;
     if (!query) throw new Error("query is required");
     const normalizedEngine = String(engine || "google").toLowerCase();
     const emitSearchProgress = (stage, message, extra = {}) => {
@@ -1366,7 +1722,7 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
       if (!shouldAutoCloseSearchTab || payload.screenshotRef || payload.screenshotCaptured) return payload;
       try {
         emitSearchProgress("search_screenshot_started", `${searchActionLabel} 正在保存搜索页截图证据。`, { tabId, searchUrl: payload.searchUrl });
-        const screenshot = await _captureTabScreenshot(tabId);
+        const screenshot = await _captureTabScreenshot(tabId, { expectedUrl: payload.searchUrl });
         const artifact = await putDataUrlArtifact(screenshot, {
           namespace: "search-evidence-screenshot",
           metadata: {
@@ -1397,6 +1753,8 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
           emitSearchProgress("search_tab_opened", `1688 货源检索已打开 tabId=${newTab.id}，开始进入搜索页。`, { tabId: newTab.id, searchUrl });
           const ready = await waitForPageCaptureReady(newTab.id, {
             engine: "1688",
+            workflowId,
+            expectedUrl: searchUrl,
             maxAttempts: 24,
             minQuietMs: 1800,
             minStableReads: 1,
@@ -1413,10 +1771,10 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
               keyword: targetQuery,
               tabId: newTab.id
             });
-            await restoreSourceTabFocus(__sourceTabId);
+            await restoreSourceTabFocusBounded(__sourceTabId);
             resolve({ ok: true, tabId: newTab.id, searchUrl, queryUsed: targetQuery, pageData: searchRes.pageData || {}, loadState: ready.readyReason });
           } catch (err) {
-            await restoreSourceTabFocus(__sourceTabId);
+            await restoreSourceTabFocusBounded(__sourceTabId);
             resolve({ ok: true, tabId: newTab.id, searchUrl, queryUsed: targetQuery, pageData: {}, loadState: ready.readyReason });
           }
         });
@@ -1444,17 +1802,19 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
                 : `${searchActionLabel} 已保存证据，但临时标签页 tabId=${newTab.id} 未能自动关闭。`,
               { tabId: newTab.id, searchUrl: payload.searchUrl }
             );
-            await restoreSourceTabFocus(__sourceTabId);
             resolve({ ...payloadWithScreenshot, tabClosed: closed, protectedSourceTab });
+            restoreSourceTabFocusBounded(__sourceTabId).catch(() => {});
             return;
           }
-          await restoreSourceTabFocus(__sourceTabId);
           resolve(payloadWithScreenshot);
+          restoreSourceTabFocusBounded(__sourceTabId).catch(() => {});
         };
         const trendHint = normalizedEngine === "google_trends" ? "，正在等待 Interest over time 与 Related queries/topics 模块" : "";
         emitSearchProgress("search_page_reading", `${searchActionLabel} 正在读取页面信息${trendHint}。`, { tabId: newTab.id, searchUrl });
         const ready = await waitForPageCaptureReady(newTab.id, {
           engine: normalizedEngine,
+          workflowId,
+          expectedUrl: searchUrl,
           maxAttempts,
           minQuietMs: normalizedEngine === "google_trends" ? 3800 : 1800,
           minStableReads: normalizedEngine === "google_trends" ? Math.max(2, minStablePollAttempts) : 2,
@@ -1530,7 +1890,7 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
               }
 
               try {
-                const data = await sendToContentScript(targetTabId, { type: "READ_CURRENT_PAGE" });
+                const data = await readCompletePageData(targetTabId, { type: "READ_CURRENT_PAGE" });
                 const pageData = data?.data || {};
                 const hasProducts = (pageData.productLinks && pageData.productLinks.length > 0) ||
                   (pageData.productCards && pageData.productCards.length > 0);
@@ -1591,7 +1951,7 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
   },
 
   image_search_1688: async (args) => {
-    const { engine = "1688", __sourceTabId = null } = args;
+    const { engine = "1688", workflowId = "default", __sourceTabId = null } = args;
     const imageUrl = resolvePreparedImageUrl(args.imageUrl);
     if (!imageUrl) throw new Error("imageUrl is required");
 
@@ -1608,6 +1968,8 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
 
         const ready = await waitForPageCaptureReady(newTab.id, {
           engine: normalizedEngine,
+          workflowId,
+          expectedUrl: searchUrl,
           maxAttempts: 26,
           minQuietMs: 2000,
           minStableReads: 1,
@@ -1707,7 +2069,7 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
               }
 
               try {
-                const data = await sendToContentScript(targetTabId, { type: "READ_CURRENT_PAGE" });
+                const data = await readCompletePageData(targetTabId, { type: "READ_CURRENT_PAGE" });
                 const pageData = data?.data || {};
                 const hasProducts = (pageData.productLinks && pageData.productLinks.length > 0) ||
                   (pageData.productCards && pageData.productCards.length > 0);
@@ -1777,7 +2139,7 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
   },
 
   open_new_tab: async (args) => {
-    const { url, __sourceTabId = null } = args;
+    const { url, workflowId = "default", __sourceTabId = null } = args;
     if (!url) throw new Error("url is required");
     
     return new Promise((resolve, reject) => {
@@ -1788,6 +2150,8 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
         }
         const ready = await waitForPageCaptureReady(tab.id, {
           engine: isOzonPageUrl(url) ? "ozon" : "",
+          workflowId,
+          expectedUrl: url,
           maxAttempts: 28,
           minQuietMs: 2000,
           minStableReads: 2,
@@ -1796,20 +2160,34 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
         if (ready.isVerification) {
           chrome.tabs.update(tab.id, { active: true });
           chrome.runtime.sendMessage({ type: "CAPTCHA_DETECTED", url: ready.tab?.url || url });
-          resolve({ ok: true, tabId: tab.id, isCaptcha: true, pageData: "Verification timeout", loadState: ready.readyReason });
+          resolve({ ok: false, tabId: tab.id, isCaptcha: true, evidenceOk: false, pageData: {}, loadState: ready.loadState || ready.readyReason, readError: ready.readError || "Verification timeout" });
           return;
         }
         if (!ready.tab) {
-          resolve({ ok: true, tabId: tab.id, pageData: "Tab closed or not found", loadState: ready.readyReason });
+          resolve({ ok: false, tabId: tab.id, evidenceOk: false, pageData: {}, loadState: ready.loadState || ready.readyReason, readError: "Tab closed or not found" });
           return;
         }
         try {
           const data = ready.pageData || await readPageFromTab(tab.id);
-          await restoreSourceTabFocus(__sourceTabId);
-          resolve({ ok: true, tabId: tab.id, pageData: data || "", loadState: ready.readyReason, loadAttempts: ready.attempts });
+          restoreSourceTabFocusBounded(__sourceTabId).catch(() => {});
+          resolve({
+            ok: hasUsablePageEvidence(data),
+            tabId: tab.id,
+            url: ready.tab?.url || url,
+            finalUrl: data?.url || ready.tab?.url || url,
+            pageData: data || "",
+            evidenceOk: hasUsablePageEvidence(data),
+            readiness: ready.readiness,
+            loadState: ready.loadState || ready.readyReason,
+            readyReason: ready.readyReason,
+            stableReads: ready.stableReads,
+            readinessElapsedMs: ready.elapsedMs,
+            loadAttempts: ready.attempts,
+            readError: hasUsablePageEvidence(data) ? "" : (ready.readError || "Page loaded but no usable DOM evidence was captured"),
+          });
         } catch (err) {
-          await restoreSourceTabFocus(__sourceTabId);
-          resolve({ ok: true, tabId: tab.id, pageData: "Failed to read DOM (Script injection restricted)", loadState: ready.readyReason });
+          restoreSourceTabFocusBounded(__sourceTabId).catch(() => {});
+          resolve({ ok: false, tabId: tab.id, pageData: {}, evidenceOk: false, readError: err.message, loadState: ready.loadState || ready.readyReason });
         }
       });
     });
@@ -1823,7 +2201,7 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
     }
     const targetUrl = await getTabUrlQuietly(tabId);
     if (String(__workflowSkillId || "").includes("ozon_platform_trends") && /(^|\.)ozon\.ru/i.test(targetUrl)) {
-      await restoreSourceTabFocus(__sourceTabId);
+      restoreSourceTabFocusBounded(__sourceTabId).catch(() => {});
       return {
         ok: false,
         protectedOzonTrendTab: true,
@@ -1833,7 +2211,7 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
       };
     }
     await chrome.tabs.remove(parseInt(tabId));
-    await restoreSourceTabFocus(__sourceTabId);
+    restoreSourceTabFocusBounded(__sourceTabId).catch(() => {});
     return { ok: true, message: `Tab ${tabId} closed.` };
   },
 

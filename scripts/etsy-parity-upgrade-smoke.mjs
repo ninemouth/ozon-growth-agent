@@ -98,6 +98,12 @@ assert.match(toolRegistry, /search_tab_opening[\s\S]*search_tab_opened[\s\S]*sea
 assert.match(toolRegistry, /function waitForPageCaptureReady/, "browser tools must wait for new tabs to become capture-ready");
 assert.match(toolRegistry, /content_stable/, "new-tab capture waiting must require stable readable content");
 assert.match(toolRegistry, /minQuietMs/, "new-tab capture waiting must include a quiet period after tab load");
+assert.match(toolRegistry, /function getReadinessProfile[\s\S]*google_trends[\s\S]*ozon[\s\S]*minStableReads/, "new-tab readiness should use platform-aware loading profiles");
+assert.match(toolRegistry, /executeGenericDomSnapshot[\s\S]*allFrames:\s*true[\s\S]*readCompletePageData[\s\S]*executeGenericDomSnapshot/, "page reading should fall back to all-frame DOM snapshots when content-script evidence is thin");
+assert.match(toolRegistry, /function getTabForCapture[\s\S]*isCapturableTabUrl[\s\S]*expectedUrl[\s\S]*_captureTabScreenshot/, "screenshots should wait for capturable http(s) tab URLs before capture");
+assert.match(toolRegistry, /restoreSourceTabFocusBounded[\s\S]*Promise\.race/, "source-tab focus restoration should be bounded and not block tool completion");
+assert.match(toolRegistry, /waitForPageCaptureReady[\s\S]*isWorkflowCancellationRequested[\s\S]*readiness_timeout/, "tab readiness waiting should honor workflow cancellation and report timeout state");
+assert.match(toolRegistry, /open_new_tab:[\s\S]*evidenceOk[\s\S]*readinessElapsedMs[\s\S]*readError/, "open_new_tab should return evidence quality telemetry instead of unconditional success");
 assert.match(toolRegistry, /pageDataLooksReady/, "new-tab capture waiting must inspect DOM evidence readiness, not just chrome tab status");
 assert.match(toolRegistry, /open_new_tab:[\s\S]*waitForPageCaptureReady/, "open_new_tab must wait for stable page capture before reading DOM");
 assert.match(toolRegistry, /search_in_browser:[\s\S]*waitForPageCaptureReady/, "search_in_browser must wait for stable page capture before returning evidence");
