@@ -72,6 +72,16 @@ function isProtectedTabId(tabId, protectedTabIds = []) {
     .some((protectedTabId) => Number.isInteger(Number(protectedTabId)) && Number(protectedTabId) === Number(tabId));
 }
 
+async function getTabUrlQuietly(tabId) {
+  if (!Number.isInteger(Number(tabId))) return "";
+  try {
+    const tab = await chrome.tabs.get(Number(tabId));
+    return tab?.url || "";
+  } catch (_) {
+    return "";
+  }
+}
+
 async function closeTabQuietly(tabId, protectedTabIds = []) {
   if (!Number.isInteger(Number(tabId))) return false;
   if (isProtectedTabId(tabId, protectedTabIds)) return false;
@@ -1689,10 +1699,21 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
   },
 
   close_tab: async (args) => {
-    const { tabId, __sourceTabId = null } = args;
+    const { tabId, __sourceTabId = null, __workflowSkillId = "" } = args;
     if (!tabId) throw new Error("tabId is required");
     if (isProtectedTabId(tabId, [__sourceTabId])) {
       return { ok: false, protectedSourceTab: true, message: `Refused to close source tab ${tabId}.` };
+    }
+    const targetUrl = await getTabUrlQuietly(tabId);
+    if (String(__workflowSkillId || "").includes("ozon_platform_trends") && /(^|\.)ozon\.ru/i.test(targetUrl)) {
+      await restoreSourceTabFocus(__sourceTabId);
+      return {
+        ok: false,
+        protectedOzonTrendTab: true,
+        message: `Refused to close Ozon page ${tabId} during platform trends workflow.`,
+        tabId,
+        url: targetUrl,
+      };
     }
     await chrome.tabs.remove(parseInt(tabId));
     await restoreSourceTabFocus(__sourceTabId);

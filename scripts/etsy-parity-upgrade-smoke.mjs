@@ -53,11 +53,14 @@ assert.match(agentLoop, /tool_timeout_does_not_cancel_workflow/, "tool timeout m
 assert.match(agentLoop, /tool_heartbeat/, "agent loop must send heartbeat progress for long tools");
 assert.match(agentLoop, /type:\s*"tool_stage"/, "agent loop must emit concrete browser tool stage progress");
 assert.match(agentLoop, /__sourceTabId:\s*tabId/, "agent loop must pass the original source tab id into runtime tools");
+assert.match(agentLoop, /__workflowSkillId:\s*skillId/, "agent loop must pass the current skill id into runtime tools for workflow-specific safety policies");
 assert.match(agentLoop, /stripRuntimeToolArgs[\s\S]*__progress[\s\S]*__sourceTabId/, "agent loop must keep runtime-only tool args out of persisted tool history");
+assert.match(agentLoop, /delete clean\.__workflowSkillId/, "agent loop must keep workflow skill runtime args out of persisted tool history");
 assert.match(agentLoop, /checkpoint\("interrupted"[\s\S]*workflow_cancellation_requested/, "user-paused workflows should stay resumable instead of becoming cancelled checkpoints");
 assert.match(agentLoop, /closeTabsCreatedDuringTimedOutTool\(beforeTabIds = new Set\(\), protectedTabIds = \[\]\)/, "agent loop timeout cleanup should accept protected source tab ids");
 assert.match(agentLoop, /isProtectedRuntimeTab\(tab\.id, protectedTabIds\)[\s\S]*return false/, "agent loop timeout cleanup must refuse to close protected source tabs");
 assert.match(agentLoop, /closeTabsCreatedDuringTimedOutTool\(tabsBeforeTool, \[tabId\]\)/, "agent loop must pass the source tab id into timeout cleanup");
+assert.doesNotMatch(agentLoop, /return \/[^\n]*ozon\\\.ru[^\n]*google\\\./, "agent loop timeout cleanup must not auto-close Ozon tabs");
 assert.match(agentLoop, /isWorkflowGenerationCurrent/, "agent loop must discard late results from stale workflow generations");
 assert.match(background, /workflowGeneration: lease\.generation/, "background must pass workflow generation into the agent loop");
 assert.match(background, /port\.sender\?\.tab\?\.id \? port\.sender\.tab : await getCurrentTab\(\)/, "background should bind overlay workflows to the sender source tab instead of whichever temporary tab is active");
@@ -70,6 +73,8 @@ assert.match(contentSource, /data\.type === "tool_stage"/, "floating overlay sho
 assert.match(platformTrends, /证据阶段完成条件/, "Ozon platform trends must define stage completion conditions");
 assert.match(platformTrends, /不是无限搜索循环/, "Ozon platform trends must guard against repeated search loops");
 assert.match(platformTrends, /stage_observations/, "Ozon platform trends must require staged screenshot evidence");
+assert.match(platformTrends, /平台趋势任务严禁主动关闭任何 Ozon 页面/, "Ozon platform trends must explicitly forbid closing Ozon pages");
+assert.match(platformTrends, /protectedOzonTrendTab[\s\S]*protectedSourceTab/, "Ozon platform trends must treat protected-tab responses as safety success");
 assert.match(toolRegistry, /minStablePollAttempts[\s\S]*google_trends/, "Google Trends polling must wait for a stable evidence window");
 assert.match(toolRegistry, /trendsEvidenceState/, "Google Trends search result should expose evidence readiness state");
 assert.match(toolRegistry, /search_tab_opening[\s\S]*search_tab_opened[\s\S]*search_page_reading[\s\S]*search_evidence_ready/, "browser search should report real tab-open/read/evidence stages");
@@ -78,6 +83,7 @@ assert.match(toolRegistry, /closeTabQuietly\(tabId, protectedTabIds[\s\S]*isProt
 assert.match(toolRegistry, /search_source_tab_protected[\s\S]*protectedSourceTab/, "browser search auto-close should refuse to close the source tab and report the protection state");
 assert.match(toolRegistry, /restoreSourceTabFocus[\s\S]*search_tab_closed/, "browser searches should restore focus to the source Ozon tab after closing temporary evidence tabs");
 assert.match(toolRegistry, /protectedSourceTab[\s\S]*Refused to close source tab/, "close_tab must refuse to close the original source tab");
+assert.match(toolRegistry, /protectedOzonTrendTab[\s\S]*Refused to close Ozon page/, "platform trends close_tab must refuse to close any Ozon page");
 assert.match(toolRegistry, /openerTabId[\s\S]*chrome\.tabs\.create/, "workflow-created tabs should preserve the source tab as opener");
 assert.equal(hasValidGoogleTrendsEvidence({
   ok: true,

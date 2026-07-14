@@ -44,6 +44,7 @@ function toolRunKey(toolName, toolArgs = {}) {
   delete dedupeArgs.workflowGeneration;
   delete dedupeArgs.__progress;
   delete dedupeArgs.__sourceTabId;
+  delete dedupeArgs.__workflowSkillId;
   return `${workflowId}:${toolName}:${JSON.stringify(stableToolValue(dedupeArgs))}`;
 }
 
@@ -873,6 +874,7 @@ function stripRuntimeToolArgs(toolArgs = {}) {
   const clean = { ...toolArgs };
   delete clean.__progress;
   delete clean.__sourceTabId;
+  delete clean.__workflowSkillId;
   return clean;
 }
 
@@ -922,7 +924,7 @@ async function closeTabsCreatedDuringTimedOutTool(beforeTabIds = new Set(), prot
     if (!Number.isInteger(tab.id) || beforeTabIds.has(tab.id)) return false;
     if (isProtectedRuntimeTab(tab.id, protectedTabIds)) return false;
     const url = String(tab.url || "");
-    return /ozon\.ru|google\.|yandex\.ru|bing\.com|1688\.com|taobao\.com/i.test(url);
+    return /google\.|yandex\.ru|bing\.com|1688\.com|taobao\.com/i.test(url);
   });
   await Promise.all(candidates.map((tab) => new Promise((resolve) => {
     chrome.tabs.remove(tab.id, () => resolve());
@@ -1351,6 +1353,7 @@ ${(skillId || "").includes("tiktok_shop_monitor") ? `\n\n## ⚠️ TikTok 监控
         const executableToolArgs = {
           ...toolArgs,
           __sourceTabId: tabId,
+          __workflowSkillId: skillId,
           __progress: (stage = {}) => {
             const stageMessage = stage.message || `${toolAction.actionLabel} 正在执行`;
             sendProgress({
