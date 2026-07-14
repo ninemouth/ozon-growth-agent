@@ -12,6 +12,7 @@
     "test:store-diagnosis": "node scripts/ozon-store-diagnosis-parity-smoke.mjs",
     "test:etsy-parity": "node scripts/etsy-parity-upgrade-smoke.mjs",
     "test:sourcing": "node scripts/sourcing-workflow-guard-smoke.mjs",
+    "test:skills": "node scripts/skill-contract-smoke.mjs",
     "test:update": "node scripts/update-awareness-smoke.mjs",
     "test:no-mock": "node scripts/no-runtime-mock-smoke.mjs",
     "format": "prettier --write ."

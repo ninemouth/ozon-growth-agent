@@ -29,6 +29,14 @@
    - **证据账本要求**：每个 `data` 对象必须包含 `evidence_ledger` 数组；数组里的每条证据必须包含 `source_type`、`source_ref`、`observed_value`、`used_for`、`confidence`、`limitation`，并区分真实工具/页面/API/搜索趋势/供应商页面结果与待验证假设。
    - **字段汉化与自适应**：每个字段的属性名必须符合标准英文 Key，属性值必须为具体翻译好的中文或标准化数据，**绝对禁止输出 `[object Object]` 或未序列化的 JSON**。
 
+5. **增长工作流回写字段 (Workflow-Ready Output)**:
+   - 所有 Ozon 业务 Skill 的 `final.output` 顶层都必须包含 `report_status`、`blocking_gaps`、`follow_up_tasks` 和 `workflow_nodes`，让首页增长工作流画布可以继续推进，而不是只保存一份静态报告。
+   - `report_status` 只能是 `completed`、`partial`、`blocked` 或 `assumption_only`。关键证据不足时不得写 `completed`。
+   - `blocking_gaps` 必须列出影响判断的证据缺口，例如 API 未授权、Ozon 页面阻断、Google Trends 数据不足、评论页未展开、供应商详情页未打开、法规官方来源未取得。
+   - `follow_up_tasks` 必须是运营人员可执行或可确认的任务，每个任务包含 `task_id`、`task_type`、`priority`、`target`、`reason`、`required_evidence`、`expected_output`、`requires_manual_confirmation`。
+   - `workflow_nodes` 必须能被画布渲染，每个节点包含 `node_id`、`title`、`status`、`depends_on`、`next_action`。节点状态只能是 `validated`、`blocked`、`manual_confirm`、`queued`、`done`。
+   - 如果某个结论需要人工完成，例如已换图、已改标题、已补证书、已确认供应商、已报名活动，必须输出为 `manual_confirm` 节点，而不是假装系统已经自动执行。
+
 ---
 
 ## 🌍 Ozon 目标市场与受众感知校准 (Ozon Audience & Market Calibration)

@@ -43,3 +43,71 @@
 - `used_for`: 说明该证据支撑需求评分、竞争评分、物流风险、合规风险或产品改良机会。
 - `confidence`: `high` / `medium` / `low`。
 - `limitation`: 说明局限，例如“仅第一页搜索结果”“未绑定 Seller API”“未打开评论分页”“趋势图待人工确认”。
+
+## 工业级交付状态与画布回写
+
+- 最终报告必须输出 `report_status`：`completed`、`partial`、`blocked` 或 `assumption_only`。只有 Ozon 页面/搜索、站外趋势或评论/合规证据覆盖当前机会判断时才允许 `completed`。
+- 如果没有 Ozon 站内搜索或详情页证据，不得输出“蓝海”“爆品”“高增长”“低竞争”；必须把机会写入 `assumption_opportunities` 或 `blocking_gaps`。
+- `blocking_gaps` 必须列出影响机会判断的缺口，例如趋势页数据不足、竞品详情页未打开、评论缺失、合规来源未取得、物流重量未知。
+- `follow_up_tasks` 必须把机会拆成下一步工作，例如“趋势复核”“竞品详情页补采”“合规预审”“供应商可行性验证”“Listing 实验”。
+- `workflow_nodes` 必须让画布能从机会判断继续进入合规、寻源、Listing 或实验复盘。
+
+## 输出硬结构
+
+```json
+{
+  "type": "final",
+  "output": {
+    "report_status": "completed|partial|blocked|assumption_only",
+    "overview": "机会概览，说明目标市场、品类范围和证据覆盖",
+    "analysis": "需求、竞争、物流、合规、评论痛点和改良空间分析",
+    "summary": "推荐机会、待验证假设和下一步增长路径",
+    "blocking_gaps": [
+      {
+        "gap_id": "G-1",
+        "evidence_missing": "缺少的趋势、竞品、评论、合规或物流证据",
+        "business_impact": "影响机会评分或是否进入寻源/上架的原因",
+        "recovery_action": "下一步补证动作",
+        "status": "blocked|manual_required|queued"
+      }
+    ],
+    "validated_opportunities": ["O-1"],
+    "assumption_opportunities": ["O-2"],
+    "follow_up_tasks": [
+      {
+        "task_id": "TASK-1",
+        "task_type": "trend_validation|competitor_detail|compliance_precheck|sourcing_validation|listing_experiment",
+        "priority": "P0|P1|P2",
+        "target": "关键词、类目、商品或机会方向",
+        "reason": "",
+        "required_evidence": ["Ozon 页面、趋势、评论、合规或供应商证据"],
+        "expected_output": "",
+        "requires_manual_confirmation": true
+      }
+    ],
+    "workflow_nodes": [
+      {
+        "node_id": "NODE-1",
+        "title": "机会验证节点",
+        "status": "validated|blocked|manual_confirm|queued|done",
+        "depends_on": [],
+        "next_action": ""
+      }
+    ],
+    "data": [
+      {
+        "opportunity_id": "O-1",
+        "title": "机会名称",
+        "opportunity_status": "validated|assumption|blocked",
+        "demand_score": "",
+        "competition_score": "",
+        "logistics_risk": "",
+        "compliance_risk": "",
+        "next_validation_action": "",
+        "evidence": "真实页面/搜索/评论/API 或待验证说明",
+        "evidence_ledger": []
+      }
+    ]
+  }
+}
+```

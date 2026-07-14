@@ -36,15 +36,53 @@
 - `high`：存在较大下架、扣留、投诉或安全风险；未补齐证据前不建议扩大销售。
 - `blocked`：明显侵权、禁售、危险品、关键安全资料缺失或用途与法规冲突；阻断发布、Listing 生成和采购推荐。
 
+## 工业级交付状态与画布回写
+
+- 最终报告必须输出 `report_status`：`completed`、`partial`、`blocked` 或 `assumption_only`。只在页面资料、视觉审查和必要官方来源足以支撑发布判断时才允许 `completed`。
+- 关键法规、IP、材质、年龄、电池、食品接触、化妆品或 Ozon 政策来源缺失时，必须进入 `blocking_gaps`，不能只在正文中轻描淡写。
+- `follow_up_tasks` 必须转化为发布前任务，例如“补 EAC/TR CU 文件”“确认商标授权”“补俄语标签”“提交人工法务确认”“改 Listing 禁用词”。
+- `workflow_nodes` 必须体现合规工作流阶段：页面事实读取、官方来源核验、人工补证、发布决策。需要人工确认的节点使用 `manual_confirm`。
+
 ## 输出硬结构
 
 ```json
 {
   "type": "final",
   "output": {
+    "report_status": "completed|partial|blocked|assumption_only",
     "overview": "合规风险总览",
     "analysis": "按 Ozon 政策、IP、产品安全、俄罗斯/欧亚经济联盟法规、标签包装和证据缺口展开",
     "summary": "是否可以发布、必须先补什么、谁负责确认",
+    "blocking_gaps": [
+      {
+        "gap_id": "G-1",
+        "evidence_missing": "缺失的官方政策、法规、授权、材质或标签证据",
+        "business_impact": "影响发布、采购、Listing 或扩品的具体风险",
+        "recovery_action": "下一步补证或人工确认动作",
+        "status": "blocked|manual_required|queued"
+      }
+    ],
+    "follow_up_tasks": [
+      {
+        "task_id": "TASK-1",
+        "task_type": "policy_check|document_request|ip_review|label_update|listing_block",
+        "priority": "P0|P1|P2",
+        "target": "商品、证书、品牌词、标签或 Listing 字段",
+        "reason": "为什么必须处理",
+        "required_evidence": ["需要补齐的资料或页面"],
+        "expected_output": "完成后应产生的发布决策或修改结果",
+        "requires_manual_confirmation": true
+      }
+    ],
+    "workflow_nodes": [
+      {
+        "node_id": "NODE-1",
+        "title": "合规审查节点",
+        "status": "validated|blocked|manual_confirm|queued|done",
+        "depends_on": [],
+        "next_action": "下一步合规动作"
+      }
+    ],
     "data": [
       {
         "risk_id": "C-1",

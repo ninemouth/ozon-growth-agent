@@ -223,6 +223,7 @@
 3. `summary` 给出是否拿样、是否改版、是否贴标、首批采购量、上架或替换建议；如果少于 2 个供应商通过筛选，必须明确写“不足以形成供应商比价，本轮不建议直接采购/批量备货”。
 4. 必须提供 Anti-Cache 差异化建议：俄文包装、礼品套装、冬季/寒冷场景适配、防摔包装、轻度改版、说明书本地化等。
 5. 物流核算只写业务依据，不写内部搜索过程。
+6. 必须输出 `report_status`、`blocking_gaps`、`follow_up_tasks` 和 `workflow_nodes`，让货源验证可以回写到增长案件画布。图片搜索受阻、详情页不足 2 个、供应商价格/MOQ/认证无法读取、财务账本缺口或人工拿样确认都必须进入这些字段。
 
 ---
 
@@ -234,9 +235,40 @@
 {
   "type": "final",
   "output": {
+    "report_status": "completed|partial|blocked|assumption_only",
     "overview": "## Ozon 源头供应链开发大纲\n...",
     "analysis": "## 供应商多维对比与俄罗斯跨境毛利审计\n...",
     "summary": "## 拿样、改版与上架建议\n...",
+    "blocking_gaps": [
+      {
+        "gap_id": "G-1",
+        "evidence_missing": "缺少的图片搜索、列表页、供应商详情页、认证、价格、MOQ 或物流证据",
+        "business_impact": "影响供应商比价、拿样或批量备货决策的原因",
+        "recovery_action": "下一步补采、人工验证或拿样动作",
+        "status": "blocked|manual_required|queued"
+      }
+    ],
+    "follow_up_tasks": [
+      {
+        "task_id": "TASK-1",
+        "task_type": "supplier_detail|sample_request|spec_confirm|certificate_request|margin_recheck",
+        "priority": "P0|P1|P2",
+        "target": "供应商、候选商品、规格、证书或财务账本",
+        "reason": "",
+        "required_evidence": ["详情页、供应商回复、样品照片、证书或运费"],
+        "expected_output": "",
+        "requires_manual_confirmation": true
+      }
+    ],
+    "workflow_nodes": [
+      {
+        "node_id": "NODE-1",
+        "title": "货源验证节点",
+        "status": "validated|blocked|manual_confirm|queued|done",
+        "depends_on": [],
+        "next_action": ""
+      }
+    ],
     "data": [
       {
         "target_product": "Ozon 目标商品/原链接/原图URL",

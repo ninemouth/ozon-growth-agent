@@ -56,6 +56,67 @@
 ## 📝 最终商业诊断书输出要求
 
 你最后的 JSON 报告中：
+0. **report_status / blocking_gaps / follow_up_tasks / workflow_nodes**：必须输出增长工作流字段。没有基线窗口、对比窗口或 API 指标时，`report_status` 只能是 `partial`、`blocked` 或 `assumption_only`，不能写 `completed`。
 1. **overview (概述)**：必须明确指出目标销售目的地为“俄罗斯及独联体市场”，分析该商品阶段性优化的整体成效。
 2. **analysis (数据推演)**：必须包含一个 markdown 表格，清晰地列出【阶段一（优化前）】与【阶段二（优化后）】的流量、转化、运费及退单等 API 关键指标变化。
 3. **summary (下一步建议)**：基于上述对比，评估本次优化是否成功，并指出下一优化周期的行动路线。
+
+## 输出硬结构
+
+```json
+{
+  "type": "final",
+  "output": {
+    "report_status": "completed|partial|blocked|assumption_only",
+    "overview": "运营追踪概览，说明目标市场、优化动作和数据覆盖",
+    "analysis": "阶段窗口、API 指标、干扰项和边际效果分析",
+    "summary": "是否可归因、下一观察窗口和成功阈值",
+    "blocking_gaps": [
+      {
+        "gap_id": "G-1",
+        "evidence_missing": "缺少的基线、对比窗口、API 指标、广告/库存/价格/评价干扰项",
+        "business_impact": "影响归因或复盘判断的原因",
+        "recovery_action": "下一步补采或人工确认动作",
+        "status": "blocked|manual_required|queued"
+      }
+    ],
+    "follow_up_tasks": [
+      {
+        "task_id": "TASK-1",
+        "task_type": "baseline_setup|metric_sync|manual_execution_confirm|observation_window|experiment_review",
+        "priority": "P0|P1|P2",
+        "target": "SKU、Listing、价格、库存、广告或履约动作",
+        "reason": "",
+        "required_evidence": ["API 指标、页面状态、人工执行确认或观察窗口"],
+        "expected_output": "",
+        "requires_manual_confirmation": true
+      }
+    ],
+    "workflow_nodes": [
+      {
+        "node_id": "NODE-1",
+        "title": "运营追踪节点",
+        "status": "validated|blocked|manual_confirm|queued|done",
+        "depends_on": [],
+        "next_action": ""
+      }
+    ],
+    "data": [
+      {
+        "phase_id": "P-1",
+        "baseline_window": {},
+        "comparison_window": {},
+        "observation_window": {},
+        "intervention": "",
+        "baseline_metrics": {},
+        "comparison_metrics": {},
+        "confounders": {},
+        "attribution_confidence": "high|medium|low|not_attributable",
+        "next_action": "",
+        "evidence": "API、页面、人工确认或待验证说明",
+        "evidence_ledger": []
+      }
+    ]
+  }
+}
+```

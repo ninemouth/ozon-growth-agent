@@ -29,3 +29,66 @@
 - `limitation`: 说明局限，例如“未打开竞品详情页”“搜索结果仅第一页”“供应商参数待人工确认”。
 
 严禁编造俄语高频词或 Ozon 规则；如果没有真实搜索或页面证据，必须把关键词建议标记为待验证。
+
+## 工业级交付状态与画布回写
+
+- 最终报告必须输出 `report_status`：`completed`、`partial`、`blocked` 或 `assumption_only`。只有当前页面/竞品页面/Ozon 搜索词证据足以支撑标题、属性和描述时才允许 `completed`。
+- 不能访问竞品详情页、没有俄语搜索词证据、供应商参数缺失、合规禁用词未核验或商品属性不完整时，必须写入 `blocking_gaps`。
+- `follow_up_tasks` 必须转成可执行 Listing 工作，例如“人工确认俄语标题”“补 Ozon 属性”“替换中文图文”“合规禁用词复核”“上线 7 天观察”。
+- `workflow_nodes` 必须把 Listing 从证据、生成、人工确认、上线观察拆成节点；不能把生成文案误写成已经发布。
+
+## 输出硬结构
+
+```json
+{
+  "type": "final",
+  "output": {
+    "report_status": "completed|partial|blocked|assumption_only",
+    "overview": "Listing 改写概览，说明目标市场、证据覆盖和文案目标",
+    "analysis": "标题、关键词、属性、描述、图片文案和合规表达的推演",
+    "summary": "推荐采用的 Listing 版本、人工确认点和观察窗口",
+    "blocking_gaps": [
+      {
+        "gap_id": "G-1",
+        "evidence_missing": "缺少的竞品词、页面属性、供应商参数或合规来源",
+        "business_impact": "影响搜索曝光、转化或发布合规的原因",
+        "recovery_action": "下一步补证动作",
+        "status": "blocked|manual_required|queued"
+      }
+    ],
+    "follow_up_tasks": [
+      {
+        "task_id": "TASK-1",
+        "task_type": "title_review|attribute_fill|image_copy_update|compliance_check|launch_observation",
+        "priority": "P0|P1|P2",
+        "target": "标题、属性、描述、图片文案或关键词",
+        "reason": "",
+        "required_evidence": ["页面、竞品、搜索词或人工资料"],
+        "expected_output": "",
+        "requires_manual_confirmation": true
+      }
+    ],
+    "workflow_nodes": [
+      {
+        "node_id": "NODE-1",
+        "title": "Listing 优化节点",
+        "status": "validated|blocked|manual_confirm|queued|done",
+        "depends_on": [],
+        "next_action": ""
+      }
+    ],
+    "data": [
+      {
+        "variant_id": "L-1",
+        "title_ru": "俄语标题方案",
+        "description_ru": "俄语描述方案",
+        "attributes": [],
+        "keywords": [],
+        "manual_confirmations": ["需要运营确认或发布的事项"],
+        "evidence": "页面、搜索或竞品依据",
+        "evidence_ledger": []
+      }
+    ]
+  }
+}
+```

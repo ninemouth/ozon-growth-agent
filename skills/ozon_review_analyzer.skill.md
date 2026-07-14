@@ -31,3 +31,66 @@
 - `limitation`: 说明局限，例如“仅当前页评论”“评论分页未展开”“截图只能判断图片不能确认全部文本”。
 
 没有真实评论文本或截图时，不得声称“买家集中反馈”；只能输出待验证的评论采集任务。
+
+## 工业级交付状态与画布回写
+
+- 最终报告必须输出 `report_status`：`completed`、`partial`、`blocked` 或 `assumption_only`。只有读取到真实评论文本、评分或评论截图时，才允许把痛点写成已验证。
+- 评论分页未展开、图片评论未读取、只看到商品描述没有评论、页面被登录/地区/验证码阻断时，必须写入 `blocking_gaps`。
+- `follow_up_tasks` 必须生成可推进任务，例如“展开评论分页补采”“确认差评图片”“改包装方案”“补俄语说明书”“进入供应商质检询问”。
+- `workflow_nodes` 必须区分评论证据、缺陷归因、人工确认、商品页/包装/供应链改良节点；需要人工执行的动作使用 `manual_confirm`。
+
+## 输出硬结构
+
+```json
+{
+  "type": "final",
+  "output": {
+    "report_status": "completed|partial|blocked|assumption_only",
+    "overview": "评论痛点概览，说明评论覆盖范围与俄罗斯买家场景",
+    "analysis": "俄语原声、缺陷分类、场景根因和改良路径",
+    "summary": "优先改良动作、人工确认点和复盘窗口",
+    "blocking_gaps": [
+      {
+        "gap_id": "G-1",
+        "evidence_missing": "缺失的评论文本、评分、图片或分页证据",
+        "business_impact": "影响缺陷归因或改良优先级的原因",
+        "recovery_action": "下一步评论补采或人工确认动作",
+        "status": "blocked|manual_required|queued"
+      }
+    ],
+    "follow_up_tasks": [
+      {
+        "task_id": "TASK-1",
+        "task_type": "review_recovery|package_fix|description_fix|supplier_quality_question|after_change_observation",
+        "priority": "P0|P1|P2",
+        "target": "评论页、商品页、包装、说明书或供应商",
+        "reason": "",
+        "required_evidence": ["评论文本、截图、买家图片或人工确认"],
+        "expected_output": "",
+        "requires_manual_confirmation": true
+      }
+    ],
+    "workflow_nodes": [
+      {
+        "node_id": "NODE-1",
+        "title": "评论缺陷节点",
+        "status": "validated|blocked|manual_confirm|queued|done",
+        "depends_on": [],
+        "next_action": ""
+      }
+    ],
+    "data": [
+      {
+        "pain_point_id": "R-1",
+        "defect_type": "包装|描述不符|功能失效|履约|售后|待验证",
+        "buyer_quote_ru": "俄语原声",
+        "buyer_quote_cn": "中文解释",
+        "improvement_action": "改良动作",
+        "manual_confirmations": ["需要人工确认的执行项"],
+        "evidence": "真实评论或待验证说明",
+        "evidence_ledger": []
+      }
+    ]
+  }
+}
+```
