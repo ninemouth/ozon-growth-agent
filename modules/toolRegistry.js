@@ -4,6 +4,8 @@ import { callLLM, getSettings, prepareCleanProductImage } from './llmClient.js';
 import { ozonGetProductList, ozonGetProductInfo, ozonGetAnalyticsData, ozonGetFbsPostingList, ozonGetFboPostingList, ozonGetStoreSnapshot } from './ozonApi.js';
 import { getArtifactDataUrl, putDataUrlArtifact } from './artifactStore.js';
 import { isWorkflowCancellationRequested } from './workflowRuntime.js';
+import { closeOwnedTab, createOwnedTabCallback } from './browserSessionManager.js';
+import { captureFullPageScreenshot } from './debuggerCapture.js';
 
 const preparedImageCache = new Map();
 
@@ -67,12 +69,12 @@ async function restoreSourceTabFocusBounded(sourceTabId = null, timeoutMs = 1200
   ]);
 }
 
-function createBrowserTab({ url, active = true, openerTabId = null }, callback) {
+function createBrowserTab({ url, active = true, openerTabId = null, workflowId = "default" }, callback) {
   const createArgs = { url: safeEncodeURI(url), active };
   if (Number.isInteger(Number(openerTabId))) {
     createArgs.openerTabId = Number(openerTabId);
   }
-  chrome.tabs.create(createArgs, callback);
+  createOwnedTabCallback({ workflowId, ...createArgs }, callback);
 }
 
 function isProtectedTabId(tabId, protectedTabIds = []) {
@@ -88,17 +90,6 @@ async function getTabUrlQuietly(tabId) {
     return tab?.url || "";
   } catch (_) {
     return "";
-  }
-}
-
-async function closeTabQuietly(tabId, protectedTabIds = []) {
-  if (!Number.isInteger(Number(tabId))) return false;
-  if (isProtectedTabId(tabId, protectedTabIds)) return false;
-  try {
-    await new Promise((resolve) => chrome.tabs.remove(Number(tabId), () => resolve()));
-    return !chrome.runtime?.lastError;
-  } catch (_) {
-    return false;
   }
 }
 
@@ -240,12 +231,17 @@ async function _captureTabScreenshot(tabId, options = {}) {
   if (!isCapturableTabUrl(tab.url)) {
     throw new Error(`Tab URL is not capturable yet: ${JSON.stringify(tab.url || "")}`);
   }
+  try {
+    return await captureFullPageScreenshot(tabId);
+  } catch (err) {
+    console.warn("Chrome debugger full-page capture unavailable; falling back to viewport capture:", err.message);
+  }
   return await new Promise((resolve, reject) => {
     chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" }, (dataUrl) => {
       if (chrome.runtime.lastError || !dataUrl) {
         reject(new Error(chrome.runtime.lastError?.message || "Failed to capture tab screenshot"));
       } else {
-        resolve(dataUrl);
+        resolve({ dataUrl, captureMode: "captureVisibleTab_viewport" });
       }
     });
   });
@@ -856,9 +852,9 @@ async function readPageFromTab(tabId) {
   return result.data || {};
 }
 
-async function openOzonEvidenceTab(url, active = false) {
+async function openOzonEvidenceTab(url, active = false, workflowId = "default") {
   return await new Promise((resolve, reject) => {
-    chrome.tabs.create({ url: safeEncodeURI(normalizeOzonUrl(url)), active }, (tab) => {
+    createBrowserTab({ url: normalizeOzonUrl(url), active, workflowId }, (tab) => {
       if (chrome.runtime.lastError || !tab) {
         reject(new Error(chrome.runtime.lastError?.message || "Failed to open Ozon evidence tab"));
         return;
@@ -869,12 +865,14 @@ async function openOzonEvidenceTab(url, active = false) {
 }
 
 async function captureAndStoreOzonScreenshot(tabId, metadata = {}) {
-  const dataUrl = await _captureTabScreenshot(tabId, { expectedUrl: metadata.url || "" });
-  return await putDataUrlArtifact(dataUrl, {
+  const capture = await _captureTabScreenshot(tabId, { expectedUrl: metadata.url || "" });
+  const dataUrl = capture.dataUrl || capture;
+  const artifact = await putDataUrlArtifact(dataUrl, {
     namespace: "ozon-competitor-screenshot",
-    metadata,
+    metadata: { ...metadata, captureMode: capture.captureMode || "captureVisibleTab_viewport" },
     ttlMs: 48 * 60 * 60 * 1000,
   });
+  return { ...artifact, captureMode: capture.captureMode || "captureVisibleTab_viewport" };
 }
 
 async function collectOzonEvidencePage({
@@ -900,7 +898,7 @@ async function collectOzonEvidencePage({
       });
       evidenceTab = ready.tab || await waitForTabLoaded(Number(tabId));
     } else if (url) {
-      evidenceTab = await openOzonEvidenceTab(url, false);
+      evidenceTab = await openOzonEvidenceTab(url, false, workflowId);
       openedByTool = true;
       const ready = await waitForPageCaptureReady(evidenceTab.id, {
         engine: "ozon",
@@ -954,6 +952,7 @@ async function collectOzonEvidencePage({
       screenshotRef: screenshot.ref,
       screenshotStorage: screenshot.storage,
       screenshotBytes: screenshot.bytes,
+      screenshotCaptureMode: screenshot.captureMode,
       pageHealth: productCards.length > 0 || textSnippet(pageData, 80) ? "readable" : "thin_or_blocked",
       coverageLimit: "截图为当前视口，商品数量与价格分布仅代表本轮可见样本；未完成分页时不得写成全店全量。",
     };
@@ -969,7 +968,7 @@ async function collectOzonEvidencePage({
   } finally {
     if ((closeAfter || openedByTool) && evidenceTab?.id) {
       try {
-        await chrome.tabs.remove(evidenceTab.id);
+        await closeOwnedTab(workflowId, evidenceTab.id);
       } catch (_) {}
     }
   }
@@ -1723,13 +1722,15 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
       try {
         emitSearchProgress("search_screenshot_started", `${searchActionLabel} 正在保存搜索页截图证据。`, { tabId, searchUrl: payload.searchUrl });
         const screenshot = await _captureTabScreenshot(tabId, { expectedUrl: payload.searchUrl });
-        const artifact = await putDataUrlArtifact(screenshot, {
+        const dataUrl = screenshot.dataUrl || screenshot;
+        const artifact = await putDataUrlArtifact(dataUrl, {
           namespace: "search-evidence-screenshot",
           metadata: {
             engine: normalizedEngine,
             query: targetQuery,
             searchUrl: payload.searchUrl,
             capturedAt: new Date().toISOString(),
+            captureMode: screenshot.captureMode || "captureVisibleTab_viewport",
           },
           ttlMs: 24 * 60 * 60 * 1000,
         });
@@ -1737,6 +1738,7 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
           ...payload,
           screenshotCaptured: true,
           screenshotRef: artifact.ref,
+          screenshotCaptureMode: screenshot.captureMode || "captureVisibleTab_viewport",
           artifactStore: "indexeddb_blob_with_memory_fallback",
         };
       } catch (err) {
@@ -1749,7 +1751,7 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
       const searchUrl = "https://s.1688.com/";
       return new Promise((resolve) => {
         emitSearchProgress("search_tab_opening", "1688 货源检索正在打开临时标签页。", { searchUrl });
-        createBrowserTab({ url: searchUrl, active: true, openerTabId: __sourceTabId }, async (newTab) => {
+        createBrowserTab({ url: searchUrl, active: true, openerTabId: __sourceTabId, workflowId }, async (newTab) => {
           emitSearchProgress("search_tab_opened", `1688 货源检索已打开 tabId=${newTab.id}，开始进入搜索页。`, { tabId: newTab.id, searchUrl });
           const ready = await waitForPageCaptureReady(newTab.id, {
             engine: "1688",
@@ -1784,7 +1786,7 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
     const searchUrl = engines[normalizedEngine] || engines.google;
     return new Promise((resolve) => {
       emitSearchProgress("search_tab_opening", `${searchActionLabel} 正在打开临时标签页。`, { searchUrl });
-      createBrowserTab({ url: searchUrl, active: true, openerTabId: __sourceTabId }, async (newTab) => {
+      createBrowserTab({ url: searchUrl, active: true, openerTabId: __sourceTabId, workflowId }, async (newTab) => {
         emitSearchProgress("search_tab_opened", `${searchActionLabel} 已打开临时标签页 tabId=${newTab.id}，开始等待页面可读。`, { tabId: newTab.id, searchUrl });
         const maxAttempts = normalizedEngine === "google_trends" ? 44 : 20;
         const minStablePollAttempts = normalizedEngine === "google_trends" ? 8 : 1;
@@ -1792,7 +1794,7 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
           const payloadWithScreenshot = await attachSearchScreenshotArtifact(payload, newTab.id);
           if (shouldAutoCloseSearchTab) {
             const protectedSourceTab = isProtectedTabId(newTab.id, [__sourceTabId]);
-            const closed = protectedSourceTab ? false : await closeTabQuietly(newTab.id, [__sourceTabId]);
+            const closed = protectedSourceTab ? false : await closeOwnedTab(workflowId, newTab.id);
             emitSearchProgress(
               protectedSourceTab ? "search_source_tab_protected" : closed ? "search_tab_closed" : "search_tab_close_failed",
               protectedSourceTab
@@ -1960,7 +1962,7 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
       ? "https://s.taobao.com/search"
       : "https://s.1688.com/";
     return new Promise((resolve, reject) => {
-      createBrowserTab({ url: searchUrl, active: true, openerTabId: __sourceTabId }, async (newTab) => {
+      createBrowserTab({ url: searchUrl, active: true, openerTabId: __sourceTabId, workflowId }, async (newTab) => {
         if (chrome.runtime.lastError) {
           reject(new Error(chrome.runtime.lastError.message));
           return;
@@ -2143,7 +2145,7 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
     if (!url) throw new Error("url is required");
     
     return new Promise((resolve, reject) => {
-      createBrowserTab({ url, active: true, openerTabId: __sourceTabId }, async (tab) => {
+      createBrowserTab({ url, active: true, openerTabId: __sourceTabId, workflowId }, async (tab) => {
         if (chrome.runtime.lastError) {
           reject(new Error(chrome.runtime.lastError.message));
           return;

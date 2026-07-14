@@ -3,6 +3,7 @@
 import { runAgentLoop } from './modules/agentLoop.js';
 import { tools, resetSessionData } from './modules/toolRegistry.js';
 import { callLLM } from './modules/llmClient.js';
+import { cleanupOwnedTabs, protectWorkflowTab } from './modules/browserSessionManager.js';
 import {
   acquireWorkflowLease,
   appendWorkflowEvent,
@@ -481,8 +482,16 @@ chrome.runtime.onConnect.addListener((port) => {
     activePorts.set(portId, port);
     let isCancelled = false;
     let activeCheckpointKey = "";
+    let activeMatchedSkills = [];
     let runInFlight = false;
     let leaseRenewTimer = null;
+    const cleanupActiveWorkflowTabs = (checkpointKey = activeCheckpointKey) => {
+      if (!checkpointKey) return Promise.resolve();
+      const preserveOzonPages = activeMatchedSkills.some((skillPath) => String(skillPath || "").includes("ozon_platform_trends"));
+      return cleanupOwnedTabs(checkpointKey, {
+        preserveUrlPattern: preserveOzonPages ? /(^|\.)ozon\.ru/i : null,
+      });
+    };
 
     port.onDisconnect.addListener(() => {
       isCancelled = true;
@@ -494,6 +503,7 @@ chrome.runtime.onConnect.addListener((port) => {
           lastStage: "port_disconnected",
           interruptedAt: new Date().toISOString(),
         }).catch((err) => console.warn("Could not persist interrupted checkpoint:", err.message));
+        cleanupActiveWorkflowTabs(activeCheckpointKey).catch((err) => console.warn("Could not cleanup owned tabs:", err.message));
         releaseWorkflowLease(activeCheckpointKey, portId, "interrupted").catch((err) => console.warn("Could not release workflow lease:", err.message));
       }
       if (leaseRenewTimer) clearInterval(leaseRenewTimer);
@@ -631,9 +641,11 @@ chrome.runtime.onConnect.addListener((port) => {
             : selectedSkillPath
             ? [selectedSkillPath]
             : await dispatchOzonSkills(message.userInstruction);
+          activeMatchedSkills = matchedSkills;
           console.log("Matched Ozon skills:", matchedSkills);
           const checkpointKey = buildWorkflowCheckpointKey({ tabId: tab.id, matchedSkills, message });
           activeCheckpointKey = checkpointKey;
+          protectWorkflowTab(checkpointKey, tab.id);
           const lease = await acquireWorkflowLease(checkpointKey, portId);
           if (!lease.ok) {
             throw new Error("该 workflow 当前已由另一个执行实例占用，请等待其结束或断点过期后再恢复。");
@@ -762,8 +774,10 @@ chrome.runtime.onConnect.addListener((port) => {
             });
             if (leaseRenewTimer) clearInterval(leaseRenewTimer);
             leaseRenewTimer = null;
+            await cleanupActiveWorkflowTabs(checkpointKey);
             await releaseWorkflowLease(checkpointKey, portId, "completed");
             activeCheckpointKey = "";
+            activeMatchedSkills = [];
           }
         } catch (err) {
           const workflowPaused = /workflow cancellation requested|user_paused/i.test(String(err.message || ""));
@@ -775,6 +789,7 @@ chrome.runtime.onConnect.addListener((port) => {
               interruptedAt: new Date().toISOString(),
               interruptionReason: "user_paused",
             });
+            cleanupActiveWorkflowTabs(activeCheckpointKey).catch((cleanupErr) => console.warn("Could not cleanup owned tabs:", cleanupErr.message));
             releaseWorkflowLease(activeCheckpointKey, portId, "interrupted").catch((leaseErr) => console.warn("Could not release interrupted workflow lease:", leaseErr.message));
             if (leaseRenewTimer) clearInterval(leaseRenewTimer);
             leaseRenewTimer = null;
@@ -787,6 +802,7 @@ chrome.runtime.onConnect.addListener((port) => {
               });
             } catch (_) {}
             activeCheckpointKey = "";
+            activeMatchedSkills = [];
             return;
           }
           if (activeCheckpointKey) {
@@ -798,6 +814,7 @@ chrome.runtime.onConnect.addListener((port) => {
             });
           }
           if (activeCheckpointKey) {
+            cleanupActiveWorkflowTabs(activeCheckpointKey).catch((cleanupErr) => console.warn("Could not cleanup owned tabs:", cleanupErr.message));
             releaseWorkflowLease(activeCheckpointKey, portId, "failed").catch((leaseErr) => console.warn("Could not release failed workflow lease:", leaseErr.message));
           }
           if (leaseRenewTimer) clearInterval(leaseRenewTimer);

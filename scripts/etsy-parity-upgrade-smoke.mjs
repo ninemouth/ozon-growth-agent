@@ -15,6 +15,7 @@ const contentSource = read("content.js");
 const agentLoop = read("modules/agentLoop.js");
 const background = read("background.js");
 const toolRegistry = read("modules/toolRegistry.js");
+const manifest = read("manifest.json");
 const platformTrends = read("skills/ozon_platform_trends.skill.md");
 const operationsTracker = read("skills/ozon_operations_tracker.skill.md");
 
@@ -101,6 +102,15 @@ assert.match(toolRegistry, /minQuietMs/, "new-tab capture waiting must include a
 assert.match(toolRegistry, /function getReadinessProfile[\s\S]*google_trends[\s\S]*ozon[\s\S]*minStableReads/, "new-tab readiness should use platform-aware loading profiles");
 assert.match(toolRegistry, /executeGenericDomSnapshot[\s\S]*allFrames:\s*true[\s\S]*readCompletePageData[\s\S]*executeGenericDomSnapshot/, "page reading should fall back to all-frame DOM snapshots when content-script evidence is thin");
 assert.match(toolRegistry, /function getTabForCapture[\s\S]*isCapturableTabUrl[\s\S]*expectedUrl[\s\S]*_captureTabScreenshot/, "screenshots should wait for capturable http(s) tab URLs before capture");
+assert.match(manifest, /"debugger"/, "manifest must grant debugger permission for full-page evidence screenshots");
+assert.match(toolRegistry, /captureFullPageScreenshot[\s\S]*captureVisibleTab_viewport/, "evidence capture should prefer debugger full-page screenshots and retain viewport fallback");
+assert.match(toolRegistry, /screenshotCaptureMode/, "screenshot artifacts should retain capture mode metadata");
+assert.match(background, /protectWorkflowTab\(checkpointKey,\s*tab\.id\)/, "background must register the source Ozon tab as protected for workflow-owned cleanup");
+assert.match(background, /cleanupActiveWorkflowTabs/, "background must centralize workflow-owned temporary tab cleanup");
+assert.match(background, /preserveOzonPages[\s\S]*ozon_platform_trends/, "platform-trend workflows must enable Ozon page preservation during cleanup");
+assert.match(background, /cleanupOwnedTabs\(checkpointKey,[\s\S]*preserveUrlPattern/, "background cleanup must pass an explicit preservation policy into the tab session manager");
+assert.match(toolRegistry, /isProtectedTabId\(newTab\.id,\s*\[__sourceTabId\]\)[\s\S]*protectedSourceTab/, "browser search auto-close should detect protected source tabs");
+assert.match(toolRegistry, /createOwnedTabCallback[\s\S]*createBrowserTab[\s\S]*workflowId/, "workflow-created tabs should be tracked by the browser session manager");
 assert.match(toolRegistry, /restoreSourceTabFocusBounded[\s\S]*Promise\.race/, "source-tab focus restoration should be bounded and not block tool completion");
 assert.match(toolRegistry, /waitForPageCaptureReady[\s\S]*isWorkflowCancellationRequested[\s\S]*readiness_timeout/, "tab readiness waiting should honor workflow cancellation and report timeout state");
 assert.match(toolRegistry, /open_new_tab:[\s\S]*evidenceOk[\s\S]*readinessElapsedMs[\s\S]*readError/, "open_new_tab should return evidence quality telemetry instead of unconditional success");
@@ -110,7 +120,7 @@ assert.match(toolRegistry, /search_in_browser:[\s\S]*waitForPageCaptureReady/, "
 assert.match(toolRegistry, /collectOzonEvidencePage[\s\S]*waitForPageCaptureReady/, "Ozon evidence collection must wait for stable page capture before screenshots and DOM reads");
 assert.match(toolRegistry, /image_search_1688:[\s\S]*waitForPageCaptureReady/, "image-search entry tabs must wait for stable page capture before upload/search actions");
 assert.match(toolRegistry, /getSourceOrCurrentTab[\s\S]*read_current_page/, "current-page tools should prefer the workflow source tab over whichever temporary tab is active");
-assert.match(toolRegistry, /closeTabQuietly\(tabId, protectedTabIds[\s\S]*isProtectedTabId\(tabId, protectedTabIds\)[\s\S]*return false/, "low-level tab close helper should refuse protected source tabs");
+assert.match(toolRegistry, /isProtectedTabId\(tabId,\s*\[__sourceTabId\]\)[\s\S]*protectedSourceTab/, "low-level close_tab handling should refuse protected source tabs");
 assert.match(toolRegistry, /search_source_tab_protected[\s\S]*protectedSourceTab/, "browser search auto-close should refuse to close the source tab and report the protection state");
 assert.match(toolRegistry, /restoreSourceTabFocus[\s\S]*search_tab_closed/, "browser searches should restore focus to the source Ozon tab after closing temporary evidence tabs");
 assert.match(toolRegistry, /protectedSourceTab[\s\S]*Refused to close source tab/, "close_tab must refuse to close the original source tab");
