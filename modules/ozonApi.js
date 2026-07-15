@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: MIT | Copyright (c) 2026 Yang Cao <cao.x.yang@gmail.com> */
 // modules/ozonApi.js — Ozon Seller API client implementation
 
 const OZON_API_BASE = 'https://api-seller.ozon.ru';

@@ -13,6 +13,7 @@ const shopOptimizerSkill = fs.readFileSync(path.join(root, "skills/ozon_global_s
 const agentLoopSource = fs.readFileSync(path.join(root, "modules/agentLoop.js"), "utf8");
 const backgroundSource = fs.readFileSync(path.join(root, "background.js"), "utf8");
 const workflowRuntimeSource = fs.readFileSync(path.join(root, "modules/workflowRuntime.js"), "utf8");
+const toolRegistrySource = fs.readFileSync(path.join(root, "modules/toolRegistry.js"), "utf8");
 const platformTrendsSkill = fs.readFileSync(path.join(root, "skills/ozon_platform_trends.skill.md"), "utf8");
 const complianceSkill = fs.readFileSync(path.join(root, "skills/ozon_compliance_auditor.skill.md"), "utf8");
 
@@ -63,6 +64,34 @@ const storage = {
     },
   },
   ozonStoreSnapshotCache: null,
+  taskLogs: [
+    {
+      logId: "tasklog:business:1",
+      workflowId: "store_health_shop-1_shop",
+      category: "skill",
+      severity: "warning",
+      event: "tool_warning",
+      message: "Google Trends 证据不足，已降级为待验证假设",
+      details: {
+        toolName: "agentic_web_search",
+        apiKey: "[redacted]",
+        evidenceQuality: "blocked",
+      },
+      source: "background",
+      createdAt: "2026-07-15T07:30:00.000Z",
+    },
+    {
+      logId: "tasklog:business:2",
+      workflowId: "",
+      category: "maintenance",
+      severity: "info",
+      event: "task_logs_pruned",
+      message: "任务日志定期清理完成，删除 0 条过期或超限记录。",
+      details: { deleted: 0, storage: "memory" },
+      source: "alarm",
+      createdAt: "2026-07-15T07:00:00.000Z",
+    },
+  ],
   ozonShops: [{ id: "shop-1", name: "测试店铺", clientId: "client-1", warehouseType: "FBS" }],
   activeShopId: "shop-1",
 };
@@ -70,6 +99,7 @@ const storage = {
 const messages = [];
 let alertText = "";
 let connectedPort = null;
+let exportedEvidenceBundleRequest = null;
 
 function makePort() {
   const messageListeners = [];
@@ -143,9 +173,37 @@ window.chrome = {
     getURL: (filePath) => `chrome-extension://test/${filePath}`,
     sendMessage: async (message) => {
       if (message.type === "GET_SAVED_RESULTS") return { ok: true, data: storage.savedResults };
+      if (message.type === "GET_TASK_LOGS") {
+        return {
+          ok: true,
+          data: storage.taskLogs.filter((entry) => !message.severity || entry.severity === message.severity).slice(0, message.limit || 100),
+        };
+      }
       if (message.type === "DELETE_RESULT") {
         storage.savedResults = storage.savedResults.filter((item) => String(item.id) !== String(message.id));
         return { ok: true };
+      }
+      if (message.type === "EXPORT_EVIDENCE_BUNDLE") {
+        exportedEvidenceBundleRequest = message;
+        const report = storage.savedResults.find((item) => String(item.id) === String(message.reportId));
+        const base = {
+          ...(report?.evidence_bundle || {}),
+          artifact_manifest: { total: 1, available: 1, missing: 0, artifacts: [{ ref: "artifact://ozon/test", available: true }] },
+        };
+        return {
+          ok: true,
+          data: message.includeArtifactPayloads
+            ? {
+                ...base,
+                artifact_payloads: [{
+                  ref: "artifact://ozon/test",
+                  filename: "artifact_ozon_test.png",
+                  mimeType: "image/png",
+                  dataUrl: "data:image/png;base64,AA==",
+                }],
+              }
+            : base,
+        };
       }
       return { ok: true, data: {} };
     },
@@ -231,6 +289,26 @@ assert.match(workflowRuntimeSource, /ozonGrowthAgentRuntime/, "Ozon should use i
 assert.match(backgroundSource, /acquireWorkflowLease/, "background should acquire durable workflow leases");
 assert.match(backgroundSource, /renewWorkflowLease/, "background should renew workflow leases during long runs");
 assert.match(backgroundSource, /releaseWorkflowLease/, "background should release workflow leases on completion or interruption");
+assert.match(backgroundSource, /GET_TASK_LOGS/, "background should expose durable task logs to the dashboard");
+assert.match(backgroundSource, /TASK_LOG_PRUNE_ALARM/, "background should prune durable task logs on a schedule");
+assert.match(workflowRuntimeSource, /TASK_LOG_STORE/, "workflow runtime should have a dedicated task log store");
+assert.match(workflowRuntimeSource, /appendTaskLog/, "workflow runtime should append task logs");
+assert.match(workflowRuntimeSource, /pruneTaskLogs/, "workflow runtime should prune task logs");
+assert.match(backgroundSource, /createOwnedTab[\s\S]*waitForPageCaptureReady[\s\S]*monitor_completed/, "scheduled monitor should use owned tabs and shared page readiness");
+assert.match(backgroundSource, /if \(activePorts\.size === 0\) return;[\s\S]*keepAlive/, "MV3 keep-alive should only run while workflow ports are active");
+const alarmHandlerSource = backgroundSource.slice(
+  backgroundSource.indexOf("chrome.alarms.onAlarm.addListener"),
+  backgroundSource.indexOf("// ── Initialize Default Settings on Installation ──")
+);
+assert.doesNotMatch(alarmHandlerSource, /chrome\.tabs\.create|setInterval\(/, "scheduled monitor alarm must not use raw tab creation or local polling loops");
+assert.doesNotMatch(toolRegistrySource, /monthly_search_volume|monthly_sales_estimate/, "tool registry should not include synthetic third-party market metrics");
+assert.match(toolRegistrySource, /尚未实现其正式 API 适配器|不能生成或推测市场指标/, "query_market_data should fail closed until a verified provider adapter exists");
+const agenticSearchSource = toolRegistrySource.slice(
+  toolRegistrySource.indexOf("agentic_web_search: async"),
+  toolRegistrySource.indexOf("search_in_browser: async")
+);
+assert.match(agenticSearchSource, /createBrowserTab[\s\S]*waitForPageCaptureReady[\s\S]*closeOwnedTab/, "agentic web search fallback should use owned tabs and shared readiness");
+assert.doesNotMatch(agenticSearchSource, /chrome\.tabs\.create|setInterval\(/, "agentic web search fallback must not use raw tab creation or local polling loops");
 assert.match(backgroundSource, /ozon_platform_trends/, "background should route platform trends to the dedicated skill");
 assert.match(backgroundSource, /ozon_compliance_auditor/, "background should expose the compliance auditor skill");
 assert.match(platformTrendsSkill, /不能把自营店铺 API 数据写成平台大盘数据/, "platform trends skill should enforce API boundary");
@@ -269,6 +347,12 @@ storage.savedResults.unshift({
   createdAt: "2026-07-10T10:00:00Z",
   skillId: "skills/ozon_sourcing_finder.skill.md",
   skillName: "Ozon 货源筛选",
+  evidence_bundle: {
+    schema_version: "1.0",
+    workflowId: "workflow:test",
+    screenshotRefs: ["artifact://ozon/test"],
+    toolTimeline: [{ tool: "collect_ozon_shop_pages" }],
+  },
   result: {
     type: "final",
     output: {
@@ -291,13 +375,30 @@ context.renderReportsList([], storage.savedResults);
 const wrappedReportText = window.document.getElementById("report-viewer-content").textContent;
 assert.match(wrappedReportText, /Ozon 松鼠喂食器跨境供应链审计/, "wrapped final reports should render as business report content");
 assert.doesNotMatch(wrappedReportText, /"type":\s*"final"/, "wrapped final reports should not render raw JSON by default");
+assert.ok(window.document.querySelector(".report-evidence-current"), "report center should expose evidence bundle download for reports with evidence_bundle");
+assert.ok(window.document.querySelector(".report-verify-current"), "report center should expose evidence verification for reports with evidence_bundle");
+assert.ok(window.document.querySelector(".report-zip-current"), "report center should expose ZIP export for reports with evidence_bundle");
+assert.match(window.document.querySelector(".report-item")?.textContent || "", /证据待校验 1/, "report center should show pending evidence status before artifact manifest is fetched");
 window.document.querySelector(".report-pdf-current").click();
 assert.match(storage.printHtml, /<meta charset="UTF-8">/, "report center PDF print HTML should declare UTF-8");
 assert.match(storage.printHtml, /PingFang SC[\s\S]*Microsoft YaHei[\s\S]*Noto Sans CJK SC/, "report center PDF should use Chinese-capable font fallbacks");
 assert.match(storage.printHtml, /@page\s*\{\s*size:\s*A4 portrait;/, "report center PDF should use the native A4 print template");
 assert.match(storage.printHtml, /正在生成原生数字版 PDF/, "report center PDF should use the native print-to-PDF bridge");
 assert.match(storage.printHtml, /Ozon 松鼠喂食器跨境供应链审计/, "report center PDF should preserve Chinese report content");
+assert.match(storage.printHtml, /证据包摘要/, "report center PDF should append evidence bundle summary when available");
+assert.match(storage.printHtml, /artifact:\/\/ozon\/test/, "report center PDF appendix should include screenshot artifact references");
+assert.match(storage.printHtml, /artifact 可用/, "report center PDF appendix should include artifact availability summary");
 assert.equal(storage.lastOpenedUrl, "chrome-extension://test/print.html", "report center PDF should open the shared print bridge");
+await window.document.querySelector(".report-verify-current").click();
+await wait();
+assert.equal(exportedEvidenceBundleRequest?.type, "EXPORT_EVIDENCE_BUNDLE", "evidence verification should use the background export endpoint");
+await window.document.querySelector(".report-evidence-current").click();
+await wait();
+assert.equal(exportedEvidenceBundleRequest?.type, "EXPORT_EVIDENCE_BUNDLE", "evidence download should use the background export endpoint");
+assert.equal(String(exportedEvidenceBundleRequest?.reportId), "wrapped-final-report", "evidence export should request the selected report id");
+assert.equal(storage.savedResults.find((item) => String(item.id) === "wrapped-final-report")?.evidence_bundle?.artifact_manifest?.available, 1, "downloaded evidence bundle should persist artifact manifest back to savedResults");
+await window.document.querySelector(".report-zip-current").click();
+assert.match(storage.lastOpenedUrl || "", /^data:application\/octet-stream/, "ZIP export should fall back to a downloadable data URL when object URLs are unavailable");
 
 storage.savedResults.unshift({
   id: "embedded-json-report",
@@ -342,6 +443,17 @@ const taskText = [...window.document.querySelectorAll(".workflow-task-card")]
   .join("\n");
 assert.match(taskText, /确认目标客群和主价格带/, "AI report should generate an actionable workflow task");
 assert.equal(alertText, "", "successful dashboard run should not show fallback alert");
+
+window.document.querySelector('.nav-menu button[data-tab="tasks"]').click();
+await wait();
+assert.match(window.document.querySelector(".task-log-card")?.textContent || "", /运行日志/, "system tasks page should expose operational task logs");
+assert.equal(window.document.querySelectorAll(".task-log-item").length, 2, "task log section should render durable runtime logs");
+assert.match(window.document.querySelector(".task-log-item")?.textContent || "", /Google Trends 证据不足/, "task logs should show workflow warnings");
+assert.match(window.document.querySelector(".task-log-item pre")?.textContent || "", /"apiKey": "\[redacted\]"/, "task log details should render sanitized JSON");
+window.document.querySelector('.task-log-filter[data-severity="warning"]').click();
+await wait();
+assert.equal(window.document.querySelectorAll(".task-log-item").length, 1, "task log severity filter should call the runtime endpoint");
+assert.match(window.document.querySelector(".task-log-item")?.textContent || "", /警告/, "warning filter should keep warning logs");
 
 console.log(JSON.stringify({
   runStatus: run.status,

@@ -32,6 +32,7 @@
 5. **增长工作流回写字段 (Workflow-Ready Output)**:
    - 所有 Ozon 业务 Skill 的 `final.output` 顶层都必须包含 `report_status`、`research_scope`、`blocking_gaps`、`follow_up_tasks` 和 `workflow_nodes`，让首页增长工作流画布可以继续推进，而不是只保存一份静态报告。
    - `research_scope` 必须原样保留系统提供的页面角色识别对象，包含 `entry_page_type`、`source_page_role`、`analysis_scope`、`scope_confidence`、`allowed_conclusions`、`forbidden_conclusions` 和 `needs_user_clarification`。
+   - 当 `source_page_role = store_subject_external` 时，表示当前页面是“未绑定的公开店铺体检对象”：可以写“当前访问店铺/公开店铺样本”，但不能写“我的店铺/本店/自营店铺/已绑定店铺”，也不能把 Seller API、店铺快照或内部经营数据伪装成该页面的既有证据。
    - `report_status` 只能是 `completed`、`partial`、`blocked` 或 `assumption_only`。关键证据不足时不得写 `completed`。
    - `blocking_gaps` 必须列出影响判断的证据缺口，例如 API 未授权、Ozon 页面阻断、Google Trends 数据不足、评论页未展开、供应商详情页未打开、法规官方来源未取得。
    - `follow_up_tasks` 必须是运营人员可执行或可确认的任务，每个任务包含 `task_id`、`task_type`、`priority`、`target`、`reason`、`required_evidence`、`expected_output`、`requires_manual_confirmation`。

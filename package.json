@@ -8,7 +8,9 @@
     "lint": "eslint .",
     "test:security": "node scripts/security-smoke.mjs",
     "test:business": "node scripts/business-flow-smoke.mjs",
+    "test:workflow-engine": "node scripts/workflow-engine-smoke.mjs",
     "test:workflow": "node scripts/workflow-runtime-smoke.mjs",
+    "test:task-logs": "node scripts/task-log-runtime-smoke.mjs",
     "test:store-diagnosis": "node scripts/ozon-store-diagnosis-parity-smoke.mjs",
     "test:etsy-parity": "node scripts/etsy-parity-upgrade-smoke.mjs",
     "test:sourcing": "node scripts/sourcing-workflow-guard-smoke.mjs",
@@ -17,8 +19,13 @@
     "test:trend-context": "node scripts/trend-context-smoke.mjs",
     "test:growth-case": "node scripts/growth-case-contract-smoke.mjs",
     "test:evidence-quality": "node scripts/evidence-quality-smoke.mjs",
+    "test:storage-schema": "node scripts/storage-schema-smoke.mjs",
+    "test:storage-local": "node scripts/storage-local-smoke.mjs",
+    "test:evidence-bundle": "node scripts/evidence-bundle-smoke.mjs",
     "test:update": "node scripts/update-awareness-smoke.mjs",
     "test:no-mock": "node scripts/no-runtime-mock-smoke.mjs",
+    "test:browser-capabilities": "node scripts/browser-capability-contract-smoke.mjs",
+    "test:real-browser-matrix": "node scripts/real-browser-acceptance-matrix.mjs",
     "format": "prettier --write ."
   },
   "keywords": [
@@ -33,7 +40,7 @@
     "sourcing",
     "competitor-analysis"
   ],
-  "author": "Ozon Growth Agent Contributors",
+  "author": "Yang Cao <cao.x.yang@gmail.com>",
   "license": "MIT",
   "repository": {
     "type": "git",

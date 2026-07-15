@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: MIT | Copyright (c) 2026 Yang Cao <cao.x.yang@gmail.com> */
 // content.js — Page context reader and human-like page operator for Skill Runner
 
 (function () {
@@ -1364,6 +1365,174 @@
     ]).filter((target) => target && !isFileUploadLikeElement(target));
   }
 
+  function getElementClickLabel(el) {
+    return normalizeText([
+      el?.innerText,
+      el?.textContent,
+      el?.value,
+      el?.title,
+      el?.getAttribute?.("aria-label"),
+      el?.getAttribute?.("data-name"),
+      el?.getAttribute?.("data-value"),
+    ].filter(Boolean).join(" "), 180);
+  }
+
+  function findClickableByText(texts = [], { exact = false } = {}) {
+    const targets = Array.from(document.querySelectorAll('a, button, li, label, span, div[role="button"], div[role="tab"], [aria-label], [title]'))
+      .filter((el) => isVisibleElement(el) && !isFileUploadLikeElement(el));
+    const normalizedTexts = texts.map((text) => String(text || "").trim().toLowerCase()).filter(Boolean);
+    if (!normalizedTexts.length) return null;
+    for (const el of targets) {
+      const label = getElementClickLabel(el).toLowerCase();
+      if (!label) continue;
+      if (normalizedTexts.some((text) => exact ? label === text : (label === text || (label.includes(text) && label.length <= text.length + 18)))) {
+        return getClickableActionTarget(el) || el;
+      }
+    }
+    return null;
+  }
+
+  function inferCommerceSiteKey() {
+    const host = String(location.hostname || "").toLowerCase();
+    if (host.includes("ozon.ru")) return "ozon";
+    if (host.includes("1688.com")) return "1688";
+    if (host.includes("taobao.com") || host.includes("tmall.com")) return "taobao";
+    return "generic";
+  }
+
+  function getSiteFilterCandidateTexts({ filterType = "generic", label = "", value = "", text = "" } = {}) {
+    const site = inferCommerceSiteKey();
+    const raw = [value, label, text].filter(Boolean);
+    const normalized = `${filterType} ${raw.join(" ")}`.toLowerCase();
+    const add = (...items) => items.filter(Boolean);
+    const dictionary = {
+      ozon: {
+        sort: add("Сначала популярные", "Сначала дешевые", "Сначала дорогие", "Высокий рейтинг", "По рейтингу", "Популярные", "Дешевле", "Дороже"),
+        price: add("Цена", "до", "от", "Сначала дешевые", "Сначала дорогие"),
+        rating: add("Высокий рейтинг", "По рейтингу", "4 звезды", "4 и выше", "Рейтинг"),
+        review_rating: add("1 звезда", "1 звезды", "1 звезд", "1★", "2 звезды", "2 звезд", "2★", "3 звезды", "3 звезд", "3★", "Сначала негативные", "Негативные", "С фото", "Фото", "Новые", "Сначала новые"),
+        delivery: add("Ozon доставит", "Доставка", "FBO", "FBS", "Со склада Ozon"),
+        seller: add("Продавец", "Магазин", "Ozon", "Premium"),
+      },
+      "1688": {
+        sort: add("综合", "销量", "价格", "信用", "最新", "成交额", "回头率"),
+        price: add("价格", "价格从低到高", "价格从高到低", "起批量", "区间价"),
+        rating: add("信用", "实力商家", "诚信通", "超级工厂"),
+        review_rating: add("评价", "差评", "中评", "有图", "最新评价", "1星", "2星", "3星"),
+        delivery: add("现货", "包邮", "发货地", "48小时发货"),
+        seller: add("实力商家", "超级工厂", "源头工厂", "生产加工"),
+      },
+      taobao: {
+        sort: add("综合", "销量", "价格", "信用", "新品", "人气"),
+        price: add("价格", "价格从低到高", "价格从高到低", "价格区间"),
+        rating: add("信用", "好评", "店铺评分", "金牌卖家"),
+        review_rating: add("差评", "中评", "有图", "追评", "最新", "1星", "2星", "3星"),
+        delivery: add("包邮", "发货地", "现货", "承诺发货"),
+        seller: add("天猫", "淘宝", "店铺", "金牌卖家"),
+      },
+      generic: {},
+    };
+    const siteDictionary = dictionary[site] || {};
+    const semantic = [];
+    if (/sort|排序|сорт|popular|rating|销量|综合|价格/.test(normalized)) semantic.push(...(siteDictionary.sort || []));
+    if (/price|价格|цена|деш|дорог|利润/.test(normalized)) semantic.push(...(siteDictionary.price || []));
+    if (/review_rating|review|comment|отзыв|评论|评价|低星|差评|有图|зв/.test(normalized)) semantic.push(...(siteDictionary.review_rating || []));
+    if (/rating|评分|评价|рейтинг|звезд|信用|好评/.test(normalized)) semantic.push(...(siteDictionary.rating || []));
+    if (/delivery|物流|履约|достав|fbo|fbs|发货|现货/.test(normalized)) semantic.push(...(siteDictionary.delivery || []));
+    if (/seller|供应商|店铺|продав|магазин|工厂/.test(normalized)) semantic.push(...(siteDictionary.seller || []));
+    return Array.from(new Set([...raw, ...semantic].map((item) => String(item || "").trim()).filter(Boolean)));
+  }
+
+  function isDisabledLike(el) {
+    if (!el) return true;
+    const disabledAttr = el.disabled || el.getAttribute?.("aria-disabled") === "true" || el.getAttribute?.("disabled") !== null;
+    const classText = String(el.className || "").toLowerCase();
+    return Boolean(disabledAttr || /disabled|inactive|unavailable/.test(classText));
+  }
+
+  function findNextPageElement() {
+    const selectors = [
+      'a[rel="next"]',
+      'button[rel="next"]',
+      'a[aria-label*="next" i]',
+      'button[aria-label*="next" i]',
+      'a[aria-label*="след" i]',
+      'button[aria-label*="след" i]',
+      'a[title*="next" i]',
+      'button[title*="next" i]',
+      'a[title*="след" i]',
+      'button[title*="след" i]',
+      'a[aria-label*="впер" i]',
+      'button[aria-label*="впер" i]',
+      'a[title*="впер" i]',
+      'button[title*="впер" i]',
+    ];
+    for (const selector of selectors) {
+      const el = document.querySelector(selector);
+      if (isVisibleElement(el) && !isDisabledLike(el)) return getClickableActionTarget(el) || el;
+    }
+    const candidates = Array.from(document.querySelectorAll('a, button, li, span, div[role="button"]'))
+      .filter((el) => isVisibleElement(el) && !isDisabledLike(el) && !isFileUploadLikeElement(el));
+    const nextPattern = /^(next|следующая|след\.?|дальше|вперёд|вперед|下一页|下页|下一頁|>|›|»)$/i;
+    const loosePattern = /(next page|следующая страница|перейти.*след|впер[её]д|下一页|下页|下一頁)/i;
+    for (const el of candidates) {
+      const label = getElementClickLabel(el).trim();
+      if (nextPattern.test(label) || loosePattern.test(label)) return getClickableActionTarget(el) || el;
+    }
+    return null;
+  }
+
+  function extractVisibleReviews({ ratingFilter = "all", maxItems = 20 } = {}) {
+    const reviewSelectors = [
+      '[itemprop="review"]',
+      '[data-review-id]',
+      '[class*="review" i]',
+      '[class*="comment" i]',
+      '[class*="отзыв" i]',
+      '[class*="feedback" i]',
+    ];
+    const nodes = uniqueElements(reviewSelectors.flatMap((selector) => Array.from(document.querySelectorAll(selector))))
+      .filter((el) => isVisibleElement(el));
+    const reviews = [];
+    const ratingPattern = /([1-5])\s*(?:\/\s*5|звезд|звезды|звезда|stars?|★)/i;
+    const lowRatingRequested = ["1", "2", "3"].includes(String(ratingFilter));
+
+    for (const el of nodes) {
+      const text = normalizeText(el.innerText || el.textContent || "", 1200);
+      if (text.length < 18) continue;
+      const ratingText = [
+        el.getAttribute?.("aria-label"),
+        el.getAttribute?.("title"),
+        text,
+      ].filter(Boolean).join(" ");
+      const ratingMatch = ratingText.match(ratingPattern);
+      const rating = ratingMatch ? Number(ratingMatch[1]) : null;
+      if (lowRatingRequested && rating !== null && rating > Number(ratingFilter)) continue;
+      const imgs = Array.from(el.querySelectorAll("img"))
+        .map((img) => img.currentSrc || img.src)
+        .filter(Boolean)
+        .slice(0, 4);
+      const rect = getRectPayload(el);
+      if (reviews.some((item) => item.text === text)) continue;
+      reviews.push({
+        text,
+        rating,
+        imageUrls: imgs,
+        rect,
+      });
+      if (reviews.length >= Number(maxItems || 20)) break;
+    }
+
+    return {
+      reviews,
+      reviewCountVisible: reviews.length,
+      ratingFilter,
+      visibleTextLength: String(document.body?.innerText || "").length,
+      url: location.href,
+      title: document.title || "",
+    };
+  }
+
   // Listen for messages from background.js
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     try {
@@ -1388,28 +1557,47 @@
         sendResponse({ ok: true, data: getImageSearchUiState() });
       } else if (message.type === "CLICK_BY_TEXT") {
         closePopups();
-        const textToFind = (message.text || "").trim().toLowerCase();
-        let clicked = false;
-        if (textToFind) {
-          const elements = Array.from(document.querySelectorAll('a, button, li, span, div[role="button"], div[role="tab"]'));
-          for (const el of elements) {
-            const innerText = (el.innerText || "").trim().toLowerCase();
-            if (innerText === textToFind) {
-              clicked = simulateHumanClick(el);
-              break;
-            }
-          }
-          if (!clicked) {
-            for (const el of elements) {
-              const innerText = (el.innerText || "").trim().toLowerCase();
-              if (innerText.includes(textToFind) && innerText.length < textToFind.length + 5) {
-                clicked = simulateHumanClick(el);
-                break;
-              }
-            }
-          }
-        }
-        sendResponse({ ok: clicked, message: clicked ? `Clicked text: ${message.text}` : `Text not found or not clickable: ${message.text}` });
+        const target = findClickableByText([message.text], { exact: false });
+        const clicked = target ? simulateHumanClick(target) : false;
+        sendResponse({
+          ok: clicked,
+          message: clicked ? `Clicked text: ${message.text}` : `Text not found or not clickable: ${message.text}`,
+          clickedText: target ? getElementClickLabel(target) : "",
+        });
+      } else if (message.type === "APPLY_PAGE_FILTER") {
+        closePopups();
+        const label = message.label || message.value || message.text || "";
+        const candidates = getSiteFilterCandidateTexts({
+          filterType: message.filterType || "generic",
+          label: message.label,
+          value: message.value,
+          text: message.text,
+        });
+        const target = findClickableByText(candidates, { exact: false });
+        const clicked = target ? simulateHumanClick(target) : false;
+        sendResponse({
+          ok: clicked,
+          filterType: message.filterType || "generic",
+          label,
+          clickedText: target ? getElementClickLabel(target) : "",
+          candidateTexts: candidates.slice(0, 12),
+          message: clicked ? `Applied page filter: ${label}` : `Filter control not found: ${label}`,
+        });
+      } else if (message.type === "GO_NEXT_PAGE") {
+        closePopups();
+        const target = findNextPageElement();
+        const clicked = target ? simulateHumanClick(target) : false;
+        sendResponse({
+          ok: clicked,
+          clickedText: target ? getElementClickLabel(target) : "",
+          message: clicked ? "Clicked next page control" : "Next page control not found or disabled",
+        });
+      } else if (message.type === "EXTRACT_REVIEWS") {
+        const data = extractVisibleReviews({
+          ratingFilter: message.ratingFilter || "all",
+          maxItems: message.maxItems || 20,
+        });
+        sendResponse({ ok: true, data });
       } else if (message.type === "INPUT_TEXT_AND_SEARCH") {
         const { keyword, inputSelector, submitSelector } = message;
         if (!keyword) {
@@ -1713,7 +1901,8 @@
     // Check if on a product detail page
     const isProductPage = isOzon && (window.location.pathname.includes("/product/") || /\/\d{8,15}\/?/i.test(window.location.pathname));
     const isSellerPage = isOzon && window.location.pathname.includes("/seller/");
-    const isSearchOrCatalogPage = isOzon && (/\/search|\/category|\/brand|\/seller\//i.test(window.location.pathname) || document.querySelectorAll('a[href*="/product/"]').length > 6);
+    const isSearchOrCatalogPage = isOzon && !isSellerPage && !isProductPage &&
+      (/\/search|\/category|\/brand/i.test(window.location.pathname) || document.querySelectorAll('a[href*="/product/"]').length > 6);
 
     const GROWTH_ACTIONS = {
       diagnose_store_growth: {
@@ -1765,7 +1954,7 @@
 
     const getPageGrowthActions = () => {
       if (isSellerPage) {
-        return ["diagnose_store_growth", "diagnose_sku_funnel", "scan_competitor_changes", "explore_platform_trends"];
+        return ["diagnose_store_growth", "explore_platform_trends"];
       }
       if (isProductPage) {
         return ["diagnose_sku_funnel", "rewrite_listing", "filter_supplier_sources", "scan_competitor_changes"];
@@ -2010,26 +2199,44 @@
         opacity: 1;
       }
 
-      .chat-session-control {
-        padding: 10px 14px;
-        border-bottom: 1px solid var(--border-main);
-        background: var(--header-bg);
+      .chat-session-rail {
+        position: absolute;
+        left: -58px;
+        top: 86px;
         display: flex;
         flex-direction: column;
-        gap: 8px;
-      }
-      .chat-session-row {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
         gap: 10px;
+        z-index: 8;
       }
-      .chat-session-label {
-        font-size: 10px;
-        color: var(--text-secondary);
-        font-weight: 800;
-        text-transform: uppercase;
-        letter-spacing: 0;
+      .chat-session-icon-btn {
+        width: 44px;
+        height: 44px;
+        border: 1px solid rgba(148, 163, 184, 0.36);
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.94);
+        color: #1f2937;
+        box-shadow: 0 14px 32px rgba(15, 23, 42, 0.14);
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        transition: transform 0.18s ease, border-color 0.18s ease, color 0.18s ease, box-shadow 0.18s ease;
+      }
+      .chat-session-icon-btn svg {
+        width: 19px;
+        height: 19px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 2;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .chat-session-icon-btn:hover,
+      .chat-session-icon-btn.active {
+        color: #005bff;
+        border-color: rgba(0, 91, 255, 0.4);
+        box-shadow: 0 16px 36px rgba(0, 91, 255, 0.18);
+        transform: translateY(-1px);
       }
       .chat-session-mode-text {
         font-size: 11px;
@@ -2041,39 +2248,41 @@
         color: #005bff;
         font-weight: 700;
       }
-      .chat-session-actions {
-        display: flex;
-        gap: 6px;
-        flex-shrink: 0;
-      }
-      .chat-session-btn {
-        border: 1px solid var(--border-main);
-        background: var(--input-bg);
-        color: var(--text-color);
-        border-radius: 8px;
-        padding: 6px 9px;
-        font-size: 11px;
-        font-weight: 700;
-        cursor: pointer;
-      }
-      .chat-session-btn:hover {
-        border-color: #005bff;
-        color: #005bff;
-      }
       .chat-session-history-panel.hidden {
         display: none !important;
       }
       .chat-session-history-panel {
-        max-height: 190px;
+        position: absolute;
+        left: 22px;
+        right: 22px;
+        bottom: 82px;
+        max-height: min(360px, calc(100% - 150px));
         overflow-y: auto;
         border: 1px solid var(--border-main);
-        border-radius: 10px;
-        background: var(--input-bg);
-        padding: 8px;
+        border-radius: 14px;
+        background: var(--bg-main);
+        padding: 12px;
+        box-shadow: 0 24px 60px rgba(15, 23, 42, 0.22);
+        z-index: 7;
+      }
+      .chat-session-history-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+        padding-bottom: 10px;
+        margin-bottom: 2px;
+        border-bottom: 1px solid var(--border-main);
+      }
+      .chat-session-history-title-main {
+        font-size: 13px;
+        font-weight: 900;
+        color: var(--text-color);
+        line-height: 1.25;
       }
       .chat-session-history-item {
         border-bottom: 1px solid var(--border-main);
-        padding: 8px 0;
+        padding: 10px 0;
       }
       .chat-session-history-item:last-child {
         border-bottom: none;
@@ -2119,7 +2328,7 @@
         display: flex;
         flex-direction: column;
         z-index: 2147483642;
-        overflow: hidden;
+        overflow: visible;
         transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
         color: var(--text-color);
       }
@@ -2647,7 +2856,9 @@
       const btn = document.createElement("button");
       btn.className = `dock-btn ${actionClassMap[actionId] || ""}`;
       btn.dataset.action = actionId;
+      btn.dataset.lockableDockButton = "true";
       btn.title = action.label;
+      btn.dataset.idleTitle = action.label;
       btn.innerHTML = `
         ${actionId === "diagnose_store_growth" ? '<span class="dock-pulse"></span>' : ""}
         <span class="dock-symbol">${actionIconMap[actionId] || actionIconMap.diagnose_store_growth}</span>
@@ -2663,6 +2874,8 @@
     if (isSellerPage) {
       bindShopBtn = document.createElement("button");
       bindShopBtn.className = "dock-btn settings-mini-btn";
+      bindShopBtn.dataset.lockableDockButton = "true";
+      bindShopBtn.dataset.idleTitle = "🔗 绑定此店铺到 AI 大盘";
       bindShopBtn.innerHTML = `
         <svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
       `;
@@ -2679,6 +2892,8 @@
     const settingsBtn = document.createElement("button");
     settingsBtn.className = "dock-btn settings-mini-btn";
     settingsBtn.title = "配置参数";
+    settingsBtn.dataset.lockableDockButton = "true";
+    settingsBtn.dataset.idleTitle = "配置参数";
     settingsBtn.innerHTML = `
       <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
     `;
@@ -2890,27 +3105,27 @@
           </button>
         </div>
       </div>
+      <div class="chat-session-rail" aria-label="会话控制">
+        <button type="button" class="chat-session-icon-btn" id="chat-new-session-btn" title="新会话" aria-label="新会话">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+        </button>
+        <button type="button" class="chat-session-icon-btn" id="chat-session-history-btn" title="历史会话" aria-label="历史会话">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><path d="M12 7v5l3 2"/></svg>
+        </button>
+      </div>
+      <div class="chat-session-history-panel hidden" id="chat-session-history-panel">
+        <div class="chat-session-history-head">
+          <div class="chat-session-history-title-main">历史会话</div>
+          <div class="chat-session-mode-text" id="chat-session-mode-text">新会话：不会沿用旧断点</div>
+        </div>
+        <div id="chat-session-history-list" class="chat-session-empty">暂无可恢复会话。</div>
+      </div>
       <div class="chat-body" id="chat-messages-container">
         <div class="msg assistant">
           <div class="bubble">
             我已感知当前 Ozon 页面。右侧悬浮栏会根据页面场景提供可运行动作；这里主要用于查看结果、复制内容、继续反馈和推进改进。
           </div>
           <div class="msg-meta">Ozon 智脑舱 • ${new Date().toLocaleTimeString()}</div>
-        </div>
-      </div>
-      <div class="chat-session-control">
-        <div class="chat-session-row">
-          <div>
-            <div class="chat-session-label">会话模式</div>
-            <div class="chat-session-mode-text" id="chat-session-mode-text">新会话：不会沿用旧断点</div>
-          </div>
-          <div class="chat-session-actions">
-            <button type="button" class="chat-session-btn" id="chat-new-session-btn">+ 新会话</button>
-            <button type="button" class="chat-session-btn" id="chat-session-history-btn">历史会话</button>
-          </div>
-        </div>
-        <div class="chat-session-history-panel hidden" id="chat-session-history-panel">
-          <div id="chat-session-history-list" class="chat-session-empty">暂无可恢复会话。</div>
         </div>
       </div>
       <div class="chat-footer">
@@ -3064,7 +3279,7 @@
           showToast(`竞品基线预处理失败，AI 诊断继续运行：${err.message}`);
         }
       }
-      await runSelectedSkill(runInstruction || instruction, actionId);
+      await runSelectedSkill(runInstruction || instruction, actionId, { forceNewSession: !resume });
     };
 
     const renderOverlaySessionHistory = async (entriesOverride = null) => {
@@ -3099,6 +3314,7 @@
           overlaySelectedResumeSessionMeta = match.checkpoint;
           updateOverlaySessionModeUI();
           shadow.getElementById("chat-session-history-panel")?.classList.add("hidden");
+          shadow.getElementById("chat-session-history-btn")?.classList.remove("active");
           showToast(`已选择历史会话：${getOverlaySessionTitle(match.checkpoint)}`);
           if (overlayPendingGrowthAction) {
             runOverlayGrowthActionNow({
@@ -3131,15 +3347,19 @@
     };
 
     const setDockBusy = (busy, actionId = "") => {
-      dockActionButtons.forEach((btn) => {
-        const isActive = btn.dataset.action === actionId;
+      const lockableButtons = Array.from(dock.querySelectorAll('[data-lockable-dock-button="true"]'));
+      lockableButtons.forEach((btn) => {
+        const isActionButton = Boolean(btn.dataset.action);
+        const isActive = isActionButton && btn.dataset.action === actionId;
         btn.disabled = busy;
         btn.classList.toggle("busy", busy && !isActive);
         btn.classList.toggle("activate-btn", busy && isActive);
         if (busy && isActive) {
           btn.title = `正在运行：${GROWTH_ACTIONS[actionId]?.label || "Ozon 任务"}`;
+        } else if (busy) {
+          btn.title = "当前业务正在运行，暂不可用";
         } else {
-          btn.title = GROWTH_ACTIONS[btn.dataset.action]?.label || btn.title;
+          btn.title = btn.dataset.idleTitle || (isActionButton ? GROWTH_ACTIONS[btn.dataset.action]?.label : btn.title) || btn.title;
         }
       });
     };
@@ -3677,7 +3897,7 @@
     }
 
     // Trigger AI Skill Running Loop via Background Connection
-    const runSelectedSkill = async (instruction, growthActionId = "") => {
+    const runSelectedSkill = async (instruction, growthActionId = "", options = {}) => {
       if (activeGrowthRun && (!growthActionId || activeGrowthRun.actionId !== growthActionId)) {
         showToast(`当前「${activeGrowthRun.title || "Ozon 任务"}」仍在运行，请等待完成后再发起新任务。`);
         return;
@@ -3688,12 +3908,13 @@
       statusDot.className = "status-dot active";
       updateChatRunControls({ running: true });
 
-      const legacyContinueInstruction = /^(继续|继续推进|恢复|resume|continue)$/i.test(String(instruction || "").trim());
-      let resumeSessionKey = getOverlayActiveResumeSessionKey();
+      const explicitForceNewSession = Boolean(options.forceNewSession);
+      const legacyContinueInstruction = !explicitForceNewSession && /^(继续|继续推进|恢复|resume|continue)$/i.test(String(instruction || "").trim());
+      let resumeSessionKey = explicitForceNewSession ? "" : getOverlayActiveResumeSessionKey();
       if (!resumeSessionKey && legacyContinueInstruction) {
         resumeSessionKey = await pickLatestOverlayResumableSessionForContinue({ growthActionId });
       }
-      const shouldContinueSession = Boolean(resumeSessionKey || legacyContinueInstruction);
+      const shouldContinueSession = !explicitForceNewSession && Boolean(resumeSessionKey || legacyContinueInstruction);
       const workflowSessionId = resumeSessionKey || createOverlayWorkflowSessionId();
 
       // Add a System Harness Log terminal bubble
@@ -3847,13 +4068,15 @@
 
         if (bindShopBtn) {
           if (matchedShop) {
-            bindShopBtn.title = `🏢 已绑定店铺: ${matchedShop.name}`;
+            bindShopBtn.dataset.idleTitle = `🏢 已绑定店铺: ${matchedShop.name}`;
+            if (!bindShopBtn.disabled) bindShopBtn.title = bindShopBtn.dataset.idleTitle;
             bindShopBtn.style.background = "#10b981"; // success green
             bindShopBtn.innerHTML = `
               <svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
             `;
           } else {
-            bindShopBtn.title = "🔗 绑定此店铺到 AI 大盘";
+            bindShopBtn.dataset.idleTitle = "🔗 绑定此店铺到 AI 大盘";
+            if (!bindShopBtn.disabled) bindShopBtn.title = bindShopBtn.dataset.idleTitle;
             bindShopBtn.style.background = "var(--btn-bg)";
             bindShopBtn.innerHTML = `
               <svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
@@ -3867,6 +4090,10 @@
     // Bind Quick Shop Binding Button to open Settings drawer and auto-populate shop name
     if (bindShopBtn) {
       bindShopBtn.addEventListener("click", () => {
+        if (activeGrowthRun) {
+          showToast("当前业务正在运行，请先等待完成或暂停后再绑定店铺。");
+          return;
+        }
         settingsDrawer.classList.remove("hidden");
         chatOverlay.classList.add("hidden");
         
@@ -3999,6 +4226,10 @@
     }
 
     settingsBtn.addEventListener("click", () => {
+      if (activeGrowthRun) {
+        showToast("当前业务正在运行，请先等待完成或暂停后再修改配置。");
+        return;
+      }
       settingsDrawer.classList.toggle("hidden");
       chatOverlay.classList.add("hidden");
       
@@ -4160,6 +4391,7 @@
     shadow.getElementById("chat-new-session-btn")?.addEventListener("click", () => {
       startOverlayNewSessionMode();
       shadow.getElementById("chat-session-history-panel")?.classList.add("hidden");
+      shadow.getElementById("chat-session-history-btn")?.classList.remove("active");
       showToast("已切换为新会话，下一次运行不会沿用旧断点。");
       const actionToRun = overlayPendingGrowthAction || overlayLastGrowthAction;
       if (actionToRun && !activeGrowthRun) {
@@ -4176,6 +4408,7 @@
       if (!panel) return;
       const willShow = panel.classList.contains("hidden");
       panel.classList.toggle("hidden", !willShow);
+      shadow.getElementById("chat-session-history-btn")?.classList.toggle("active", willShow);
       if (willShow) await renderOverlaySessionHistory();
     });
 

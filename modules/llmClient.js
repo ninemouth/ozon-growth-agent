@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: MIT | Copyright (c) 2026 Yang Cao <cao.x.yang@gmail.com> */
 // modules/llmClient.js — LLM Connector with Exponential Backoff Retry
 
 export async function getSettings() {

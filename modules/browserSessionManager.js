@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: MIT | Copyright (c) 2026 Yang Cao <cao.x.yang@gmail.com> */
 // Central ownership for workflow-created browser tabs.
 // Tools may still use the Chrome API directly for legacy paths, but workflow
 // browser evidence tabs use this manager so cleanup can preserve source tabs.

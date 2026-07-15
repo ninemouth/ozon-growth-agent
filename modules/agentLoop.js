@@ -1,8 +1,10 @@
+/* SPDX-License-Identifier: MIT | Copyright (c) 2026 Yang Cao <cao.x.yang@gmail.com> */
 // modules/agentLoop.js — The Agent reasoning & tool loop logic
 
 import { callLLM, getSettings } from './llmClient.js';
 import { tools } from './toolRegistry.js';
 import { isWorkflowCancellationRequested, isWorkflowGenerationCurrent } from './workflowRuntime.js';
+import { formatBrowserAutomationCapabilityPrompt } from './browserAutomationCapabilities.js';
 
 const globalSessionCache = {};
 const inFlightToolRuns = new Map();
@@ -45,6 +47,7 @@ function toolRunKey(toolName, toolArgs = {}) {
   delete dedupeArgs.__progress;
   delete dedupeArgs.__sourceTabId;
   delete dedupeArgs.__workflowSkillId;
+  delete dedupeArgs.__toolRunId;
   return `${workflowId}:${toolName}:${JSON.stringify(stableToolValue(dedupeArgs))}`;
 }
 
@@ -53,6 +56,69 @@ const IMAGE_SEARCH_TOOLS = ["image_search_1688", "image_search_taobao", "image_s
 const TECHNICAL_JARGON_ERROR = "报告正文中包含内部技术黑话或函数名（如 DOM, read_current_page, xpath 等），请过滤并替换为通俗易懂的商业/供应链分析术语！";
 const TECHNICAL_JARGON_RE = /read_current_page|open_new_tab|close_tab|search_in_browser|click_by_text|click_by_selector|input_text_and_search|agentic_web_search|image_search_1688|image_search_taobao|image_search_in_browser|collect_ozon_shop_pages|collect_ozon_competitor_shops|analyze_ozon_shop_crawl_screenshots|DOM|xpath|GBK 编码|UTF-8|自愈程序|爬虫|人机拦截|验证码/i;
 const REPORT_URL_FIELD_RE = /(^|_)(url|uri|link|href|image|image_src|img|src|thumbnail|photo|picture)(_|$)/i;
+const STANDARD_EVIDENCE_SOURCE_TYPES = new Set([
+  "page_dom",
+  "screenshot_visual",
+  "ozon_api",
+  "ozon_search",
+  "yandex_search",
+  "google_search",
+  "google_trends",
+  "sourcing_search",
+  "supplier_page",
+  "user_input",
+  "official_policy",
+  "blocked",
+  "assumption",
+]);
+
+function normalizeEvidenceSourceType(sourceType = "") {
+  const raw = String(sourceType || "").trim();
+  const normalized = raw.toLowerCase()
+    .replace(/\s+/g, "_")
+    .replace(/-/g, "_");
+  if (STANDARD_EVIDENCE_SOURCE_TYPES.has(normalized)) return normalized;
+  if (/^(page|page_text|page_content|page_data|page_info|page_snapshot|current_page|current_page_text|current_page_dom|shop_page|store_page|product_page|listing_page|competitor_page|competitor_shop_page|ozon_competitor_page|ozon_page|页面|页面文本|页面信息|页面内容|当前页面|公开页面|页面证据|竞品页面|店铺页面)$/i.test(raw) || /页面文本|页面信息|当前页面|公开页面|竞品页面|店铺页面/i.test(raw)) {
+    return "page_dom";
+  }
+  if (/^(screenshot|screenshot_analysis|screenshot_ref|visual|visual_evidence|image_visual|image|gallery|截图|页面截图|视觉|视觉证据|图片证据)$/i.test(raw) || /截图|视觉|图片/i.test(raw)) {
+    return "screenshot_visual";
+  }
+  if (/^(api|seller_api|ozon_seller_api|ozon_api_snapshot|api_snapshot|store_snapshot|sku_analytics|seller_data|ozon_store_snapshot|店铺快照|api数据|api_数据|seller数据)$/i.test(raw) || /Seller API|API|店铺快照|SKU/i.test(raw)) {
+    return "ozon_api";
+  }
+  if (/^(ozon|ozon_site|ozon_platform|ozon_search_result|ozon_ranking|ozon_category|ozon_competitor|ozon_public_page|ozon榜单|ozon站内|站内搜索|热卖榜|竞品搜索)$/i.test(raw) || /Ozon|站内|热卖榜|竞品搜索/i.test(raw)) {
+    return "ozon_search";
+  }
+  if (/^(yandex|yandex_ru|yandex_search_result|yandex_result|yandex_ru_search|yandex搜索)$/i.test(raw) || /Yandex/i.test(raw)) {
+    return "yandex_search";
+  }
+  if (/^(google|google_ru|google_search_result|google_result|google_ru_search|google搜索|谷歌搜索)$/i.test(raw) || /Google Search|谷歌搜索/i.test(raw)) {
+    return "google_search";
+  }
+  if (/^(trends|google_trend|google_trends_ru|google_trends_result|trend_page|趋势页|谷歌趋势|google趋势)$/i.test(raw) || /Google Trends|谷歌趋势|趋势页/i.test(raw)) {
+    return "google_trends";
+  }
+  if (/^(sourcing|sourcing_result|supplier_search|1688_search|taobao_search|tmall_search|image_search|image_search_1688|image_search_taobao|以图搜图|货源搜索|供应商搜索)$/i.test(raw) || /1688.*搜索|淘宝.*搜索|以图搜图|货源搜索|供应商搜索/i.test(raw)) {
+    return "sourcing_search";
+  }
+  if (/^(supplier|supplier_detail|supplier_page|1688_detail|taobao_detail|tmall_detail|factory_page|detail_page|供应商详情|货源详情|工厂页面)$/i.test(raw) || /供应商详情|货源详情|工厂页面|详情页/i.test(raw)) {
+    return "supplier_page";
+  }
+  if (/^(user|user_note|manual_input|operator_input|人工输入|用户输入|用户提供)$/i.test(raw) || /用户|人工输入|人工确认/i.test(raw)) {
+    return "user_input";
+  }
+  if (/^(policy|official|official_policy|platform_policy|rule|regulation|官方政策|平台规则|政策|法规)$/i.test(raw) || /官方政策|平台规则|法规|政策/i.test(raw)) {
+    return "official_policy";
+  }
+  if (/^(blocked|blocker|captcha|login_wall|access_limited|unavailable|阻断|访问受限|平台访问限制|登录墙)$/i.test(raw) || /阻断|访问受限|登录墙|平台访问限制/i.test(raw)) {
+    return "blocked";
+  }
+  if (/^(assumption|hypothesis|inference|manual_confirm|pending_validation|待验证|假设|推断)$/i.test(raw) || /假设|推断|待验证/i.test(raw)) {
+    return "assumption";
+  }
+  return raw ? "assumption" : "";
+}
 
 function isSourcingSkill(skillId = "") {
   return SOURCING_SKILL_RE.test(String(skillId || ""));
@@ -89,11 +155,93 @@ function sanitizeReportValueForBusinessAudience(value, key = "") {
   return value;
 }
 
+function collectBusinessReportStrings(value, key = "", output = []) {
+  if (typeof value === "string") {
+    if (!REPORT_URL_FIELD_RE.test(key)) output.push(value);
+    return output;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectBusinessReportStrings(item, key, output));
+    return output;
+  }
+  if (value && typeof value === "object") {
+    Object.entries(value).forEach(([entryKey, entryValue]) => collectBusinessReportStrings(entryValue, entryKey, output));
+  }
+  return output;
+}
+
+export function hasTechnicalJargonInBusinessReport(parsed) {
+  if (!parsed || parsed.type !== "final" || !parsed.output) return false;
+  return collectBusinessReportStrings(parsed.output).some((text) => TECHNICAL_JARGON_RE.test(text));
+}
+
+function normalizeEvidenceLedgerEntry(entry = {}) {
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return entry;
+  const originalType = String(entry.source_type || "").trim();
+  const normalizedType = normalizeEvidenceSourceType(originalType);
+  if (!originalType || originalType === normalizedType) return entry;
+  const next = {
+    ...entry,
+    source_type: normalizedType,
+    original_source_type: entry.original_source_type || originalType,
+  };
+  if (normalizedType === "assumption") {
+    next.confidence = next.confidence || "low";
+    next.limitation = next.limitation
+      ? `${next.limitation}；原始来源类型“${originalType}”未能稳定映射为真实采集来源，已在审计前降级为待验证假设。`
+      : `原始来源类型“${originalType}”未能稳定映射为真实采集来源，已在审计前降级为待验证假设。`;
+  }
+  return next;
+}
+
+function normalizeEvidenceLedgerValue(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => normalizeEvidenceLedgerValue(item));
+  }
+  if (value && typeof value === "object") {
+    const next = {};
+    Object.entries(value).forEach(([key, entryValue]) => {
+      if (key === "evidence_ledger" && Array.isArray(entryValue)) {
+        next[key] = entryValue.map((entry) => normalizeEvidenceLedgerEntry(entry));
+      } else {
+        next[key] = normalizeEvidenceLedgerValue(entryValue);
+      }
+    });
+    return next;
+  }
+  return value;
+}
+
+export function normalizeFinalReportEvidenceLedger(parsed) {
+  if (!parsed || parsed.type !== "final" || !parsed.output) {
+    return { parsed, normalized: false };
+  }
+  const normalizedOutput = normalizeEvidenceLedgerValue(parsed.output);
+  const normalized = JSON.stringify(normalizedOutput) !== JSON.stringify(parsed.output);
+  return {
+    parsed: normalized ? { ...parsed, output: normalizedOutput } : parsed,
+    normalized,
+  };
+}
+
 export function sanitizeFinalReportForBusinessAudience(parsed) {
   if (!parsed || parsed.type !== "final" || !parsed.output) return parsed;
   return {
     ...parsed,
     output: sanitizeReportValueForBusinessAudience(parsed.output),
+  };
+}
+
+export function sanitizeFinalReportBeforeCritic(parsed) {
+  const ledgerNormalized = normalizeFinalReportEvidenceLedger(parsed);
+  const ledgerParsed = ledgerNormalized.parsed;
+  if (!hasTechnicalJargonInBusinessReport(ledgerParsed)) {
+    return { parsed: ledgerParsed, sanitized: false, normalized: ledgerNormalized.normalized };
+  }
+  return {
+    parsed: sanitizeFinalReportForBusinessAudience(ledgerParsed),
+    sanitized: true,
+    normalized: ledgerNormalized.normalized,
   };
 }
 
@@ -316,6 +464,7 @@ function hasEvidenceSource(toolHistory = [], pageContext = {}, sourceType = "") 
       });
   }
   if (normalized === "user_input") return true;
+  if (normalized === "official_policy") return true;
   if (normalized === "assumption") return true;
   if (normalized === "blocked") return true;
   return false;
@@ -617,10 +766,11 @@ function validateOzonPlatformTrendReport(out = {}, toolHistory = [], pageContext
   return errors;
 }
 
-function validateWorkflowReadyOutput(out = {}, skillId = "", pageContext = {}) {
+export function validateWorkflowReadyOutput(out = {}, skillId = "", pageContext = {}) {
   const errors = [];
   if (!isOzonBusinessSkill(skillId)) return errors;
   const scope = out.research_scope || pageContext.research_scope || {};
+  const reportBody = `${out.overview || ""}\n${out.analysis || ""}\n${out.summary || ""}`;
   if (!out.research_scope || typeof out.research_scope !== "object") {
     errors.push("Ozon 业务报告缺少 research_scope。必须声明当前页面角色、研究范围、范围置信度和结论边界。");
   }
@@ -647,8 +797,16 @@ function validateWorkflowReadyOutput(out = {}, skillId = "", pageContext = {}) {
   if (scope.needs_user_clarification && out.report_status === "completed") {
     errors.push("当前 research_scope 置信度低或需要用户确认时，report_status 不能是 completed；应输出 partial / blocked / assumption_only 并生成范围确认任务。");
   }
-  if (scope.source_page_role === "competitor_reference" && /我的店铺|本店|自营店铺|当前店铺/.test(`${out.overview || ""}\n${out.analysis || ""}\n${out.summary || ""}`)) {
+  if (scope.source_page_role === "competitor_reference" && /我的店铺|本店|自营店铺|当前店铺/.test(reportBody)) {
     errors.push("当前页面被识别为竞品参考页，报告不能把它写成自营店铺；必须标注为竞品学习样本或要求切回自营店铺。");
+  }
+  if (scope.source_page_role === "store_subject_external") {
+    if (/我的店铺|本店|自营店铺|已绑定店铺/.test(reportBody)) {
+      errors.push("当前页面是未绑定的公开店铺体检对象，报告可以写“当前访问店铺/公开店铺样本”，但不能写成我的店铺、本店、自营店铺或已绑定店铺。");
+    }
+    if (/((Seller API|Ozon Seller API|API 快照|API数据|API 数据|店铺快照).{0,18}(显示|证明|表明|证实|已获取|已拉取|支持)|((显示|证明|表明|证实|已获取|已拉取|支持).{0,18}(Seller API|Ozon Seller API|API 快照|API数据|API 数据|店铺快照)))/i.test(reportBody)) {
+      errors.push("当前页面是未绑定的公开店铺体检对象，不能把 Seller API/店铺快照写成当前页面的既有证据；如需 API 级结论，必须先绑定该店铺或明确写成待验证。");
+    }
   }
   return errors;
 }
@@ -798,9 +956,8 @@ function validateReport(parsed, userInstruction, skillId, toolHistory = [], page
     return errors;
   }
 
-  // 1. Check for technical jargon
-  const checkJargon = (str) => typeof str === "string" && TECHNICAL_JARGON_RE.test(str);
-  if (checkJargon(out.overview) || checkJargon(out.analysis) || checkJargon(out.summary)) {
+  // 1. Check for technical jargon in business-facing text, excluding URL/link fields.
+  if (hasTechnicalJargonInBusinessReport(parsed)) {
     errors.push(TECHNICAL_JARGON_ERROR);
   }
 
@@ -858,7 +1015,7 @@ function validateReport(parsed, userInstruction, skillId, toolHistory = [], page
         const observedValue = entry?.observed_value;
         const usedFor = entry?.used_for;
         const limitation = entry?.limitation;
-        const allowedTypes = ["page_dom", "screenshot_visual", "ozon_api", "ozon_search", "yandex_search", "google_search", "google_trends", "assumption"];
+        const allowedTypes = ["page_dom", "screenshot_visual", "ozon_api", "ozon_search", "yandex_search", "google_search", "google_trends", "official_policy", "blocked", "assumption"];
         if (!allowedTypes.includes(sourceType)) {
           errors.push(`${prefix} 的 source_type 无效，必须是 ${allowedTypes.join(" / ")}。`);
         }
@@ -1132,6 +1289,8 @@ function buildPromptContext(pageContext = {}) {
 
 function getToolTimeoutMs(toolName = "") {
   if (["open_new_tab", "close_tab", "read_current_page"].includes(toolName)) return 45_000;
+  if (["apply_page_filter", "go_next_page"].includes(toolName)) return 90_000;
+  if (toolName === "collect_reviews") return 150_000;
   if (["search_in_browser", "collect_ozon_shop_pages"].includes(toolName)) return 120_000;
   if (toolName === "collect_ozon_competitor_shops") return 300_000;
   if (toolName === "analyze_ozon_shop_crawl_screenshots") return 180_000;
@@ -1159,6 +1318,9 @@ function describeToolAction(toolName = "", toolArgs = {}, toolResult = null) {
   if (toolName === "collect_ozon_competitor_shops") return { actionKind: "competitor_shop_crawl", actionLabel: "Ozon 竞品页面批量采集", lifecycle: "批量采集会读取竞品页面和截图证据" };
   if (toolName === "analyze_ozon_shop_crawl_screenshots") return { actionKind: "screenshot_interpretation", actionLabel: "Ozon 竞品截图独立解读", lifecycle: "不打开新标签页，只分析已缓存截图 artifact" };
   if (toolName === "close_tab") return { actionKind: "tab_close", actionLabel: "关闭已完成取证的标签页", lifecycle: "关闭由 workflow 创建或指定的标签页" };
+  if (toolName === "apply_page_filter") return { actionKind: "filter_sort", actionLabel: "筛选/排序并验证页面变化", lifecycle: "点击筛选或排序项后会重新读取页面证据并返回变化状态" };
+  if (toolName === "go_next_page") return { actionKind: "pagination", actionLabel: "翻页并验证结果变化", lifecycle: "点击下一页后会重新读取页面证据并返回变化状态" };
+  if (toolName === "collect_reviews") return { actionKind: "review_collection", actionLabel: "评论分页与低星样本采集", lifecycle: "会尝试低星筛选、抽取评论文本/图片，并在受阻时返回缺口" };
   return { actionKind: toolName || "tool", actionLabel: toolName || "工具执行", lifecycle: "" };
 }
 
@@ -1167,6 +1329,7 @@ function stripRuntimeToolArgs(toolArgs = {}) {
   delete clean.__progress;
   delete clean.__sourceTabId;
   delete clean.__workflowSkillId;
+  delete clean.__toolRunId;
   return clean;
 }
 
@@ -1253,6 +1416,22 @@ export async function runAgentLoop({ tabId, skillId, skillMarkdown, userInstruct
 
 ## 可用工具
 ${availableTools}
+
+## 浏览器自动化能力契约
+下面是当前插件底层浏览器能力边界。你必须按能力选择工具，不得把“做不到/未取证”的环节写成已完成：
+${formatBrowserAutomationCapabilityPrompt()}
+
+执行原则：
+- 地址打开/站内搜索/键盘输入/筛选翻页/DOM 采集/多模态截图/网页关闭都必须通过对应工具完成。
+- 页面动态加载时必须相信工具返回的 loadState、evidenceOk、pageEvidence、blocking 状态；证据不足时输出 blocking_gaps。
+- 视觉截图用于图片、布局、趋势图和竞品陈列；正文、标题、参数、价格、评论等文本判断必须优先使用 DOM 或 API。
+- 临时标签页完成取证后要关闭；来源 Ozon 页和趋势任务中的 Ozon 页不得主动关闭。
+
+## 报告语言防火墙
+- 工具名、函数名和内部采集术语只允许出现在 tool_call JSON 或内部推理中，严禁写入 final.output。
+- final.output 的 overview、analysis、summary、data、workflow_nodes、follow_up_tasks 中不得出现 read_current_page、open_new_tab、close_tab、search_in_browser、click_by_text、input_text_and_search、image_search_1688、DOM、xpath、爬虫、自愈程序、验证码、人机拦截等内部词。
+- 对业务用户只使用业务语言：页面文本、公开页面信息、站内搜索结果、竞品详情页、截图证据、平台访问限制、需要人工确认。
+- 如果工具返回了内部字段名或工具过程，只能把它翻译成“已读取页面信息 / 已查看公开页面 / 已完成站内搜索 / 平台访问受限”，不能原样复制到报告正文。
 
 ## 工具调用格式
 当需要调用工具时，输出：
@@ -1431,6 +1610,7 @@ ${(skillId || "").includes("tiktok_shop_monitor") ? `\n\n## ⚠️ TikTok 监控
         type: "text",
         result: assistantContent,
         steps: step,
+        toolHistory,
       };
     }
 
@@ -1448,6 +1628,18 @@ ${(skillId || "").includes("tiktok_shop_monitor") ? `\n\n## ⚠️ TikTok 监控
             workflow_nodes: Array.isArray(finalParsed.output.workflow_nodes) ? finalParsed.output.workflow_nodes : [],
           },
         };
+      }
+      const preCriticSanitized = sanitizeFinalReportBeforeCritic(finalParsed);
+      if (preCriticSanitized.sanitized || preCriticSanitized.normalized) {
+        finalParsed = preCriticSanitized.parsed;
+        sendProgress({
+          type: preCriticSanitized.sanitized ? "report_hygiene_sanitized" : "evidence_ledger_normalized",
+          step,
+          message: preCriticSanitized.sanitized
+            ? "报告正文已在进入 Critic 前自动替换内部工具措辞，避免把执行过程暴露给业务用户。"
+            : "证据账本来源类型已在进入 Critic 前自动规范化，避免因枚举口径差异打回重做。",
+        });
+        await checkpoint("running", { step, lastStage: preCriticSanitized.sanitized ? "pre_critic_sanitized" : "evidence_ledger_normalized" });
       }
       let validationErrors = validateReport(finalParsed, userInstruction, skillId, toolHistory, pageContext);
       if (isTechnicalJargonOnlyFailure(validationErrors)) {
@@ -1499,6 +1691,7 @@ ${(skillId || "").includes("tiktok_shop_monitor") ? `\n\n## ⚠️ TikTok 监控
           type: "final",
           result: finalParsed.output,
           steps: step,
+          toolHistory,
         };
       }
     }
@@ -1620,10 +1813,12 @@ ${(skillId || "").includes("tiktok_shop_monitor") ? `\n\n## ⚠️ TikTok 监控
       if (progressToolArgs.imageUrl && String(progressToolArgs.imageUrl).startsWith("data:")) {
         progressToolArgs.imageUrl = "__UPLOADED_IMAGE_DATA__";
       }
+      const toolRunId = `${workflowId || `tab:${tabId}`}:tool:${step}:${Date.now()}`;
       const plannedToolAction = describeToolAction(toolName, toolArgs);
       sendProgress({
         type: "tool_call",
         step,
+        toolRunId,
         toolName,
         toolArgs: progressToolArgs,
         actionKind: plannedToolAction.actionKind,
@@ -1631,7 +1826,7 @@ ${(skillId || "").includes("tiktok_shop_monitor") ? `\n\n## ⚠️ TikTok 监控
         tabLifecycle: plannedToolAction.lifecycle,
         message: `准备调用动作: ${plannedToolAction.actionLabel}`,
       });
-      await checkpoint("running", { step, lastStage: "before_tool", currentTool: toolName, currentToolArgs: progressToolArgs });
+      await checkpoint("running", { step, lastStage: "before_tool", currentTool: toolName, currentToolRunId: toolRunId, currentToolArgs: progressToolArgs });
 
       if (!tools[toolName]) {
         const errMsg = `Unknown tool: ${toolName}. Available: ${availableTools}`;
@@ -1669,6 +1864,7 @@ ${(skillId || "").includes("tiktok_shop_monitor") ? `\n\n## ⚠️ TikTok 监控
       try {
         const executableToolArgs = {
           ...toolArgs,
+          __toolRunId: toolRunId,
           __sourceTabId: tabId,
           __workflowSkillId: skillId,
           __progress: (stage = {}) => {
@@ -1676,6 +1872,7 @@ ${(skillId || "").includes("tiktok_shop_monitor") ? `\n\n## ⚠️ TikTok 监控
             sendProgress({
               type: "tool_stage",
               step,
+              toolRunId,
               toolName,
               actionKind: stage.actionKind || toolAction.actionKind,
               actionLabel: stage.actionLabel || toolAction.actionLabel,
@@ -1693,6 +1890,7 @@ ${(skillId || "").includes("tiktok_shop_monitor") ? `\n\n## ⚠️ TikTok 监控
           sendProgress({
             type: "tool_heartbeat",
             step,
+            toolRunId,
             toolName,
             actionKind: toolAction.actionKind,
             actionLabel: toolAction.actionLabel,
@@ -1728,6 +1926,7 @@ ${(skillId || "").includes("tiktok_shop_monitor") ? `\n\n## ⚠️ TikTok 监控
           sendProgress({
             type: "tool_timeout",
             step,
+            toolRunId,
             toolName,
             actionKind: toolAction.actionKind,
             actionLabel: toolAction.actionLabel,
@@ -1744,14 +1943,27 @@ ${(skillId || "").includes("tiktok_shop_monitor") ? `\n\n## ⚠️ TikTok 监控
         sendProgress({
           type: "stale_tool_result_discarded",
           step,
+          toolRunId,
           toolName,
           message: "旧 workflow 的迟到工具结果已丢弃，避免污染当前会话。",
         });
       }
-      toolHistory.push({ tool: toolName, arguments: stripRuntimeToolArgs(toolArgs), result: toolResult });
+      const toolCompletedAt = Date.now();
+      toolHistory.push({
+        toolRunId,
+        tool: toolName,
+        status: toolResult?.stale ? "stale" : toolTimedOut ? "timed_out" : toolResult?.ok === false ? "failed" : "completed",
+        startedAt: new Date(toolStartedAt).toISOString(),
+        completedAt: new Date(toolCompletedAt).toISOString(),
+        durationMs: Math.max(0, toolCompletedAt - toolStartedAt),
+        actionKind: toolAction.actionKind,
+        actionLabel: toolAction.actionLabel,
+        arguments: stripRuntimeToolArgs(toolArgs),
+        result: toolResult,
+      });
 
-      sendProgress({ type: "tool_result", step, toolName, toolResult });
-      await checkpoint("running", { step, lastStage: toolTimedOut ? "tool_timeout" : "tool_result", currentTool: toolName });
+      sendProgress({ type: "tool_result", step, toolRunId, toolName, toolResult });
+      await checkpoint("running", { step, lastStage: toolTimedOut ? "tool_timeout" : "tool_result", currentTool: toolName, currentToolRunId: toolRunId });
 
       if (toolResult && toolResult.isCaptcha) {
         sendProgress({
@@ -1762,7 +1974,7 @@ ${(skillId || "").includes("tiktok_shop_monitor") ? `\n\n## ⚠️ TikTok 监控
       }
 
       let nextScreenshot = null;
-      const pageModifyingTools = ["open_new_tab", "navigate_to", "search_in_browser", "collect_ozon_shop_pages", "collect_ozon_competitor_shops", "click_by_text", "input_text_and_search", "click_by_selector", "image_search_1688", "image_search_taobao", "image_search_in_browser", "click_by_coordinate"];
+      const pageModifyingTools = ["open_new_tab", "navigate_to", "search_in_browser", "collect_ozon_shop_pages", "collect_ozon_competitor_shops", "click_by_text", "input_text_and_search", "click_by_selector", "image_search_1688", "image_search_taobao", "image_search_in_browser", "click_by_coordinate", "apply_page_filter", "go_next_page", "collect_reviews"];
       if (pageModifyingTools.includes(toolName)) {
         try {
           const tId = (toolResult && toolResult.tabId) ? toolResult.tabId : tabId;
@@ -1834,6 +2046,7 @@ ${(skillId || "").includes("tiktok_shop_monitor") ? `\n\n## ⚠️ TikTok 监控
       type: "json",
       result: parsed,
       steps: step,
+      toolHistory,
     };
   }
 

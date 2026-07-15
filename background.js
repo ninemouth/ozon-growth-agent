@@ -1,30 +1,40 @@
+/* SPDX-License-Identifier: MIT | Copyright (c) 2026 Yang Cao <cao.x.yang@gmail.com> */
 // background.js — Service Worker for ozon-growth-agent (ES Modules)
 
 import { runAgentLoop } from './modules/agentLoop.js';
-import { tools, resetSessionData } from './modules/toolRegistry.js';
+import { tools, resetSessionData, waitForPageCaptureReady } from './modules/toolRegistry.js';
 import { callLLM } from './modules/llmClient.js';
-import { cleanupOwnedTabs, protectWorkflowTab } from './modules/browserSessionManager.js';
+import { cleanupOwnedTabs, closeOwnedTab, createOwnedTab, protectWorkflowTab } from './modules/browserSessionManager.js';
 import { buildResearchScope } from './modules/researchScope.js';
 import { summarizeEvidenceQuality } from './modules/evidenceQuality.js';
+import { buildEvidenceBundle } from './modules/evidenceBundle.js';
 import { upsertGrowthCaseFromResult } from './modules/growthCaseStore.js';
+import { getArtifactDataUrl } from './modules/artifactStore.js';
+import { getLocal, getLocalSafe, setLocal } from './modules/storageLocal.js';
+import { workflowEngine } from './modules/workflowEngine.js';
 import {
   acquireWorkflowLease,
   appendWorkflowEvent,
+  appendTaskLog,
   clearWorkflowCancellation,
+  listTaskLogs,
   loadWorkflowSnapshot,
+  pruneTaskLogs,
   releaseWorkflowLease,
   renewWorkflowLease,
   requestWorkflowCancellation,
   saveWorkflowSnapshot,
 } from './modules/workflowRuntime.js';
 
+const activePorts = new Map();
+
 // ── Keep Service Worker Alive in MV3 ──
 // Calling any Chrome API resets the 30-second idle timer in Manifest V3.
-// We query storage every 10 seconds to keep the background service worker alive during long tasks.
+// Only active workflow ports request a light keep-alive; checkpoint recovery is
+// still the primary protection when MV3 suspends the worker.
 setInterval(() => {
-  chrome.storage.local.get(["keepAlive"], () => {
-    if (chrome.runtime.lastError) {} // ignore
-  });
+  if (activePorts.size === 0) return;
+  getLocalSafe(["keepAlive"], {}).catch(() => {});
 }, 10000);
 
 // ── Open side panel when toolbar icon is clicked ──
@@ -86,8 +96,13 @@ function pushUnique(list, item) {
 }
 
 async function getActiveShopId() {
-  const data = await new Promise((resolve) => chrome.storage.local.get(["activeShopId"], resolve));
+  const data = await getLocal(["activeShopId"]);
   return data.activeShopId || "";
+}
+
+async function getBoundShops() {
+  const data = await getLocal(["ozonShops"]);
+  return Array.isArray(data.ozonShops) ? data.ozonShops : [];
 }
 
 async function cacheOzonApiSnapshot(kind, args = {}, result = {}) {
@@ -101,16 +116,47 @@ async function cacheOzonApiSnapshot(kind, args = {}, result = {}) {
     source: "ozon_seller_api",
   };
   const key = kind === "sku_analytics" ? "ozonSkuAnalyticsSnapshot" : "ozonStoreSnapshotCache";
-  await new Promise((resolve) => chrome.storage.local.set({ [key]: payload }, resolve));
+  await setLocal({ [key]: payload });
   return payload;
 }
 
 const UPDATE_STATUS_KEY = "ozonUpdateStatus";
 const UPDATE_CHECK_ALARM = "ozon_update_check";
 const UPDATE_CHECK_INTERVAL_MINUTES = 12 * 60;
+const TASK_LOG_PRUNE_ALARM = "ozon_task_log_prune";
+const TASK_LOG_PRUNE_INTERVAL_MINUTES = 24 * 60;
 const GITHUB_RELEASES_URL = "https://github.com/ninemouth/ozon-growth-agent/releases";
 const GITHUB_LATEST_RELEASE_API = "https://api.github.com/repos/ninemouth/ozon-growth-agent/releases/latest";
 const GITHUB_MANIFEST_URL = "https://raw.githubusercontent.com/ninemouth/ozon-growth-agent/main/manifest.json";
+
+function summarizeTaskLogDetails(value = {}) {
+  const safe = value && typeof value === "object" ? value : {};
+  return {
+    step: Number(safe.step || 0),
+    toolName: safe.toolName || "",
+    actionKind: safe.actionKind || "",
+    actionLabel: safe.actionLabel || "",
+    stage: safe.stage || "",
+    errorCode: safe.errorCode || "",
+    tabId: Number.isInteger(Number(safe.tabId)) ? Number(safe.tabId) : undefined,
+    elapsedSeconds: Number(safe.elapsedSeconds || 0) || undefined,
+  };
+}
+
+function taskLogSeverityForProgress(progress = {}) {
+  if (["tool_timeout", "captcha_warning", "reflection", "workflow_timeout"].includes(progress.type)) return "warning";
+  if (["error", "failed"].includes(progress.type)) return "error";
+  return "info";
+}
+
+async function recordTaskLog(input = {}) {
+  try {
+    return await appendTaskLog(input);
+  } catch (err) {
+    console.warn("Task log persistence failed:", err.message);
+    return null;
+  }
+}
 
 function getExtensionVersion() {
   return chrome.runtime.getManifest().version || "0.0.0";
@@ -136,7 +182,7 @@ function compareSemver(a, b) {
 }
 
 async function readCachedUpdateStatus() {
-  const cached = await new Promise((resolve) => chrome.storage.local.get([UPDATE_STATUS_KEY], resolve));
+  const cached = await getLocal([UPDATE_STATUS_KEY]);
   const currentVersion = getExtensionVersion();
   return cached[UPDATE_STATUS_KEY] || {
     currentVersion,
@@ -210,7 +256,7 @@ async function checkForUpdates({ force = false } = {}) {
       source: latest.source || "github",
       installMode: "source_or_unpacked",
     };
-    await new Promise((resolve) => chrome.storage.local.set({ [UPDATE_STATUS_KEY]: status }, resolve));
+    await setLocal({ [UPDATE_STATUS_KEY]: status });
     return status;
   } catch (err) {
     const status = {
@@ -225,7 +271,7 @@ async function checkForUpdates({ force = false } = {}) {
       source: "github",
       installMode: "source_or_unpacked",
     };
-    await new Promise((resolve) => chrome.storage.local.set({ [UPDATE_STATUS_KEY]: status }, resolve));
+    await setLocal({ [UPDATE_STATUS_KEY]: status });
     return status;
   }
 }
@@ -333,18 +379,73 @@ async function dispatchOzonSkills(userInstruction) {
 }
 
 async function deleteResult(id) {
-  const existing = await new Promise((resolve) =>
-    chrome.storage.local.get(["savedResults"], resolve)
-  );
+  const existing = await getLocal(["savedResults"]);
   const filtered = (existing.savedResults || []).filter((r) => r.id !== id);
-  await new Promise((resolve) => chrome.storage.local.set({ savedResults: filtered }, resolve));
+  await setLocal({ savedResults: filtered });
 }
 
 async function exportResults() {
-  const existing = await new Promise((resolve) =>
-    chrome.storage.local.get(["savedResults"], resolve)
-  );
+  const existing = await getLocal(["savedResults"]);
   return existing.savedResults || [];
+}
+
+function sanitizeBundleFileName(value = "", fallback = "artifact") {
+  const cleaned = String(value || fallback)
+    .replace(/^artifact:\/\//, "")
+    .replace(/[^\w.-]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return cleaned || fallback;
+}
+
+function extensionFromMimeType(mimeType = "") {
+  const normalized = String(mimeType || "").toLowerCase();
+  if (normalized.includes("png")) return "png";
+  if (normalized.includes("jpeg") || normalized.includes("jpg")) return "jpg";
+  if (normalized.includes("webp")) return "webp";
+  if (normalized.includes("gif")) return "gif";
+  return "bin";
+}
+
+async function exportEvidenceBundle(reportId, { includeArtifactPayloads = false } = {}) {
+  if (!reportId) throw new Error("reportId is required");
+  const existing = await getLocal(["savedResults"]);
+  const saved = (existing.savedResults || []).find((item) => String(item.id) === String(reportId));
+  if (!saved) throw new Error("saved report not found");
+  const bundle = saved.evidence_bundle || null;
+  if (!bundle) throw new Error("evidence bundle not found for this report");
+  const refs = Array.isArray(bundle.screenshotRefs) ? bundle.screenshotRefs : [];
+  const artifacts = [];
+  const artifactPayloads = [];
+  for (const ref of refs) {
+    const dataUrl = await getArtifactDataUrl(ref);
+    const mimeType = dataUrl?.match(/^data:([^;]+);/)?.[1] || "";
+    artifacts.push({
+      ref,
+      available: Boolean(dataUrl),
+      bytesApprox: dataUrl ? Math.round((String(dataUrl).length * 3) / 4) : 0,
+      mimeType,
+    });
+    if (includeArtifactPayloads && dataUrl) {
+      artifactPayloads.push({
+        ref,
+        filename: `${sanitizeBundleFileName(ref, "artifact")}.${extensionFromMimeType(mimeType)}`,
+        mimeType,
+        dataUrl,
+      });
+    }
+  }
+  const exported = {
+    ...bundle,
+    artifact_manifest: {
+      checkedAt: new Date().toISOString(),
+      total: refs.length,
+      available: artifacts.filter((item) => item.available).length,
+      missing: artifacts.filter((item) => !item.available).length,
+      artifacts,
+    },
+  };
+  if (includeArtifactPayloads) exported.artifact_payloads = artifactPayloads;
+  return exported;
 }
 
 async function listSkills() {
@@ -420,7 +521,6 @@ async function listSkills() {
 }
 
 // ── Port Connection Handling (Streaming Progress) ──
-const activePorts = new Map();
 const WORKFLOW_CHECKPOINTS_KEY = "agentWorkflowCheckpoints";
 
 function buildWorkflowCheckpointKey({ tabId, matchedSkills = [], message = {} } = {}) {
@@ -432,7 +532,7 @@ function buildWorkflowCheckpointKey({ tabId, matchedSkills = [], message = {} } 
 }
 
 async function getWorkflowCheckpoints() {
-  const data = await new Promise((resolve) => chrome.storage.local.get([WORKFLOW_CHECKPOINTS_KEY], resolve));
+  const data = await getLocal([WORKFLOW_CHECKPOINTS_KEY]);
   return data[WORKFLOW_CHECKPOINTS_KEY] || {};
 }
 
@@ -472,7 +572,7 @@ async function setWorkflowCheckpoint(key, patch = {}) {
   const entries = Object.entries(checkpoints)
     .sort((a, b) => new Date(b[1].updatedAt || 0) - new Date(a[1].updatedAt || 0))
     .slice(0, 30);
-  await new Promise((resolve) => chrome.storage.local.set({ [WORKFLOW_CHECKPOINTS_KEY]: Object.fromEntries(entries) }, resolve));
+  await setLocal({ [WORKFLOW_CHECKPOINTS_KEY]: Object.fromEntries(entries) });
 }
 
 function isResumableCheckpoint(checkpoint) {
@@ -500,6 +600,15 @@ chrome.runtime.onConnect.addListener((port) => {
       isCancelled = true;
       activePorts.delete(portId);
       if (activeCheckpointKey) {
+        workflowEngine.cancel(activeCheckpointKey, "port_disconnected").catch((err) => console.warn("Could not cancel workflow engine job:", err.message));
+        recordTaskLog({
+          workflowId: activeCheckpointKey,
+          category: "workflow",
+          severity: "warning",
+          event: "port_disconnected",
+          message: "前台连接断开，工作流已保存为可恢复断点。",
+          source: "background",
+        });
         requestWorkflowCancellation(activeCheckpointKey, "port_disconnected").catch((err) => console.warn("Could not request workflow cancellation:", err.message));
         setWorkflowCheckpoint(activeCheckpointKey, {
           status: "interrupted",
@@ -526,6 +635,15 @@ chrome.runtime.onConnect.addListener((port) => {
           return;
         }
         try {
+          await recordTaskLog({
+            workflowId: activeCheckpointKey,
+            category: "workflow",
+            severity: "warning",
+            event: "pause_requested",
+            message: "用户请求暂停工作流，正在保存断点。",
+            source: "background",
+          });
+          await workflowEngine.cancel(activeCheckpointKey, message.reason || "user_paused");
           await requestWorkflowCancellation(activeCheckpointKey, message.reason || "user_paused");
           await setWorkflowCheckpoint(activeCheckpointKey, {
             status: "interrupted",
@@ -644,7 +762,7 @@ chrome.runtime.onConnect.addListener((port) => {
             : selectedSkillPath
             ? [selectedSkillPath]
             : await dispatchOzonSkills(message.userInstruction);
-          const activeShopId = await getActiveShopId();
+          const [activeShopId, boundShops] = await Promise.all([getActiveShopId(), getBoundShops()]);
           const researchScope = buildResearchScope({
             pageContext,
             tab,
@@ -652,11 +770,35 @@ chrome.runtime.onConnect.addListener((port) => {
             growthActionId: message.growthActionId || "",
             matchedSkills,
             activeShopId,
+            boundShops,
           });
           activeMatchedSkills = matchedSkills;
           console.log("Matched Ozon skills:", matchedSkills);
           const checkpointKey = buildWorkflowCheckpointKey({ tabId: tab.id, matchedSkills, message });
           activeCheckpointKey = checkpointKey;
+          port.postMessage({
+            type: "PROGRESS",
+            data: {
+              type: "workflow_queued",
+              step: 0,
+              actionKind: message.growthActionId || "manual",
+              message: "工作流已提交到全局调度器，将按队列串行执行，避免多个任务同时开页和重复采集。",
+            },
+          });
+          await workflowEngine.submit({
+            workflowId: checkpointKey,
+            ownerId: portId,
+            actionKind: message.growthActionId || "manual",
+            source: "background.RUN_SKILL",
+            metadata: {
+              tabId: tab.id,
+              pageUrl: tab.url || "",
+              pageTitle: tab.title || "",
+              matchedSkills,
+              growthRunId: message.growthRunId || "",
+              growthCaseId: message.growthCaseId || "",
+            },
+          }, async () => {
           protectWorkflowTab(checkpointKey, tab.id);
           const lease = await acquireWorkflowLease(checkpointKey, portId);
           if (!lease.ok) {
@@ -667,12 +809,29 @@ chrome.runtime.onConnect.addListener((port) => {
             renewWorkflowLease(checkpointKey, portId).catch((err) => console.warn("Could not renew workflow lease:", err.message));
           }, 15_000);
           const existingCheckpoint = await getWorkflowCheckpoint(checkpointKey);
-          const shouldResumeFromCheckpoint = isResumableCheckpoint(existingCheckpoint) && (
-            message.continueSession ||
-            Boolean(message.userInstruction) ||
-            Boolean(message.growthCaseId)
+          const hasExplicitWorkflowSession = Boolean(message.workflowSessionId);
+          const forceNewSession = Boolean(message.forceNewSession);
+          const shouldResumeFromCheckpoint = !forceNewSession && isResumableCheckpoint(existingCheckpoint) && (
+            Boolean(message.continueSession) ||
+            (!hasExplicitWorkflowSession && (Boolean(message.userInstruction) || Boolean(message.growthCaseId)))
           );
-          pageContext.research_scope = existingCheckpoint?.research_scope || existingCheckpoint?.snapshot?.research_scope || researchScope;
+          await recordTaskLog({
+            workflowId: checkpointKey,
+            category: "workflow",
+            severity: "info",
+            event: shouldResumeFromCheckpoint ? "workflow_resumed" : "workflow_started",
+            message: shouldResumeFromCheckpoint ? "工作流从已保存断点恢复执行。" : "工作流已开始执行。",
+            details: {
+              actionKind: message.growthActionId || "manual",
+              tabId: tab.id,
+              matchedSkills,
+              sourcePageRole: researchScope.source_page_role,
+            },
+            source: "background",
+          });
+          pageContext.research_scope = shouldResumeFromCheckpoint
+            ? existingCheckpoint?.research_scope || existingCheckpoint?.snapshot?.research_scope || researchScope
+            : researchScope;
           pageContext.trend_context_type = pageContext.research_scope.trend_context_type;
 
           if (shouldResumeFromCheckpoint) {
@@ -713,6 +872,15 @@ chrome.runtime.onConnect.addListener((port) => {
 
           const sendProgress = (progressData) => {
             if (isCancelled) return;
+            recordTaskLog({
+              workflowId: checkpointKey,
+              category: progressData.toolName ? "tool" : "workflow",
+              severity: taskLogSeverityForProgress(progressData),
+              event: progressData.type || "progress",
+              message: String(progressData.message || progressData.actionLabel || progressData.toolName || "工作流进度更新"),
+              details: summarizeTaskLogDetails(progressData),
+              source: "agent_loop",
+            });
             port.postMessage({ type: "PROGRESS", data: progressData });
           };
 
@@ -723,7 +891,7 @@ chrome.runtime.onConnect.addListener((port) => {
             userInstruction: message.userInstruction,
             pageContext,
             sendProgress,
-            continueSession: message.continueSession || shouldResumeFromCheckpoint,
+            continueSession: Boolean(message.continueSession || shouldResumeFromCheckpoint),
             highRandomness: message.highRandomness,
             negativeFilter: message.negativeFilter,
             resumeState: shouldResumeFromCheckpoint ? existingCheckpoint : null,
@@ -742,6 +910,15 @@ chrome.runtime.onConnect.addListener((port) => {
                 research_scope: pageContext.research_scope,
                 workflowGeneration: lease.generation,
               });
+              await recordTaskLog({
+                workflowId: checkpointKey,
+                category: "checkpoint",
+                severity: "info",
+                event: checkpoint.lastStage || checkpoint.status || "checkpoint",
+                message: `工作流检查点已保存：${checkpoint.lastStage || checkpoint.status || "running"}。`,
+                details: { step: checkpoint.step, toolName: checkpoint.currentTool, stage: checkpoint.lastStage },
+                source: "workflow_runtime",
+              });
             },
           });
 
@@ -749,9 +926,14 @@ chrome.runtime.onConnect.addListener((port) => {
             // Automatically save successful runs to savedResults
             let savedEntry = null;
             try {
-              const existing = await new Promise((r) => chrome.storage.local.get(["savedResults"], r));
+              const existing = await getLocal(["savedResults"]);
               const savedResults = existing.savedResults || [];
               
+              const evidenceQuality = summarizeEvidenceQuality({
+                output: result.result || {},
+                pageContext,
+                researchScope: pageContext.research_scope,
+              });
               const newEntry = {
                 id: Date.now(),
                 createdAt: new Date().toISOString(),
@@ -764,16 +946,21 @@ chrome.runtime.onConnect.addListener((port) => {
                 growthRunId: message.growthRunId || "",
                 growthCaseId: message.growthCaseId || "",
                 research_scope: pageContext.research_scope,
-                evidence_quality: summarizeEvidenceQuality({
-                  output: result.result || {},
-                  pageContext,
-                  researchScope: pageContext.research_scope,
-                }),
+                evidence_quality: evidenceQuality,
                 result: result.result // The parsed final output object containing overview, analysis, and data items
               };
+              newEntry.evidence_bundle = buildEvidenceBundle({
+                savedEntry: newEntry,
+                output: result.result || {},
+                pageContext,
+                researchScope: pageContext.research_scope,
+                evidenceQuality,
+                toolHistory: result.toolHistory || [],
+                workflowId: checkpointKey,
+              });
               
               savedResults.unshift(newEntry);
-              await new Promise((r) => chrome.storage.local.set({ savedResults: savedResults.slice(0, 100) }, r));
+              await setLocal({ savedResults: savedResults.slice(0, 100) });
               await upsertGrowthCaseFromResult({
                 savedEntry: newEntry,
                 output: result.result || {},
@@ -782,6 +969,15 @@ chrome.runtime.onConnect.addListener((port) => {
               });
               savedEntry = newEntry;
               console.log("Successfully saved run results to savedResults database for dashboard.");
+              await recordTaskLog({
+                workflowId: checkpointKey,
+                category: "report",
+                severity: "info",
+                event: "report_saved",
+                message: "工作流报告与证据包已保存到本地归档。",
+                details: { actionKind: message.growthActionId || "manual" },
+                source: "background",
+              });
             } catch (saveErr) {
               console.error("Auto-saving run results to database failed:", saveErr.message);
             }
@@ -804,12 +1000,33 @@ chrome.runtime.onConnect.addListener((port) => {
             leaseRenewTimer = null;
             await cleanupActiveWorkflowTabs(checkpointKey);
             await releaseWorkflowLease(checkpointKey, portId, "completed");
+            await recordTaskLog({
+              workflowId: checkpointKey,
+              category: "workflow",
+              severity: "info",
+              event: "workflow_completed",
+              message: "工作流已完成并释放运行租约。",
+              source: "background",
+            });
+            pruneTaskLogs().catch((err) => console.warn("Task log prune skipped:", err.message));
             activeCheckpointKey = "";
             activeMatchedSkills = [];
           }
+          if (isCancelled) {
+            throw new Error("workflow cancellation requested");
+          }
+          });
         } catch (err) {
-          const workflowPaused = /workflow cancellation requested|user_paused/i.test(String(err.message || ""));
+          const workflowPaused = /workflow cancellation requested|user_paused|cancelled before start/i.test(String(err.message || ""));
           if (workflowPaused && activeCheckpointKey) {
+            await recordTaskLog({
+              workflowId: activeCheckpointKey,
+              category: "workflow",
+              severity: "warning",
+              event: "workflow_interrupted",
+              message: "工作流已暂停，断点可恢复。",
+              source: "background",
+            });
             await setWorkflowCheckpoint(activeCheckpointKey, {
               status: "interrupted",
               error: "",
@@ -841,6 +1058,15 @@ chrome.runtime.onConnect.addListener((port) => {
               failedAt: new Date().toISOString(),
             });
           }
+          await recordTaskLog({
+            workflowId: activeCheckpointKey,
+            category: "workflow",
+            severity: "error",
+            event: "workflow_failed",
+            message: `工作流失败：${err.message}`,
+            details: { errorCode: err.code || "WORKFLOW_ERROR" },
+            source: "background",
+          });
           if (activeCheckpointKey) {
             cleanupActiveWorkflowTabs(activeCheckpointKey).catch((cleanupErr) => console.warn("Could not cleanup owned tabs:", cleanupErr.message));
             releaseWorkflowLease(activeCheckpointKey, portId, "failed").catch((leaseErr) => console.warn("Could not release failed workflow lease:", leaseErr.message));
@@ -887,6 +1113,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === "GET_TASK_LOGS") {
+    listTaskLogs({
+      workflowId: message.workflowId || "",
+      severity: message.severity || "",
+      limit: message.limit || 200,
+    }).then((data) => sendResponse({ ok: true, data }))
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+
+  if (message.type === "GET_WORKFLOW_ENGINE_STATE") {
+    sendResponse({ ok: true, data: workflowEngine.getState() });
+    return true;
+  }
+
   if (message.type === "DELETE_RESULT") {
     deleteResult(message.id)
       .then(() => sendResponse({ ok: true }))
@@ -896,6 +1137,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === "EXPORT_RESULTS") {
     exportResults()
+      .then((data) => sendResponse({ ok: true, data }))
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+
+  if (message.type === "EXPORT_EVIDENCE_BUNDLE") {
+    exportEvidenceBundle(message.reportId, { includeArtifactPayloads: Boolean(message.includeArtifactPayloads) })
       .then((data) => sendResponse({ ok: true, data }))
       .catch((err) => sendResponse({ ok: false, error: err.message }));
     return true;
@@ -1005,7 +1253,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             platform: "tiktok"
           });
           
-          const storage = await new Promise(r => chrome.storage.local.get(["monitorTasks"], r));
+          const storage = await getLocal(["monitorTasks"]);
           const tasks = storage.monitorTasks || [];
           const taskExists = tasks.some(t => t.target_url === pageData.url);
           if (!taskExists) {
@@ -1021,7 +1269,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               last_run_at: new Date().toISOString(),
               status: "active"
             });
-            await new Promise(r => chrome.storage.local.set({ monitorTasks: tasks }, r));
+            await setLocal({ monitorTasks: tasks });
           }
           
           const dashboardUrl = chrome.runtime.getURL("dashboard.html");
@@ -1039,6 +1287,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 // ── Alarms Listener for Scheduled Background Monitoring Checks ──
 chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (alarm.name === TASK_LOG_PRUNE_ALARM) {
+    const result = await pruneTaskLogs();
+    await recordTaskLog({
+      category: "maintenance",
+      severity: "info",
+      event: "task_logs_pruned",
+      message: `任务日志定期清理完成，删除 ${result.deleted || 0} 条过期或超限记录。`,
+      details: result,
+      source: "alarm",
+    });
+    return;
+  }
   if (alarm.name === UPDATE_CHECK_ALARM) {
     await checkForUpdates({ force: true });
     return;
@@ -1049,123 +1309,185 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     try {
       const task = JSON.parse(decodeURIComponent(taskJson));
       if (task && task.target_url) {
-        console.log("Triggering scheduled background monitoring check for:", task.target_url);
-        chrome.tabs.create({ url: task.target_url, active: false }, (newTab) => {
-          let attempts = 0;
-          const maxAttempts = 20; // 10 seconds timeout
-          const checkInterval = setInterval(() => {
-            attempts++;
-            chrome.tabs.get(newTab.id, async (tabInfo) => {
-              if (chrome.runtime.lastError || !tabInfo) {
-                clearInterval(checkInterval);
-                return;
-              }
-              if (tabInfo.status === "complete" || attempts >= maxAttempts) {
-                clearInterval(checkInterval);
-                try {
-                  chrome.tabs.sendMessage(newTab.id, { type: "READ_CURRENT_PAGE" }, async (res) => {
-                    if (res && res.ok && res.data) {
-                      const pageData = res.data;
-                      let items = [];
-                      let creatorInfo = null;
-                      let shopInfo = null;
-
-                      const isOzon = task.platform === "ozon";
-
-                      if (isOzon) {
-                        if (task.target_type === "item") {
-                          // Single Ozon product page check
-                          items = [{
-                            id: pageData.sku || pageData.id || pageData.url || task.target_url,
-                            title: pageData.title || pageData.name || "Ozon Product",
-                            price: pageData.price || 0,
-                            sales: pageData.salesCount || pageData.sales || 0,
-                            rating: pageData.rating || 0,
-                            reviews: pageData.reviewCount || pageData.reviews || 0,
-                            imgUrl: pageData.imageUrl || pageData.img || ""
-                          }];
-                        } else {
-                          // Ozon shop check
-                          if (pageData.productCards && pageData.productCards.length > 0) {
-                            items = pageData.productCards.map(p => ({
-                              id: p.id || p.product_link || Math.random().toString(),
-                              title: p.title || p.name || "Ozon Product",
-                              price: p.price || 0,
-                              sales: p.sales || 0,
-                              rating: p.rating || 0,
-                              reviews: p.reviews || 0,
-                              imgUrl: p.candidate_image_url || p.imgUrl || ""
-                            }));
-                          }
-                          shopInfo = {
-                            id: pageData.shopId || pageData.title || "Ozon Seller",
-                            name: pageData.title || "Ozon Seller",
-                            url: pageData.url || task.target_url
-                          };
-                        }
-                      } else {
-                        // Legacy TikTok handling
-                        if (pageData.productCards && pageData.productCards.length > 0) {
-                          items = pageData.productCards;
-                        }
-                        if (pageData.url && pageData.url.includes("tiktok.com")) {
-                          const usernameMatch = pageData.url.match(/tiktok\.com\/@([a-zA-Z0-9._-]+)/);
-                          if (usernameMatch) {
-                            creatorInfo = {
-                              username: usernameMatch[1],
-                              fansCount: pageData.reviewCount || "0",
-                              likesCount: pageData.rating || "0",
-                              url: pageData.url
-                            };
-                          }
-                        }
-                      }
-
-                      // Run data comparisons and trigger change events
-                      await tools.monitor_process_page_data({
-                        items,
-                        creatorInfo,
-                        shopInfo,
-                        platform: task.platform || "tiktok"
-                      });
-
-                      // Update last execution time for task
-                      try {
-                        const stored = await new Promise(r => chrome.storage.local.get(["monitorTasks"], r));
-                        const storedTasks = stored.monitorTasks || [];
-                        const matchTask = storedTasks.find(t => t.id === task.id);
-                        if (matchTask) {
-                          matchTask.last_run_at = new Date().toLocaleString();
-                          await new Promise(r => chrome.storage.local.set({ monitorTasks: storedTasks }, r));
-                        }
-                      } catch (err) {
-                        console.warn("Failed to update last_run_at for alarm task:", err.message);
-                      }
-
-                      console.log("Scheduled monitor check processed successfully for:", task.target_url);
-                    }
-                    chrome.tabs.remove(newTab.id);
-                  });
-                } catch (e) {
-                  console.error("Scheduled check page extraction failed:", e);
-                  chrome.tabs.remove(newTab.id);
-                }
-              }
-            });
-          }, 500);
+        await recordTaskLog({
+          workflowId: `monitor:${task.id || "unknown"}`,
+          category: "monitor",
+          severity: "info",
+          event: "monitor_started",
+          message: "定时监控任务已启动。",
+          details: { actionKind: task.task_type || "monitor", tabId: undefined },
+          source: "alarm",
         });
+        const monitorWorkflowId = `monitor:${task.id || "unknown"}`;
+        let monitorTab = null;
+        try {
+          console.log("Triggering scheduled background monitoring check for:", task.target_url);
+          monitorTab = await createOwnedTab({
+            workflowId: monitorWorkflowId,
+            url: task.target_url,
+            active: false,
+          });
+          await recordTaskLog({
+            workflowId: monitorWorkflowId,
+            category: "monitor",
+            severity: "info",
+            event: "monitor_tab_opened",
+            message: "定时监控页面已打开，正在等待动态内容稳定。",
+            details: { tabId: monitorTab.id },
+            source: "alarm",
+          });
+          const ready = await waitForPageCaptureReady(monitorTab.id, {
+            workflowId: monitorWorkflowId,
+            expectedUrl: task.target_url,
+            label: "scheduled_monitor",
+            progressLabel: task.target_type === "shop" ? "店铺监控页面" : "商品监控页面",
+            timeoutMs: 22_000,
+            maxAttempts: 34,
+            pollMs: 650,
+            minQuietMs: 1800,
+            minStableReads: 2,
+            requireEvidence: false,
+            progress: (stage, message, extra = {}) => recordTaskLog({
+              workflowId: monitorWorkflowId,
+              category: "monitor",
+              severity: stage === "tab_readiness_ready" ? "info" : "debug",
+              event: stage,
+              message,
+              details: extra,
+              source: "alarm",
+            }),
+          });
+          const pageData = ready.pageData || {};
+          if (!ready.ok && !pageData.url && !pageData.title) {
+            throw new Error(ready.readError || "定时监控页面没有形成可读证据");
+          }
+          let items = [];
+          let creatorInfo = null;
+          let shopInfo = null;
+
+          const isOzon = task.platform === "ozon";
+
+          if (isOzon) {
+            if (task.target_type === "item") {
+              // Single Ozon product page check
+              items = [{
+                id: pageData.sku || pageData.id || pageData.url || task.target_url,
+                title: pageData.title || pageData.name || "Ozon Product",
+                price: pageData.price || 0,
+                sales: pageData.salesCount || pageData.sales || 0,
+                rating: pageData.rating || 0,
+                reviews: pageData.reviewCount || pageData.reviews || 0,
+                imgUrl: pageData.imageUrl || pageData.img || ""
+              }];
+            } else {
+              // Ozon shop check
+              if (pageData.productCards && pageData.productCards.length > 0) {
+                items = pageData.productCards.map(p => ({
+                  id: p.id || p.product_link || globalThis.crypto?.randomUUID?.() || Math.random().toString(),
+                  title: p.title || p.name || "Ozon Product",
+                  price: p.price || 0,
+                  sales: p.sales || 0,
+                  rating: p.rating || 0,
+                  reviews: p.reviews || 0,
+                  imgUrl: p.candidate_image_url || p.imgUrl || ""
+                }));
+              }
+              shopInfo = {
+                id: pageData.shopId || pageData.title || "Ozon Seller",
+                name: pageData.title || "Ozon Seller",
+                url: pageData.url || task.target_url
+              };
+            }
+          } else {
+            // Legacy TikTok handling
+            if (pageData.productCards && pageData.productCards.length > 0) {
+              items = pageData.productCards;
+            }
+            if (pageData.url && pageData.url.includes("tiktok.com")) {
+              const usernameMatch = pageData.url.match(/tiktok\.com\/@([a-zA-Z0-9._-]+)/);
+              if (usernameMatch) {
+                creatorInfo = {
+                  username: usernameMatch[1],
+                  fansCount: pageData.reviewCount || "0",
+                  likesCount: pageData.rating || "0",
+                  url: pageData.url
+                };
+              }
+            }
+          }
+
+          // Run data comparisons and trigger change events
+          await tools.monitor_process_page_data({
+            items,
+            creatorInfo,
+            shopInfo,
+            platform: task.platform || "tiktok"
+          });
+
+          // Update last execution time for task
+          try {
+            const stored = await getLocal(["monitorTasks"]);
+            const storedTasks = stored.monitorTasks || [];
+            const matchTask = storedTasks.find(t => t.id === task.id);
+            if (matchTask) {
+              matchTask.last_run_at = new Date().toLocaleString();
+              await setLocal({ monitorTasks: storedTasks });
+            }
+          } catch (err) {
+            console.warn("Failed to update last_run_at for alarm task:", err.message);
+          }
+
+          console.log("Scheduled monitor check processed successfully for:", task.target_url);
+          await recordTaskLog({
+            workflowId: monitorWorkflowId,
+            category: "monitor",
+            severity: ready.ok ? "info" : "warning",
+            event: "monitor_completed",
+            message: ready.ok ? "定时监控任务已完成页面采集与变化比对。" : "定时监控任务使用超时前的最后可读页面证据完成比对。",
+            details: {
+              tabId: monitorTab.id,
+              readiness: ready.readiness,
+              readyReason: ready.readyReason,
+              elapsedSeconds: Math.round((ready.elapsedMs || 0) / 1000),
+              itemCount: items.length,
+            },
+            source: "alarm",
+          });
+        } catch (monitorErr) {
+          console.error("Scheduled check page extraction failed:", monitorErr);
+          await recordTaskLog({
+            workflowId: monitorWorkflowId,
+            category: "monitor",
+            severity: "error",
+            event: "monitor_failed",
+            message: `定时监控任务失败：${monitorErr.message}`,
+            details: { tabId: monitorTab?.id },
+            source: "alarm",
+          });
+        } finally {
+          if (monitorTab?.id) await closeOwnedTab(monitorWorkflowId, monitorTab.id);
+        }
       }
     } catch (err) {
       console.error("Error running alarm task:", err);
+      await recordTaskLog({
+        workflowId: `monitor:${String(alarm.name || "unknown")}`,
+        category: "monitor",
+        severity: "error",
+        event: "monitor_failed",
+        message: `定时监控任务失败：${err.message}`,
+        source: "alarm",
+      });
     }
   }
 });
 
 // ── Initialize Default Settings on Installation ──
 chrome.runtime.onInstalled.addListener(() => {
-  chrome.storage.local.get(["llmProvider"], (data) => {
+  (async () => {
+    const data = await getLocal(["llmProvider"]);
     if (!data.llmProvider) {
-      chrome.storage.local.set({
+      await setLocal({
         llmProvider: "qwen",
         llmModel: "qwen-max",
         temperature: "0.2",
@@ -1174,7 +1496,14 @@ chrome.runtime.onInstalled.addListener(() => {
         ozonWarehouseType: "FBS"
       });
     }
-  });
+  })().catch((err) => console.warn("Default settings initialization skipped:", err.message));
   chrome.alarms.create(UPDATE_CHECK_ALARM, { periodInMinutes: UPDATE_CHECK_INTERVAL_MINUTES });
+  chrome.alarms.create(TASK_LOG_PRUNE_ALARM, { periodInMinutes: TASK_LOG_PRUNE_INTERVAL_MINUTES });
+  pruneTaskLogs().catch((err) => console.warn("Initial task log prune skipped:", err.message));
   checkForUpdates({ force: true });
+});
+
+chrome.runtime.onStartup.addListener(() => {
+  chrome.alarms.create(TASK_LOG_PRUNE_ALARM, { periodInMinutes: TASK_LOG_PRUNE_INTERVAL_MINUTES });
+  pruneTaskLogs().catch((err) => console.warn("Startup task log prune skipped:", err.message));
 });

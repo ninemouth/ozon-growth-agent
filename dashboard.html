@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: MIT | Copyright (c) 2026 Yang Cao <cao.x.yang@gmail.com> -->
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -599,6 +600,26 @@
                 </tr>
               </tbody>
             </table>
+          </div>
+        </div>
+
+        <div class="grid-card task-log-card">
+          <div class="card-header">
+            <div>
+              <h3>运行日志</h3>
+              <p class="card-subtitle">记录 skill、浏览器工具、断点恢复和定时清理等关键运行事件。</p>
+            </div>
+            <div class="task-log-controls" role="group" aria-label="运行日志筛选">
+              <button class="btn btn-outline btn-xs task-log-filter active" data-severity="">全部</button>
+              <button class="btn btn-outline btn-xs task-log-filter" data-severity="warning">警告</button>
+              <button class="btn btn-outline btn-xs task-log-filter" data-severity="error">错误</button>
+              <button class="btn btn-outline btn-xs" id="refresh-task-logs-btn">刷新</button>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="task-log-list" id="task-log-list">
+              <div class="empty-state">暂无运行日志</div>
+            </div>
           </div>
         </div>
       </section>

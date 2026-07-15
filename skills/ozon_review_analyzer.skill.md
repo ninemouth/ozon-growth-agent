@@ -9,6 +9,8 @@
 当用户在 Ozon 商品详情页运行该技能时，你必须：
 
 1. **俄语差评抓取与语义归纳 (Review Sentiment Parsing)**:
+   - 第一优先调用 `collect_reviews`，优先请求 `ratingFilter: "1"`、`"2"` 或 `"3"` 的低星样本；如果低星筛选失败，必须把工具返回的 `blockingGaps` 写入报告。
+   - `collect_reviews` 返回真实 `reviews` 时，才允许把买家痛点写成已验证；如果只靠 `read_current_page` 的首屏散文本，最多只能输出 `partial` 或 `assumption_only`。
    - 提取评论区中的低分评价 (1-3 星)。
    - 提取买家上传的吐槽图片，归纳是 **外观破损 (Брак/Повреждение)**, **描述不符 (Не соответствует описанию)**, 还是 **功能失效 (Не работает)**。
 2. **拿样避坑警告 (Quality Sourcing Alert)**:
@@ -23,7 +25,7 @@
 
 `data` 数组中的每个痛点或改良任务必须包含 `evidence_ledger`，每条证据包含：
 
-- `source_type`: 允许 `page_dom`、`screenshot_visual`、`ozon_search`、`supplier_page`、`assumption`。
+- `source_type`: 允许 `page_dom`、`review_dom`、`screenshot_visual`、`ozon_search`、`supplier_page`、`assumption`。
 - `source_ref`: 当前评论区 URL、页面评论片段、截图区域、供应商页面 URL 或“待验证假设”。
 - `observed_value`: 具体俄语评论原文或视觉观察值，必须配中文解释。
 - `used_for`: 说明该证据支撑质量缺陷、包装缺陷、描述不符、履约问题或改良动作。

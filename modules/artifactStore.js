@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: MIT | Copyright (c) 2026 Yang Cao <cao.x.yang@gmail.com> */
 // modules/artifactStore.js — durable large-artifact storage for extension workflows
 
 const DB_NAME = "ozonGrowthAgentArtifacts";

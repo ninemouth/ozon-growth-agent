@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: MIT | Copyright (c) 2026 Yang Cao <cao.x.yang@gmail.com> */
 const OZON_HOST_RE = /(^|\.)ozon\.ru$/i;
 const SUPPLIER_HOST_RE = /(^|\.)?(1688|taobao|tmall)\.com$/i;
 
@@ -28,6 +29,21 @@ function extractSearchParam(urlObj) {
   );
 }
 
+function extractSellerIdentity(urlObj) {
+  if (!urlObj) return "";
+  const match = String(urlObj.pathname || "").match(/\/(?:seller|shop)\/([^\/?#]+)/i);
+  return normalizeText(match?.[1] || "").toLowerCase();
+}
+
+function matchBoundShopBySellerUrl(urlObj, boundShops = []) {
+  const currentIdentity = extractSellerIdentity(urlObj);
+  if (!currentIdentity) return null;
+  return boundShops.find((shop) => {
+    const shopUrl = safeUrl(shop?.sellerUrl || "");
+    return shopUrl && extractSellerIdentity(shopUrl) === currentIdentity;
+  }) || null;
+}
+
 function inferOzonEntryPageType(urlObj, pageContext = {}) {
   if (!urlObj || !OZON_HOST_RE.test(urlObj.hostname)) return "";
   const path = urlObj.pathname.toLowerCase();
@@ -43,8 +59,8 @@ function inferOzonEntryPageType(urlObj, pageContext = {}) {
 function inferInstructionScope(instruction = "", growthActionId = "", skillPaths = []) {
   const text = `${instruction || ""} ${growthActionId || ""} ${skillPaths.join(" ")}`.toLowerCase();
   if (includesAny(text, [/趋势|trend|platform_trends|平台|大盘|类目|热卖/])) return "platform_trend";
-  if (includesAny(text, [/店铺|体检|diagnose_store|optimizer|定位|全店/])) return "store_trend_fit";
   if (includesAny(text, [/竞品|competitor|对标|跟踪/])) return "competitor_learning";
+  if (includesAny(text, [/店铺|体检|diagnose_store|optimizer|定位|全店/])) return "store_trend_fit";
   if (includesAny(text, [/货源|供应商|1688|taobao|淘宝|采购|sourcing|利润/])) return "sourcing_validation";
   if (includesAny(text, [/商品机会|单品机会|product_opportunity/])) return "product_opportunity";
   if (includesAny(text, [/listing|标题|详情|关键词|seo|首图|转化/])) return "product_opportunity";
@@ -54,7 +70,7 @@ function inferInstructionScope(instruction = "", growthActionId = "", skillPaths
 
 function analysisScopeForEntry(entryPageType = "", instructionScope = "") {
   if (instructionScope) return instructionScope;
-  if (entryPageType === "owned_store" || entryPageType === "competitor_store") return "store_trend_fit";
+  if (entryPageType === "owned_store" || entryPageType === "competitor_store" || entryPageType === "external_store") return "store_trend_fit";
   if (entryPageType === "owned_product" || entryPageType === "competitor_product") return "product_opportunity";
   if (entryPageType === "ozon_search" || entryPageType === "ozon_category") return "category_opportunity";
   if (entryPageType === "ozon_home") return "platform_trend";
@@ -62,14 +78,14 @@ function analysisScopeForEntry(entryPageType = "", instructionScope = "") {
   return "unknown";
 }
 
-function roleForEntry(entryPageType = "", analysisScope = "") {
+function roleForEntry(entryPageType = "", _analysisScope = "") {
   if (entryPageType === "owned_store") return "self_store";
   if (entryPageType === "owned_product") return "self_product";
+  if (entryPageType === "external_store") return "store_subject_external";
   if (entryPageType === "competitor_store" || entryPageType === "competitor_product") return "competitor_reference";
   if (entryPageType === "ozon_home") return "platform_discovery";
   if (entryPageType === "ozon_search" || entryPageType === "ozon_category") return "category_research";
   if (entryPageType === "supplier_page") return "sourcing_reference";
-  if (analysisScope === "store_trend_fit") return "self_store";
   return "unknown";
 }
 
@@ -107,6 +123,11 @@ function buildConclusionPolicy({ entryPageType, analysisScope, sourcePageRole, s
     allowed.push("把当前页面作为竞品学习样本");
     forbidden.push("把竞品页面误写成自营店铺或自营商品");
   }
+  if (sourcePageRole === "store_subject_external") {
+    allowed.push("把当前访问店铺作为公开店铺样本做店铺体检或定位学习");
+    forbidden.push("把当前公开店铺误写成已绑定自营店铺");
+    forbidden.push("把 Seller API 或内部经营数据伪装成当前公开店铺已验证证据");
+  }
   if (analysisScope === "sourcing_validation") {
     allowed.push("验证供应商、规格、MOQ、价格、认证和跨境毛利");
     forbidden.push("把 1688/淘宝供应商页当作 Ozon 平台趋势证据");
@@ -124,6 +145,7 @@ export function buildResearchScope({
   growthActionId = "",
   matchedSkills = [],
   activeShopId = "",
+  boundShops = [],
 } = {}) {
   const url = normalizeText(pageContext.url || tab.url || "");
   const urlObj = safeUrl(url);
@@ -134,9 +156,14 @@ export function buildResearchScope({
   } else if (urlObj && SUPPLIER_HOST_RE.test(urlObj.hostname)) {
     entryPageType = "supplier_page";
   }
-
-  if (entryPageType === "competitor_store" && activeShopId && /seller|shop/i.test(url)) {
-    entryPageType = instructionScope === "store_trend_fit" ? "owned_store" : "competitor_store";
+  const matchedBoundShop = matchBoundShopBySellerUrl(urlObj, Array.isArray(boundShops) ? boundShops : []);
+  const matchedBoundShopId = normalizeText(matchedBoundShop?.id || "");
+  const matchedBoundShopName = normalizeText(matchedBoundShop?.name || "");
+  const isStorePage = entryPageType === "competitor_store";
+  if (isStorePage && matchedBoundShopId) {
+    entryPageType = "owned_store";
+  } else if (isStorePage && instructionScope === "store_trend_fit") {
+    entryPageType = "external_store";
   }
   const seedKeyword = extractSearchParam(urlObj);
   const seedKeywords = Array.from(new Set([
@@ -150,6 +177,9 @@ export function buildResearchScope({
   const weakContext = entryPageType === "unknown" || (entryPageType === "ozon_home" && seedKeywords.length === 0 && !seedCategory);
   const scopeConfidence = weakContext ? "low" : (seedKeywords.length > 0 || seedCategory || sourcePageRole !== "unknown" ? "high" : "medium");
   const policy = buildConclusionPolicy({ entryPageType, analysisScope, sourcePageRole, seedKeywords });
+  const isBoundStorePage = Boolean(matchedBoundShopId);
+  const isActiveShopPage = Boolean(matchedBoundShopId) && matchedBoundShopId === normalizeText(activeShopId);
+  const runtimeShopId = entryPageType === "owned_store" ? (matchedBoundShopId || normalizeText(activeShopId)) : "";
 
   return {
     entry_page_type: entryPageType,
@@ -163,7 +193,12 @@ export function buildResearchScope({
     needs_user_clarification: weakContext,
     current_url: url,
     current_title: normalizeText(pageContext.title || tab.title || ""),
-    active_shop_id: activeShopId || "",
+    active_shop_id: runtimeShopId,
+    selected_active_shop_id: normalizeText(activeShopId),
+    matched_bound_shop_id: matchedBoundShopId,
+    matched_bound_shop_name: matchedBoundShopName,
+    is_bound_store_page: isBoundStorePage,
+    is_active_shop_page: isActiveShopPage,
     ...policy,
   };
 }

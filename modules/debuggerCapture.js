@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: MIT | Copyright (c) 2026 Yang Cao <cao.x.yang@gmail.com> */
 // CDP-backed page capture used only for explicit evidence workflows.
 // The debugger is attached for one capture and detached immediately after it.
 

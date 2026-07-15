@@ -38,10 +38,19 @@ assert.ok(
   "session controls should be visible near the top of the sidepanel instead of hidden below the instruction area"
 );
 
-assert.match(contentSource, /chat-new-session-btn[\s\S]*\+ 新会话[\s\S]*chat-session-history-btn[\s\S]*历史会话/, "floating content overlay should expose direct new-session and session-history controls");
+assert.match(contentSource, /chat-session-rail[\s\S]*chat-new-session-btn[\s\S]*aria-label="新会话"[\s\S]*chat-session-history-btn[\s\S]*aria-label="历史会话"/, "floating content overlay should expose icon new-session and session-history controls in the left rail");
+assert.match(contentSource, /\.chat-session-history-panel[\s\S]*position:\s*absolute/, "floating content overlay history panel should float over the chat dialog");
+assert.match(contentSource, /const isSearchOrCatalogPage = isOzon && !isSellerPage && !isProductPage/, "floating dock page detection should keep seller pages out of search/catalog mode");
+assert.match(contentSource, /if \(isSellerPage\) \{\s*return \["diagnose_store_growth", "explore_platform_trends"\];\s*\}/, "seller storefront dock should only expose seller-level growth actions");
+assert.match(contentSource, /dataset\.lockableDockButton = "true"/, "floating dock should mark non-dashboard buttons as lockable");
+assert.match(contentSource, /setDockBusy[\s\S]*querySelectorAll\('\[data-lockable-dock-button="true"\]'\)/, "floating dock should lock every marked non-dashboard button while a business workflow is running");
+assert.match(contentSource, /settingsBtn\.addEventListener\("click"[\s\S]*if \(activeGrowthRun\)/, "floating dock settings button should be blocked during an active workflow");
+assert.match(contentSource, /bindShopBtn\.addEventListener\("click"[\s\S]*if \(activeGrowthRun\)/, "floating dock shop binding button should be blocked during an active workflow");
 assert.match(contentSource, /pickLatestOverlayResumableSessionForContinue[\s\S]*legacyContinueInstruction[\s\S]*pickLatestOverlayResumableSessionForContinue/, "floating overlay plain continue messages should auto-select the latest resumable checkpoint");
 assert.match(contentSource, /workflowSessionId[\s\S]*continueSession[\s\S]*forceNewSession/, "floating overlay should pass explicit session intent into RUN_SKILL");
 assert.match(contentSource, /startOverlayNewSessionMode[\s\S]*不会沿用旧断点/, "floating overlay should make fresh-session mode visible");
+assert.match(contentSource, /runSelectedSkill\(runInstruction \|\| instruction, actionId, \{ forceNewSession: !resume \}\)/, "floating overlay new-session action runs should explicitly force a fresh workflow");
+assert.match(contentSource, /explicitForceNewSession[\s\S]*resumeSessionKey = explicitForceNewSession \? "" : getOverlayActiveResumeSessionKey/, "floating overlay forced-new runs must ignore any previously selected history session key");
 assert.match(contentSource, /resumableEntries\.length > 0[\s\S]*已暂停自动运行[\s\S]*return;[\s\S]*runOverlayGrowthActionNow/, "floating overlay action clicks should pause for session choice when resumable checkpoints exist");
 assert.match(contentSource, /chat-session-resume-btn[\s\S]*overlayPendingGrowthAction[\s\S]*resume:\s*true/, "choosing a history item from the floating overlay should resume the pending action");
 assert.match(contentSource, /chat-new-session-btn[\s\S]*overlayPendingGrowthAction \|\| overlayLastGrowthAction[\s\S]*resume:\s*false/, "clicking + new session from a pending or last floating action should start a fresh run explicitly");
@@ -68,6 +77,8 @@ assert.match(background, /port\.sender\?\.tab\?\.id \? port\.sender\.tab : await
 assert.match(background, /tools\.read_current_page\(\{ __sourceTabId: tab\.id \}\)/, "background should read initial page context from the protected source tab");
 assert.match(background, /message\.type === "CANCEL_WORKFLOW"[\s\S]*requestWorkflowCancellation[\s\S]*lastStage:\s*"user_paused"/, "background should persist user-paused workflows as resumable checkpoints");
 assert.match(background, /workflowPaused[\s\S]*type:\s*"INTERRUPTED"[\s\S]*resumeHint/, "background should report explicit interrupted state instead of overwriting user pause as failed");
+assert.match(background, /const forceNewSession = Boolean\(message\.forceNewSession\)[\s\S]*const shouldResumeFromCheckpoint = !forceNewSession/, "background must not auto-resume checkpoints when the caller explicitly requests a new session");
+assert.match(background, /const hasExplicitWorkflowSession = Boolean\(message\.workflowSessionId\)[\s\S]*!hasExplicitWorkflowSession/, "background should only use instruction-based implicit resume for legacy calls without an explicit workflow session id");
 assert.match(sidepanelJs, /msg\.type === "tool_stage"/, "sidepanel should show concrete browser tool stages");
 assert.match(contentSource, /data\.type === "tool_stage"/, "floating overlay should show concrete browser tool stages");
 
@@ -125,7 +136,7 @@ assert.match(toolRegistry, /search_source_tab_protected[\s\S]*protectedSourceTab
 assert.match(toolRegistry, /restoreSourceTabFocus[\s\S]*search_tab_closed/, "browser searches should restore focus to the source Ozon tab after closing temporary evidence tabs");
 assert.match(toolRegistry, /protectedSourceTab[\s\S]*Refused to close source tab/, "close_tab must refuse to close the original source tab");
 assert.match(toolRegistry, /protectedOzonTrendTab[\s\S]*Refused to close Ozon page/, "platform trends close_tab must refuse to close any Ozon page");
-assert.match(toolRegistry, /openerTabId[\s\S]*chrome\.tabs\.create/, "workflow-created tabs should preserve the source tab as opener");
+assert.match(toolRegistry, /openerTabId[\s\S]*createOwnedTabCallback/, "workflow-created tabs should preserve the source tab as opener through the owned-tab manager");
 assert.equal(hasValidGoogleTrendsEvidence({
   ok: true,
   searchUrl: "https://trends.google.com/trends/explore?date=today%2012-m&geo=RU&q=%D0%BF%D0%BE%D0%BB%D0%BA%D0%B0",

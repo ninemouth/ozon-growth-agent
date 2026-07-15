@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { getSourcingWorkflowGuardError, sanitizeFinalReportForBusinessAudience } from "../modules/agentLoop.js";
+import {
+  getSourcingWorkflowGuardError,
+  hasTechnicalJargonInBusinessReport,
+  normalizeFinalReportEvidenceLedger,
+  sanitizeFinalReportBeforeCritic,
+  sanitizeFinalReportForBusinessAudience,
+} from "../modules/agentLoop.js";
 
 const sourcingSkillMarkdown = fs.readFileSync(new URL("../skills/ozon_sourcing_finder.skill.md", import.meta.url), "utf8");
 const agentLoopSource = fs.readFileSync(new URL("../modules/agentLoop.js", import.meta.url), "utf8");
@@ -122,6 +128,90 @@ assert.equal(
   sanitizedFinal.output.data[0].product_link,
   "https://detail.1688.com/offer/read_current_page.html",
   "sanitizer should not mutate URL/link fields"
+);
+
+const preCriticInput = {
+  type: "final",
+  output: {
+    overview: "通过 read_current_page 和 DOM 信息完成初筛。",
+    analysis: "search_in_browser 已获得 Ozon/Yandex 侧需求，close_tab 后整理报告。",
+    summary: "最终不应该让 Critic 才发现 xpath 和自愈程序。",
+    data: [
+      {
+        title: "候选供应商 A",
+        product_link: "https://detail.1688.com/offer/read_current_page.html",
+        evidence: "调用指令: search_in_browser 后，基于 DOM 结果判断视觉相似。",
+      },
+    ],
+  },
+};
+assert.equal(hasTechnicalJargonInBusinessReport(preCriticInput), true, "pre-critic hygiene should detect business-text jargon before validateReport");
+const preCriticSanitized = sanitizeFinalReportBeforeCritic(preCriticInput);
+assert.equal(preCriticSanitized.sanitized, true, "pre-critic hygiene should sanitize final reports before Critic validation");
+assert.equal(hasTechnicalJargonInBusinessReport(preCriticSanitized.parsed), false, "pre-critic sanitized final should not expose internal tool terms in business text");
+assert.equal(
+  preCriticSanitized.parsed.output.data[0].product_link,
+  "https://detail.1688.com/offer/read_current_page.html",
+  "pre-critic sanitizer should not mutate URL/link fields"
+);
+
+const ledgerNormalization = normalizeFinalReportEvidenceLedger({
+  type: "final",
+  output: {
+    overview: "证据来源别名规范化测试。",
+    analysis: "不应因为 source_type 近义词进入 Critic 打回。",
+    summary: "枚举口径应在审计前修正。",
+    data: [
+      {
+        title: "清退低相关商品，重建垂直家居电器店",
+        evidence_ledger: [
+          {
+            source_type: "page_text",
+            source_ref: "当前 Ozon 店铺公开页面",
+            observed_value: "店铺类目混杂，垂直度不足",
+            used_for: "定位重构判断",
+            confidence: "medium",
+            limitation: "仅基于公开页面文本",
+          },
+          {
+            source_type: "seller_api",
+            source_ref: "已绑定店铺 API 快照",
+            observed_value: "低相关 SKU 转化弱",
+            used_for: "清退低相关商品优先级",
+            confidence: "medium",
+            limitation: "需结合最新周期复核",
+          },
+          {
+            source_type: "competitor_page",
+            source_ref: "同类头部店铺公开页面",
+            observed_value: "头部店铺围绕单一场景组织商品",
+            used_for: "垂直定位对标",
+            confidence: "medium",
+            limitation: "公开页面样本有限",
+          },
+          {
+            source_type: "custom_ai_guess",
+            source_ref: "模型推断",
+            observed_value: "需要验证的定位假设",
+            used_for: "后续人工确认",
+            confidence: "low",
+            limitation: "原始来源类型不稳定",
+          },
+        ],
+      },
+    ],
+  },
+});
+assert.equal(ledgerNormalization.normalized, true, "pre-critic hygiene should normalize evidence ledger source aliases");
+assert.deepEqual(
+  ledgerNormalization.parsed.output.data[0].evidence_ledger.map((entry) => entry.source_type),
+  ["page_dom", "ozon_api", "page_dom", "assumption"],
+  "evidence source aliases should map to validator-safe source_type values"
+);
+assert.match(
+  ledgerNormalization.parsed.output.data[0].evidence_ledger[3].limitation,
+  /降级为待验证假设/,
+  "unknown evidence source_type should be downgraded with an explicit limitation"
 );
 
 console.log("sourcing workflow guard smoke passed");

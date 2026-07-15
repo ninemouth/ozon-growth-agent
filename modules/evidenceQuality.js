@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: MIT | Copyright (c) 2026 Yang Cao <cao.x.yang@gmail.com> */
 function levelForSource(sourceType = "") {
   const normalized = String(sourceType || "").toLowerCase();
   if (["ozon_api", "supplier_page", "official_policy", "official_regulation"].includes(normalized)) return "A";

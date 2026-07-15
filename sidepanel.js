@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: MIT | Copyright (c) 2026 Yang Cao <cao.x.yang@gmail.com> */
 // sidepanel.js — Ozon Growth Agent UI Controller
 
 // ── State ──

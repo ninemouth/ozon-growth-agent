@@ -1,13 +1,19 @@
+/* SPDX-License-Identifier: MIT | Copyright (c) 2026 Yang Cao <cao.x.yang@gmail.com> */
 // Durable workflow runtime for MV3 service-worker workflows.
 // Large snapshots and ordered events live in IndexedDB; storage.local keeps
 // only a small compatibility index in background.js.
 
 const DB_NAME = "ozonGrowthAgentRuntime";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const WORKFLOW_STORE = "workflows";
 const EVENT_STORE = "workflowEvents";
+const TASK_LOG_STORE = "taskLogs";
+const DEFAULT_LOG_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const DEFAULT_MAX_TASK_LOGS = 5000;
+const DEFAULT_MAX_LOGS_PER_WORKFLOW = 500;
 const memoryWorkflows = new Map();
 const memoryEvents = new Map();
+const memoryTaskLogs = [];
 let writeQueue = Promise.resolve();
 
 function enqueueWrite(operation) {
@@ -36,6 +42,12 @@ function openDb() {
         events.createIndex("workflowId", "workflowId", { unique: false });
         events.createIndex("sequence", ["workflowId", "sequence"], { unique: true });
       }
+      if (!db.objectStoreNames.contains(TASK_LOG_STORE)) {
+        const taskLogs = db.createObjectStore(TASK_LOG_STORE, { keyPath: "logId" });
+        taskLogs.createIndex("createdAt", "createdAt", { unique: false });
+        taskLogs.createIndex("workflowId", "workflowId", { unique: false });
+        taskLogs.createIndex("severity", "severity", { unique: false });
+      }
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error || new Error("Failed to open workflow runtime database"));
@@ -53,6 +65,23 @@ function clone(value) {
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function createLogId() {
+  const random = globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2, 10);
+  return `tasklog:${Date.now()}:${random}`;
+}
+
+function sanitizeLogValue(value, depth = 0) {
+  if (depth > 4) return "[truncated]";
+  if (typeof value === "string") return value.slice(0, 2000);
+  if (value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.slice(0, 30).map((item) => sanitizeLogValue(item, depth + 1));
+  const secretPattern = /(api[_-]?key|authorization|token|password|secret|cookie|set-cookie)/i;
+  return Object.fromEntries(Object.entries(value).slice(0, 40).map(([key, item]) => [
+    key,
+    secretPattern.test(key) ? "[redacted]" : sanitizeLogValue(item, depth + 1),
+  ]));
 }
 
 function withTransaction(db, storeNames, mode, callback) {
@@ -196,6 +225,113 @@ export async function listWorkflowEvents(workflowId, { afterSequence = 0, limit 
   }
 }
 
+export async function appendTaskLog({
+  workflowId = "",
+  category = "workflow",
+  severity = "info",
+  event = "runtime_event",
+  message = "",
+  details = {},
+  source = "background",
+} = {}) {
+  return enqueueWrite(async () => {
+    const record = {
+      logId: createLogId(),
+      workflowId: String(workflowId || ""),
+      category: String(category || "workflow"),
+      severity: ["debug", "info", "warning", "error"].includes(severity) ? severity : "info",
+      event: String(event || "runtime_event"),
+      message: String(message || "").slice(0, 2000),
+      details: sanitizeLogValue(details),
+      source: String(source || "background"),
+      createdAt: nowIso(),
+    };
+    memoryTaskLogs.push(record);
+    if (memoryTaskLogs.length > DEFAULT_MAX_TASK_LOGS) memoryTaskLogs.splice(0, memoryTaskLogs.length - DEFAULT_MAX_TASK_LOGS);
+    const db = await openDb();
+    if (!db) return clone(record);
+    try {
+      await withTransaction(db, [TASK_LOG_STORE], "readwrite", (stores) => {
+        stores[TASK_LOG_STORE].put(record);
+      });
+    } finally {
+      closeDb(db);
+    }
+    return clone(record);
+  });
+}
+
+export async function listTaskLogs({ workflowId = "", severity = "", limit = 200 } = {}) {
+  const normalizedLimit = Math.min(Math.max(Number(limit) || 200, 1), 500);
+  const filterLogs = (entries) => entries
+    .filter((entry) => !workflowId || entry.workflowId === workflowId)
+    .filter((entry) => !severity || entry.severity === severity)
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+    .slice(0, normalizedLimit);
+  if (!hasIndexedDb()) return clone(filterLogs(memoryTaskLogs));
+  const db = await openDb();
+  if (!db) return clone(filterLogs(memoryTaskLogs));
+  try {
+    const entries = await withTransaction(db, [TASK_LOG_STORE], "readonly", (stores, finish) => {
+      const request = workflowId
+        ? stores[TASK_LOG_STORE].index("workflowId").getAll(String(workflowId))
+        : stores[TASK_LOG_STORE].getAll();
+      request.onsuccess = () => finish(request.result || []);
+      request.onerror = () => finish([]);
+    });
+    return clone(filterLogs(entries));
+  } finally {
+    closeDb(db);
+  }
+}
+
+export async function pruneTaskLogs({
+  now = Date.now(),
+  retentionMs = DEFAULT_LOG_RETENTION_MS,
+  maxLogs = DEFAULT_MAX_TASK_LOGS,
+  maxLogsPerWorkflow = DEFAULT_MAX_LOGS_PER_WORKFLOW,
+} = {}) {
+  const cutoff = Number(now) - Math.max(0, Number(retentionMs) || DEFAULT_LOG_RETENTION_MS);
+  const shouldDelete = (entries) => {
+    const sorted = [...entries].sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+    const remove = new Set(sorted.filter((entry) => Date.parse(entry.createdAt) < cutoff).map((entry) => entry.logId));
+    sorted.slice(Math.max(0, Number(maxLogs) || DEFAULT_MAX_TASK_LOGS)).forEach((entry) => remove.add(entry.logId));
+    const byWorkflow = new Map();
+    sorted.forEach((entry) => {
+      const list = byWorkflow.get(entry.workflowId || "") || [];
+      list.push(entry);
+      byWorkflow.set(entry.workflowId || "", list);
+    });
+    byWorkflow.forEach((entriesForWorkflow) => {
+      entriesForWorkflow.slice(Math.max(0, Number(maxLogsPerWorkflow) || DEFAULT_MAX_LOGS_PER_WORKFLOW))
+        .forEach((entry) => remove.add(entry.logId));
+    });
+    return remove;
+  };
+  const memoryDelete = shouldDelete(memoryTaskLogs);
+  for (let index = memoryTaskLogs.length - 1; index >= 0; index -= 1) {
+    if (memoryDelete.has(memoryTaskLogs[index].logId)) memoryTaskLogs.splice(index, 1);
+  }
+  const db = await openDb();
+  if (!db) return { ok: true, deleted: memoryDelete.size, storage: "memory" };
+  try {
+    const entries = await withTransaction(db, [TASK_LOG_STORE], "readonly", (stores, finish) => {
+      const request = stores[TASK_LOG_STORE].getAll();
+      request.onsuccess = () => finish(request.result || []);
+      request.onerror = () => finish([]);
+    });
+    const ids = shouldDelete(entries);
+    if (ids.size) {
+      await withTransaction(db, [TASK_LOG_STORE], "readwrite", (stores) => {
+        ids.forEach((logId) => stores[TASK_LOG_STORE].delete(logId));
+      });
+    }
+    return { ok: true, deleted: ids.size, storage: "indexeddb" };
+  } finally {
+    closeDb(db);
+  }
+}
+
 export async function acquireWorkflowLease(workflowId, ownerId, ttlMs = 45_000) {
   const current = (await readWorkflow(workflowId)) || defaultWorkflow(workflowId);
   const now = Date.now();
@@ -258,4 +394,4 @@ export async function isWorkflowGenerationCurrent(workflowId, generation) {
   return current?.generation === generation && current?.status !== "cancellation_requested";
 }
 
-export const __testInternals = { defaultWorkflow, memoryWorkflows, memoryEvents };
+export const __testInternals = { defaultWorkflow, memoryWorkflows, memoryEvents, memoryTaskLogs, sanitizeLogValue };

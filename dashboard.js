@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: MIT | Copyright (c) 2026 Yang Cao <cao.x.yang@gmail.com> */
 // dashboard.js — Controller for Ozon AI Operations Dashboard
 
 document.addEventListener("DOMContentLoaded", async () => {
@@ -24,6 +25,7 @@ let workflowPanX = 0;
 let workflowPanY = 0;
 let workflowCanvasEventsBound = false;
 let workflowPipPosition = null;
+let taskLogSeverityFilter = "";
 
 let growthRuntimeState = {
   shops: [],
@@ -40,6 +42,7 @@ let growthRuntimeState = {
   workflowRoots: [],
   growthCases: [],
   growthActionRuns: [],
+  taskLogs: [],
   skuRows: [],
   opportunities: [],
 };
@@ -237,6 +240,18 @@ function bindEvents() {
   if (goToOpportunitiesBtn) {
     goToOpportunitiesBtn.addEventListener("click", () => document.querySelector('.nav-menu button[data-tab="opportunities"]')?.click());
   }
+
+  document.getElementById("refresh-task-logs-btn")?.addEventListener("click", async () => {
+    await refreshTaskLogs();
+  });
+  document.querySelectorAll(".task-log-filter").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      taskLogSeverityFilter = btn.getAttribute("data-severity") || "";
+      document.querySelectorAll(".task-log-filter").forEach((item) => item.classList.remove("active"));
+      btn.classList.add("active");
+      await refreshTaskLogs();
+    });
+  });
 
   const createManualExperimentBtn = document.getElementById("create-manual-experiment-btn");
   if (createManualExperimentBtn) {
@@ -451,6 +466,25 @@ function bindEvents() {
 }
 
 // ── Refresh / Load Storage Data ──
+async function fetchTaskLogs({ severity = taskLogSeverityFilter, limit = 100 } = {}) {
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: "GET_TASK_LOGS",
+      severity,
+      limit,
+    });
+    return response?.ok && Array.isArray(response.data) ? response.data : [];
+  } catch (err) {
+    console.warn("Task logs unavailable:", err.message);
+    return [];
+  }
+}
+
+async function refreshTaskLogs() {
+  growthRuntimeState.taskLogs = await fetchTaskLogs();
+  renderTaskLogs(growthRuntimeState.taskLogs);
+}
+
 async function refreshAllData() {
   const data = await new Promise((resolve) => {
     chrome.storage.local.get([
@@ -471,6 +505,7 @@ async function refreshAllData() {
       "activeShopId"
     ], resolve);
   });
+  const taskLogs = await fetchTaskLogs();
 
   // 1. Credentials Migration for backward compatibility
   if (data.ozonClientId && data.ozonApiKey && (!data.ozonShops || data.ozonShops.length === 0)) {
@@ -628,6 +663,7 @@ async function refreshAllData() {
     }),
     growthCases: mergeGrowthCasesWithRoots(data.growthCases || [], workflowTasks, filteredSavedResults, activeShop),
     growthActionRuns: (data.growthActionRuns || []).filter(run => !run.shopId || run.shopId === activeId).slice(0, 50),
+    taskLogs,
     skuRows,
     opportunities,
   };
@@ -647,6 +683,7 @@ async function refreshAllData() {
   renderRecentEventsFeed(filteredEvents);
   renderPipelineTable(filteredSavedResults);
   renderTasksTable(filteredTasks);
+  renderTaskLogs(taskLogs);
   renderReportsList(filteredReports, filteredSavedResults);
   renderGrowthHome();
   renderSmartWorkflow();
@@ -2701,6 +2738,71 @@ function renderTasksTable(tasks = []) {
   });
 }
 
+function taskLogSeverityLabel(severity = "info") {
+  return {
+    debug: "调试",
+    info: "信息",
+    warning: "警告",
+    error: "错误",
+  }[severity] || "信息";
+}
+
+function taskLogSeverityClass(severity = "info") {
+  if (severity === "error") return "danger";
+  if (severity === "warning") return "warning";
+  return "success";
+}
+
+function formatTaskLogTime(value) {
+  const date = value ? new Date(value) : null;
+  if (!date || Number.isNaN(date.getTime())) return "-";
+  return date.toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+}
+
+function stringifyTaskLogDetails(details = {}) {
+  try {
+    return JSON.stringify(details || {}, null, 2);
+  } catch (_) {
+    return "{}";
+  }
+}
+
+function renderTaskLogs(logs = []) {
+  const container = document.getElementById("task-log-list");
+  if (!container) return;
+  const list = Array.isArray(logs) ? logs.slice(0, 100) : [];
+  if (list.length === 0) {
+    const label = taskLogSeverityFilter ? `${taskLogSeverityLabel(taskLogSeverityFilter)}日志` : "运行日志";
+    container.innerHTML = `<div class="empty-state">暂无${escapeHtml(label)}</div>`;
+    return;
+  }
+
+  container.innerHTML = list.map((log) => {
+    const workflowShort = log.workflowId ? String(log.workflowId).replace(/^workflow:/, "").slice(0, 18) : "system";
+    const details = stringifyTaskLogDetails(log.details);
+    return `
+      <details class="task-log-item ${escapeHtml(log.severity || "info")}">
+        <summary>
+          <span class="task-log-time">${escapeHtml(formatTaskLogTime(log.createdAt))}</span>
+          <span class="badge ${taskLogSeverityClass(log.severity)}">${escapeHtml(taskLogSeverityLabel(log.severity))}</span>
+          <span class="task-log-main">
+            <strong>${escapeHtml(log.message || log.event || "运行事件")}</strong>
+            <small>${escapeHtml(log.category || "workflow")} / ${escapeHtml(log.event || "runtime_event")} / ${escapeHtml(workflowShort)}</small>
+          </span>
+        </summary>
+        <pre>${escapeHtml(details)}</pre>
+      </details>
+    `;
+  }).join("");
+}
+
 // ── Operations Tracker View Tab Logic ──
 let currentTrackedItem = null;
 
@@ -3306,7 +3408,17 @@ function renderReportsList(monitorReports = [], savedResults = []) {
       text = typeof r.result === "string" ? r.result : JSON.stringify(r.result, null, 2);
     }
     
-    list.push({ id: r.id || `res_${Math.random()}`, source: "saved", title: name, date: new Date(r.timestamp || Date.now()).toLocaleDateString(), content: text, tag: "AI决策" });
+    const evidenceStatus = getEvidenceBundleStatus(r.evidence_bundle || null);
+    list.push({
+      id: r.id || `res_${Math.random()}`,
+      source: "saved",
+      title: name,
+      date: new Date(r.createdAt || r.timestamp || Date.now()).toLocaleDateString(),
+      content: text,
+      tag: "AI决策",
+      evidenceBundle: r.evidence_bundle || null,
+      evidenceStatus,
+    });
   });
 
   if (list.length === 0) {
@@ -3320,13 +3432,15 @@ function renderReportsList(monitorReports = [], savedResults = []) {
       <div class="report-item-main">
         <div style="font-weight:600; font-size:12px;">${escapeHtml(rep.title)}</div>
         <div style="font-size:10px; color:var(--text-secondary); margin-top:4px; display:flex; justify-content:space-between">
-          <span>${escapeHtml(rep.tag)}</span>
+          <span>${escapeHtml(rep.tag)}${rep.evidenceStatus ? ` · <span class="report-evidence-status ${escapeHtml(rep.evidenceStatus.tone)}">${escapeHtml(rep.evidenceStatus.label)}</span>` : ""}</span>
           <span>${escapeHtml(rep.date)}</span>
         </div>
       </div>
       <div class="report-item-actions">
         <button class="btn btn-outline btn-xs report-copy-btn" data-report-index="${index}">复制</button>
         <button class="btn btn-outline btn-xs report-pdf-btn" data-report-index="${index}">PDF</button>
+        ${rep.evidenceBundle ? `<button class="btn btn-outline btn-xs report-verify-btn" data-report-index="${index}">校验</button>` : ""}
+        ${rep.evidenceBundle ? `<button class="btn btn-outline btn-xs report-evidence-btn" data-report-index="${index}">证据包</button>` : ""}
         <button class="btn btn-danger btn-xs report-delete-btn" data-report-index="${index}">删除</button>
       </div>
     </div>
@@ -3339,11 +3453,14 @@ function renderReportsList(monitorReports = [], savedResults = []) {
       <div class="report-viewer-toolbar">
         <div>
           <strong>${escapeHtml(rep.title)}</strong>
-          <span>${escapeHtml(rep.tag)} · ${escapeHtml(rep.date)}</span>
+          <span>${escapeHtml(rep.tag)} · ${escapeHtml(rep.date)}${rep.evidenceStatus ? ` · ${escapeHtml(rep.evidenceStatus.label)}` : ""}</span>
         </div>
         <div class="report-item-actions">
           <button class="btn btn-outline btn-xs report-copy-current">复制</button>
           <button class="btn btn-outline btn-xs report-pdf-current">下载 PDF</button>
+          ${rep.evidenceBundle ? `<button class="btn btn-outline btn-xs report-verify-current">校验证据</button>` : ""}
+          ${rep.evidenceBundle ? `<button class="btn btn-outline btn-xs report-evidence-current">下载证据包</button>` : ""}
+          ${rep.evidenceBundle ? `<button class="btn btn-outline btn-xs report-zip-current">下载 ZIP</button>` : ""}
           <button class="btn btn-danger btn-xs report-delete-current">删除</button>
         </div>
       </div>
@@ -3353,6 +3470,9 @@ function renderReportsList(monitorReports = [], savedResults = []) {
     `;
     viewer.querySelector(".report-copy-current")?.addEventListener("click", () => copyReportContent(rep));
     viewer.querySelector(".report-pdf-current")?.addEventListener("click", () => downloadReportPdf(rep));
+    viewer.querySelector(".report-verify-current")?.addEventListener("click", () => verifyReportEvidence(rep));
+    viewer.querySelector(".report-evidence-current")?.addEventListener("click", () => downloadEvidenceBundleJson(rep));
+    viewer.querySelector(".report-zip-current")?.addEventListener("click", () => downloadEvidenceBundleZip(rep));
     viewer.querySelector(".report-delete-current")?.addEventListener("click", () => deleteReportEntry(rep));
   };
 
@@ -3369,6 +3489,18 @@ function renderReportsList(monitorReports = [], savedResults = []) {
     btn.addEventListener("click", (event) => {
       event.stopPropagation();
       downloadReportPdf(list[Number(btn.dataset.reportIndex)]);
+    });
+  });
+  container.querySelectorAll(".report-verify-btn").forEach((btn) => {
+    btn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      verifyReportEvidence(list[Number(btn.dataset.reportIndex)]);
+    });
+  });
+  container.querySelectorAll(".report-evidence-btn").forEach((btn) => {
+    btn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      downloadEvidenceBundleJson(list[Number(btn.dataset.reportIndex)]);
     });
   });
   container.querySelectorAll(".report-delete-btn").forEach((btn) => {
@@ -3405,6 +3537,331 @@ async function copyReportContent(rep) {
   } else {
     alert("当前环境不支持自动复制，请在报告正文中手动复制。");
   }
+}
+
+function getEvidenceBundleStatus(bundle = null) {
+  if (!bundle || typeof bundle !== "object") return null;
+  const manifest = bundle.artifact_manifest || null;
+  const refCount = Array.isArray(bundle.screenshotRefs) ? bundle.screenshotRefs.length : 0;
+  if (!manifest) {
+    return {
+      label: refCount > 0 ? `证据待校验 ${refCount}` : "证据已记录",
+      tone: refCount > 0 ? "pending" : "neutral",
+    };
+  }
+  if (manifest.missing > 0) {
+    return {
+      label: `证据缺失 ${manifest.missing}`,
+      tone: "warning",
+    };
+  }
+  if (manifest.available > 0) {
+    return {
+      label: `证据完整 ${manifest.available}`,
+      tone: "ok",
+    };
+  }
+  return {
+    label: "证据不可用",
+    tone: "warning",
+  };
+}
+
+async function persistEvidenceBundleForReport(reportId, bundle) {
+  if (!reportId || !bundle || typeof chrome === "undefined" || !chrome.storage?.local) return;
+  const stored = await new Promise((resolve) => chrome.storage.local.get(["savedResults"], resolve));
+  const savedResults = (stored.savedResults || []).map((item) =>
+    String(item.id) === String(reportId)
+      ? { ...item, evidence_bundle: bundle }
+      : item
+  );
+  await new Promise((resolve) => chrome.storage.local.set({ savedResults }, resolve));
+}
+
+function downloadBlobLike({ filename, blob, fallbackText = "" } = {}) {
+  if (!filename) return;
+  const canUseObjectUrl = typeof URL !== "undefined" && typeof URL.createObjectURL === "function";
+  const url = canUseObjectUrl && blob
+    ? URL.createObjectURL(blob)
+    : `data:application/octet-stream;charset=utf-8,${encodeURIComponent(fallbackText)}`;
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  if (canUseObjectUrl && blob) {
+    link.click();
+  } else {
+    window.open(url, "_blank");
+  }
+  link.remove();
+  if (canUseObjectUrl && blob) setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function fetchEvidenceBundleExport(rep, { includeArtifactPayloads = false, persist = true } = {}) {
+  if (!rep?.evidenceBundle) return rep?.evidenceBundle || null;
+  let bundle = rep.evidenceBundle;
+  try {
+    if (chrome.runtime?.sendMessage && rep.source === "saved") {
+      const response = await chrome.runtime.sendMessage({
+        type: "EXPORT_EVIDENCE_BUNDLE",
+        reportId: rep.id,
+        includeArtifactPayloads,
+      });
+      if (response?.ok && response.data) {
+        bundle = response.data;
+        const persistedBundle = bundle?.artifact_payloads ? { ...bundle, artifact_payloads: undefined } : bundle;
+        if (persistedBundle?.artifact_payloads === undefined) delete persistedBundle.artifact_payloads;
+        rep.evidenceBundle = persistedBundle;
+        rep.evidenceStatus = getEvidenceBundleStatus(persistedBundle);
+        if (persist) await persistEvidenceBundleForReport(rep.id, persistedBundle);
+      }
+    }
+  } catch (err) {
+    console.warn("Evidence bundle export endpoint unavailable, falling back to local bundle:", err.message);
+  }
+  return bundle;
+}
+
+async function verifyReportEvidence(rep) {
+  if (!rep?.evidenceBundle) return;
+  await fetchEvidenceBundleExport(rep, { includeArtifactPayloads: false, persist: true });
+  await refreshAllData();
+  document.querySelector('.nav-menu button[data-tab="reports"]')?.click();
+}
+
+async function downloadEvidenceBundleJson(rep) {
+  if (!rep?.evidenceBundle) return;
+  const bundle = await fetchEvidenceBundleExport(rep, { includeArtifactPayloads: false, persist: true });
+  const filename = `${String(rep.title || "ozon-evidence-bundle").replace(/[^\w\u4e00-\u9fa5-]+/g, "_")}_${rep.id || Date.now()}.json`;
+  const json = JSON.stringify(bundle, null, 2);
+  downloadBlobLike({
+    filename,
+    blob: new Blob([json], { type: "application/json;charset=utf-8" }),
+    fallbackText: json,
+  });
+}
+
+function toDosDateTime(value = 0) {
+  const date = value instanceof Date ? value : new Date(value);
+  const year = date.getFullYear();
+  const month = date.getMonth() + 1;
+  const day = date.getDate();
+  const hours = date.getHours();
+  const minutes = date.getMinutes();
+  const seconds = date.getSeconds();
+  return {
+    time: (hours << 11) | (minutes << 5) | (seconds >> 1),
+    date: ((year - 1980) << 9) | (month << 5) | day,
+  };
+}
+
+const ZIP_CRC_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let i = 0; i < 256; i += 1) {
+    let c = i;
+    for (let j = 0; j < 8; j += 1) {
+      c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+    }
+    table[i] = c >>> 0;
+  }
+  return table;
+})();
+
+function crc32(bytes) {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc = ZIP_CRC_TABLE[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function concatUint8Arrays(parts = []) {
+  const total = parts.reduce((sum, item) => sum + item.length, 0);
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  parts.forEach((item) => {
+    merged.set(item, offset);
+    offset += item.length;
+  });
+  return merged;
+}
+
+function encodeUtf8Bytes(text = "") {
+  const Encoder = (typeof globalThis !== "undefined" && globalThis.TextEncoder)
+    || (typeof window !== "undefined" && window.TextEncoder);
+  if (Encoder) return new Encoder().encode(String(text || ""));
+  const utf8 = unescape(encodeURIComponent(String(text || "")));
+  const bytes = new Uint8Array(utf8.length);
+  for (let index = 0; index < utf8.length; index += 1) bytes[index] = utf8.charCodeAt(index);
+  return bytes;
+}
+
+function dataUrlToBytes(dataUrl = "") {
+  const match = String(dataUrl || "").match(/^data:([^;]+);base64,(.+)$/);
+  if (!match) return { bytes: new Uint8Array(0), mimeType: "" };
+  const binary = atob(match[2]);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return { bytes, mimeType: match[1] || "" };
+}
+
+function createStoredZipBlob(files = []) {
+  const localParts = [];
+  const centralParts = [];
+  let offset = 0;
+  const now = new Date();
+  const dos = toDosDateTime(now);
+
+  files.forEach((file) => {
+    const nameBytes = encodeUtf8Bytes(file.name);
+    const contentBytes = file.bytes instanceof Uint8Array ? file.bytes : encodeUtf8Bytes(String(file.text || ""));
+    const crc = crc32(contentBytes);
+
+    const localHeader = new Uint8Array(30 + nameBytes.length);
+    const localView = new DataView(localHeader.buffer);
+    localView.setUint32(0, 0x04034b50, true);
+    localView.setUint16(4, 20, true);
+    localView.setUint16(6, 0, true);
+    localView.setUint16(8, 0, true);
+    localView.setUint16(10, dos.time, true);
+    localView.setUint16(12, dos.date, true);
+    localView.setUint32(14, crc, true);
+    localView.setUint32(18, contentBytes.length, true);
+    localView.setUint32(22, contentBytes.length, true);
+    localView.setUint16(26, nameBytes.length, true);
+    localView.setUint16(28, 0, true);
+    localHeader.set(nameBytes, 30);
+    localParts.push(localHeader, contentBytes);
+
+    const centralHeader = new Uint8Array(46 + nameBytes.length);
+    const centralView = new DataView(centralHeader.buffer);
+    centralView.setUint32(0, 0x02014b50, true);
+    centralView.setUint16(4, 20, true);
+    centralView.setUint16(6, 20, true);
+    centralView.setUint16(8, 0, true);
+    centralView.setUint16(10, 0, true);
+    centralView.setUint16(12, dos.time, true);
+    centralView.setUint16(14, dos.date, true);
+    centralView.setUint32(16, crc, true);
+    centralView.setUint32(20, contentBytes.length, true);
+    centralView.setUint32(24, contentBytes.length, true);
+    centralView.setUint16(28, nameBytes.length, true);
+    centralView.setUint16(30, 0, true);
+    centralView.setUint16(32, 0, true);
+    centralView.setUint16(34, 0, true);
+    centralView.setUint16(36, 0, true);
+    centralView.setUint32(38, 0, true);
+    centralView.setUint32(42, offset, true);
+    centralHeader.set(nameBytes, 46);
+    centralParts.push(centralHeader);
+
+    offset += localHeader.length + contentBytes.length;
+  });
+
+  const centralDirectory = concatUint8Arrays(centralParts);
+  const endRecord = new Uint8Array(22);
+  const endView = new DataView(endRecord.buffer);
+  endView.setUint32(0, 0x06054b50, true);
+  endView.setUint16(4, 0, true);
+  endView.setUint16(6, 0, true);
+  endView.setUint16(8, files.length, true);
+  endView.setUint16(10, files.length, true);
+  endView.setUint32(12, centralDirectory.length, true);
+  endView.setUint32(16, offset, true);
+  endView.setUint16(20, 0, true);
+
+  return new Blob([...localParts, centralDirectory, endRecord], { type: "application/zip" });
+}
+
+async function downloadEvidenceBundleZip(rep) {
+  if (!rep?.evidenceBundle) return;
+  const bundle = await fetchEvidenceBundleExport(rep, { includeArtifactPayloads: true, persist: true });
+  const files = [];
+  const jsonText = JSON.stringify(bundle, null, 2);
+  files.push({
+    name: "evidence_bundle.json",
+    bytes: encodeUtf8Bytes(jsonText),
+  });
+  (Array.isArray(bundle?.artifact_payloads) ? bundle.artifact_payloads : []).forEach((artifact) => {
+    const payload = dataUrlToBytes(artifact.dataUrl || "");
+    if (!payload.bytes.length) return;
+    files.push({
+      name: `artifacts/${artifact.filename || "artifact.bin"}`,
+      bytes: payload.bytes,
+    });
+  });
+  const zipBlob = createStoredZipBlob(files);
+  const filename = `${String(rep.title || "ozon-evidence-bundle").replace(/[^\w\u4e00-\u9fa5-]+/g, "_")}_${rep.id || Date.now()}.zip`;
+  downloadBlobLike({
+    filename,
+    blob: zipBlob,
+    fallbackText: jsonText,
+  });
+}
+
+function evidenceBundleToPdfAppendixHtml(bundle = null) {
+  if (!bundle || typeof bundle !== "object") return "";
+  const quality = bundle.evidence_quality || {};
+  const summary = bundle.reportSummary || {};
+  const manifest = bundle.artifact_manifest || {};
+  const toolTimeline = Array.isArray(bundle.toolTimeline) ? bundle.toolTimeline : [];
+  const screenshotRefs = Array.isArray(bundle.screenshotRefs) ? bundle.screenshotRefs : [];
+  const pageEvidence = Array.isArray(bundle.pageEvidence) ? bundle.pageEvidence : [];
+  const tools = Array.from(new Set(toolTimeline.map((item) => item.tool).filter(Boolean)));
+  const pageRows = pageEvidence.slice(0, 12).map((item, index) => `
+    <tr>
+      <td>${index + 1}</td>
+      <td>${escapeHtml(item.tool || "页面证据")}</td>
+      <td>${escapeHtml(item.title || "-")}</td>
+      <td>${escapeHtml(item.url || "-")}</td>
+      <td>${escapeHtml(item.evidenceOk === false ? "待复核" : "可用")}</td>
+    </tr>
+  `).join("");
+  const toolRows = toolTimeline.slice(0, 20).map((item) => `
+    <tr>
+      <td>${escapeHtml(item.index || "")}</td>
+      <td>${escapeHtml(item.tool || "")}</td>
+      <td>${escapeHtml(item.result?.loadState || item.result?.evidenceOk || item.result?.blockingGap || "")}</td>
+    </tr>
+  `).join("");
+
+  return `
+    <section class="section-divider evidence-appendix">
+      <h2>证据包摘要</h2>
+      <p class="meta">该尾页来自本次工作流的 evidence_bundle，用于复盘报告结论的证据来源、页面采集和工具轨迹。</p>
+      <table>
+        <tbody>
+          <tr><th>证据等级</th><td>${escapeHtml(quality.grade || "-")}</td><th>报告状态</th><td>${escapeHtml(summary.status || quality.report_status || "-")}</td></tr>
+          <tr><th>证据账本</th><td>${escapeHtml(quality.summary || "-")}</td><th>阻断缺口</th><td>${escapeHtml(String(summary.blockingGapCount ?? quality.blocking_gap_count ?? 0))}</td></tr>
+          <tr><th>截图 artifact</th><td>${escapeHtml(String(screenshotRefs.length))}</td><th>工具调用</th><td>${escapeHtml(String(toolTimeline.length))}</td></tr>
+          <tr><th>artifact 可用</th><td>${escapeHtml(String(manifest.available ?? "-"))}</td><th>artifact 缺失</th><td>${escapeHtml(String(manifest.missing ?? "-"))}</td></tr>
+          <tr><th>Workflow</th><td colspan="3">${escapeHtml(bundle.workflowId || "-")}</td></tr>
+          <tr><th>核心工具</th><td colspan="3">${escapeHtml(tools.slice(0, 16).join(" / ") || "-")}</td></tr>
+        </tbody>
+      </table>
+
+      ${pageRows ? `
+        <h3>页面证据</h3>
+        <table>
+          <thead><tr><th>#</th><th>来源</th><th>标题</th><th>URL</th><th>状态</th></tr></thead>
+          <tbody>${pageRows}</tbody>
+        </table>
+      ` : ""}
+
+      ${toolRows ? `
+        <h3>工具轨迹</h3>
+        <table>
+          <thead><tr><th>#</th><th>工具</th><th>结果摘要</th></tr></thead>
+          <tbody>${toolRows}</tbody>
+        </table>
+      ` : ""}
+
+      ${screenshotRefs.length ? `
+        <h3>截图引用</h3>
+        <pre><code>${escapeHtml(screenshotRefs.slice(0, 24).join("\n"))}</code></pre>
+      ` : ""}
+    </section>
+  `;
 }
 
 function buildNativePdfPrintHtml({
@@ -3520,10 +3977,11 @@ function downloadReportPdf(rep) {
   if (!rep) return;
   const dateStr = new Date().toISOString().split("T")[0];
   const bodyHtml = window.marked?.parse ? window.marked.parse(rep.content || "") : `<pre><code>${escapeHtml(rep.content || "")}</code></pre>`;
+  const evidenceAppendixHtml = evidenceBundleToPdfAppendixHtml(rep.evidenceBundle);
   const printHtml = buildNativePdfPrintHtml({
     title: rep.title,
     subtitle: `${rep.tag || "AI决策"} · ${rep.date || dateStr}`,
-    htmlContent: `<h1>${escapeHtml(rep.title)}</h1><div class="meta">${escapeHtml(rep.tag)} · ${escapeHtml(rep.date)}</div>${bodyHtml}`,
+    htmlContent: `<h1>${escapeHtml(rep.title)}</h1><div class="meta">${escapeHtml(rep.tag)} · ${escapeHtml(rep.date)}</div>${bodyHtml}${evidenceAppendixHtml}`,
     dateStr,
   });
   chrome.storage.local.set({ printHtml }, () => {

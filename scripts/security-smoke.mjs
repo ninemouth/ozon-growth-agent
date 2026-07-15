@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import createDOMPurify from "dompurify";
 import { JSDOM } from "jsdom";
 
@@ -140,5 +141,11 @@ const masked = maskApiKeys(`Bearer ${fakeOpenAiKey} token="${fakeGithubToken}" a
 assert.equal(masked.includes("secret-value"), false, "plain apiKey value must be masked");
 assert.equal(masked.includes(fakeGithubToken), false, "GitHub token must be masked");
 assert.equal(masked.includes(fakeOpenAiKey), false, "Bearer token must be masked");
+
+const manifest = JSON.parse(fs.readFileSync("manifest.json", "utf8"));
+const webAccessibleMatches = (manifest.web_accessible_resources || [])
+  .flatMap((entry) => entry.matches || []);
+assert.ok(webAccessibleMatches.includes("<all_urls>"), "web_accessible_resources intentionally remain broad until all_urls narrowing is scheduled");
+assert.ok((manifest.host_permissions || []).includes("<all_urls>"), "host permissions remain broad until optional host permissions are implemented");
 
 console.log("security smoke passed");

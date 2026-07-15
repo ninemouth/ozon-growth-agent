@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: MIT | Copyright (c) 2026 Yang Cao <cao.x.yang@gmail.com> */
 // modules/toolRegistry.js — Tool registry and content script bridge
 
 import { callLLM, getSettings, prepareCleanProductImage } from './llmClient.js';
@@ -6,6 +7,7 @@ import { getArtifactDataUrl, putDataUrlArtifact } from './artifactStore.js';
 import { isWorkflowCancellationRequested } from './workflowRuntime.js';
 import { closeOwnedTab, createOwnedTabCallback } from './browserSessionManager.js';
 import { captureFullPageScreenshot } from './debuggerCapture.js';
+import { summarizeBrowserAutomationCapabilities } from './browserAutomationCapabilities.js';
 
 const preparedImageCache = new Map();
 
@@ -449,6 +451,21 @@ function pageDataSignature(pageData = {}) {
   const text = String(pageData.visibleText || pageData.text || pageData.bodyText || "");
   const links = Array.isArray(pageData.links) ? pageData.links.length : 0;
   const images = Array.isArray(pageData.images) ? pageData.images.length : 0;
+  const productFingerprint = (Array.isArray(pageData.productCards) ? pageData.productCards : [])
+    .slice(0, 12)
+    .map((card) => [
+      card.title || card.name || "",
+      card.price || card.currentPrice || "",
+      card.href || card.url || card.link || "",
+      card.imageSrc || card.imageUrl || card.img || "",
+    ].join("~"))
+    .join("||")
+    .slice(0, 2000);
+  const productLinkFingerprint = (Array.isArray(pageData.productLinks) ? pageData.productLinks : [])
+    .slice(0, 24)
+    .map((link) => `${link.href || link.url || ""}~${link.text || link.title || ""}`)
+    .join("||")
+    .slice(0, 2000);
   const trendText = [
     /interest over time|趋势变化|随时间变化/i.test(text) ? "trend_time" : "",
     /related queries|related topics|相关查询|相关主题/i.test(text) ? "trend_related" : "",
@@ -461,9 +478,51 @@ function pageDataSignature(pageData = {}) {
     links,
     Array.isArray(pageData.productLinks) ? pageData.productLinks.length : 0,
     Array.isArray(pageData.productCards) ? pageData.productCards.length : 0,
+    productFingerprint,
+    productLinkFingerprint,
     images,
     trendText,
   ].join("|");
+}
+
+function buildInteractionEvidence(before = {}, after = {}) {
+  const beforeSignature = pageDataSignature(before);
+  const afterSignature = pageDataSignature(after);
+  const beforeCards = Array.isArray(before.productCards) ? before.productCards.length : 0;
+  const afterCards = Array.isArray(after.productCards) ? after.productCards.length : 0;
+  const beforeLinks = Array.isArray(before.productLinks) ? before.productLinks.length : 0;
+  const afterLinks = Array.isArray(after.productLinks) ? after.productLinks.length : 0;
+  const beforeUrl = String(before.url || "");
+  const afterUrl = String(after.url || "");
+  const beforeTextLength = String(before.visibleText || before.text || before.bodyText || "").length;
+  const afterTextLength = String(after.visibleText || after.text || after.bodyText || "").length;
+  const beforeCardTitles = (Array.isArray(before.productCards) ? before.productCards : []).slice(0, 8).map((card) => card.title || card.name || "").filter(Boolean);
+  const afterCardTitles = (Array.isArray(after.productCards) ? after.productCards : []).slice(0, 8).map((card) => card.title || card.name || "").filter(Boolean);
+  const productCardContentChanged = beforeCardTitles.join("|") !== afterCardTitles.join("|");
+  return {
+    changed: Boolean(beforeSignature && afterSignature && beforeSignature !== afterSignature),
+    urlChanged: beforeUrl !== afterUrl,
+    productCardsChanged: beforeCards !== afterCards,
+    productCardContentChanged,
+    productLinksChanged: beforeLinks !== afterLinks,
+    textLengthChanged: Math.abs(afterTextLength - beforeTextLength) >= 80,
+    before: {
+      url: beforeUrl,
+      title: before.title || "",
+      productCards: beforeCards,
+      productLinks: beforeLinks,
+      visibleTextLength: beforeTextLength,
+      cardTitles: beforeCardTitles,
+    },
+    after: {
+      url: afterUrl,
+      title: after.title || "",
+      productCards: afterCards,
+      productLinks: afterLinks,
+      visibleTextLength: afterTextLength,
+      cardTitles: afterCardTitles,
+    },
+  };
 }
 
 function pageDataLooksReady(pageData = {}, engine = "") {
@@ -637,7 +696,7 @@ async function getTabQuietly(tabId) {
   });
 }
 
-async function waitForPageCaptureReady(tabId, {
+export async function waitForPageCaptureReady(tabId, {
   engine = "",
   workflowId = "default",
   expectedUrl = "",
@@ -1167,6 +1226,13 @@ export const tools = {
     return pageData;
   },
 
+  get_browser_capabilities: async () => ({
+    ok: true,
+    version: "2026-07-14",
+    capabilities: summarizeBrowserAutomationCapabilities(),
+    usagePolicy: "先用结构化 DOM 与稳定等待取证；视觉截图用于页面布局、主图、竞品陈列和趋势图辅助；遇到验证码/登录/证据不足时输出 blocking_gaps，不编造结论。",
+  }),
+
   collect_ozon_shop_pages: async (args = {}) => {
     const {
       url,
@@ -1444,11 +1510,284 @@ ${JSON.stringify(readable.map((item, index) => ({
     return { ok: true, message: `Scrolled ${direction} by ${amount}px` };
   },
 
+  apply_page_filter: async (args) => {
+    const {
+      filterType = "generic",
+      label = "",
+      value = "",
+      text = "",
+      tabId,
+      expectedChange = "productCards",
+      __sourceTabId = null,
+    } = args || {};
+    const targetLabel = value || label || text;
+    if (!targetLabel) throw new Error("label or value is required");
+    let targetTabId = tabId;
+    if (!targetTabId) {
+      const tab = await getSourceOrCurrentTab(__sourceTabId);
+      if (!tab) throw new Error("No active tab found");
+      targetTabId = tab.id;
+    }
+
+    const before = (await readCompletePageData(targetTabId, { type: "READ_CURRENT_PAGE" }))?.data || {};
+    const clickResult = await sendToContentScript(targetTabId, {
+      type: "APPLY_PAGE_FILTER",
+      filterType,
+      label,
+      value,
+      text: targetLabel,
+    });
+    if (!clickResult?.ok) {
+      return {
+        ok: false,
+        filterType,
+        label: targetLabel,
+        clicked: false,
+        evidenceOk: false,
+        blockingGap: `未找到或无法点击筛选/排序项：${targetLabel}`,
+        filterEvidence: buildInteractionEvidence(before, before),
+        clickResult,
+      };
+    }
+
+    const ready = await waitForPageCaptureReady(targetTabId, {
+      engine: before.url && isOzonPageUrl(before.url) ? "ozon" : "",
+      expectedUrl: before.url || "",
+      maxAttempts: 18,
+      minQuietMs: 1200,
+      minStableReads: 1,
+      progressLabel: "筛选/排序结果页",
+    });
+    const after = ready.pageData || (await readCompletePageData(targetTabId, { type: "READ_CURRENT_PAGE" }))?.data || {};
+    const filterEvidence = buildInteractionEvidence(before, after);
+    const expectedOk = expectedChange === "url"
+      ? filterEvidence.urlChanged
+      : expectedChange === "text"
+      ? filterEvidence.textLengthChanged
+      : expectedChange === "any"
+      ? filterEvidence.changed || filterEvidence.urlChanged || filterEvidence.textLengthChanged
+      : filterEvidence.changed || filterEvidence.productCardsChanged || filterEvidence.productCardContentChanged || filterEvidence.productLinksChanged;
+    return {
+      ok: true,
+      tabId: targetTabId,
+      filterType,
+      label: targetLabel,
+      clicked: true,
+      clickedText: clickResult.clickedText || "",
+      changed: expectedOk,
+      evidenceOk: expectedOk || hasUsablePageEvidence(after),
+      loadState: ready.readyReason,
+      filterEvidence,
+      pageData: after,
+      message: expectedOk
+        ? `筛选/排序已执行，并检测到页面证据变化：${targetLabel}`
+        : `筛选/排序已点击，但未检测到明确页面变化：${targetLabel}`,
+    };
+  },
+
+  go_next_page: async (args) => {
+    const {
+      tabId,
+      requireProductCardChange = true,
+      __sourceTabId = null,
+    } = args || {};
+    let targetTabId = tabId;
+    if (!targetTabId) {
+      const tab = await getSourceOrCurrentTab(__sourceTabId);
+      if (!tab) throw new Error("No active tab found");
+      targetTabId = tab.id;
+    }
+
+    const before = (await readCompletePageData(targetTabId, { type: "READ_CURRENT_PAGE" }))?.data || {};
+    const clickResult = await sendToContentScript(targetTabId, { type: "GO_NEXT_PAGE" });
+    if (!clickResult?.ok) {
+      return {
+        ok: false,
+        tabId: targetTabId,
+        clicked: false,
+        evidenceOk: false,
+        blockingGap: "未找到可用下一页按钮，或下一页按钮不可点击。",
+        paginationEvidence: buildInteractionEvidence(before, before),
+        clickResult,
+      };
+    }
+
+    const ready = await waitForPageCaptureReady(targetTabId, {
+      engine: before.url && isOzonPageUrl(before.url) ? "ozon" : "",
+      expectedUrl: before.url || "",
+      maxAttempts: 22,
+      minQuietMs: 1500,
+      minStableReads: 1,
+      progressLabel: "下一页结果",
+    });
+    const after = ready.pageData || (await readCompletePageData(targetTabId, { type: "READ_CURRENT_PAGE" }))?.data || {};
+    const paginationEvidence = buildInteractionEvidence(before, after);
+    const pageChanged = paginationEvidence.urlChanged ||
+      paginationEvidence.productCardsChanged ||
+      paginationEvidence.productCardContentChanged ||
+      paginationEvidence.productLinksChanged ||
+      (!requireProductCardChange && (paginationEvidence.changed || paginationEvidence.textLengthChanged));
+    return {
+      ok: pageChanged,
+      tabId: targetTabId,
+      clicked: true,
+      clickedText: clickResult.clickedText || "",
+      evidenceOk: pageChanged || hasUsablePageEvidence(after),
+      loadState: ready.readyReason,
+      paginationEvidence,
+      pageData: after,
+      message: pageChanged
+        ? "已进入下一页，并检测到页面证据变化。"
+        : "已点击下一页，但未检测到明确页面变化；需要人工确认分页是否生效。",
+    };
+  },
+
+  collect_reviews: async (args) => {
+    const {
+      tabId,
+      ratingFilter = "all",
+      maxPages = 2,
+      maxItems = 40,
+      includeImages = true,
+      __sourceTabId = null,
+    } = args || {};
+    let targetTabId = tabId;
+    if (!targetTabId) {
+      const tab = await getSourceOrCurrentTab(__sourceTabId);
+      if (!tab) throw new Error("No active tab found");
+      targetTabId = tab.id;
+    }
+
+    const requestedLowRating = ["1", "2", "3"].includes(String(ratingFilter));
+    const filterAttempts = [];
+    if (requestedLowRating) {
+      const labelCandidates = [
+        `${ratingFilter} звезда`,
+        `${ratingFilter} звезды`,
+        `${ratingFilter} зв`,
+        `${ratingFilter} звезд`,
+        `${ratingFilter}★`,
+        `${ratingFilter} star`,
+        `${ratingFilter} stars`,
+        `${ratingFilter} 星`,
+        `${ratingFilter}星`,
+        `${ratingFilter}分`,
+        "Сначала негативные",
+        "Негативные",
+        "低星",
+        "差评",
+        "中评",
+      ];
+      for (const label of labelCandidates) {
+        const result = await sendToContentScript(targetTabId, {
+          type: "APPLY_PAGE_FILTER",
+          filterType: "review_rating",
+          label,
+          value: label,
+        }).catch((err) => ({ ok: false, error: err.message, label }));
+        filterAttempts.push(result);
+        if (result?.ok) {
+          await sleep(1200);
+          break;
+        }
+      }
+    }
+
+    const collected = [];
+    const pages = [];
+    const seen = new Set();
+    const pageLimit = Math.max(1, Math.min(5, Number(maxPages) || 2));
+    for (let pageIndex = 1; pageIndex <= pageLimit; pageIndex += 1) {
+      const extracted = await sendToContentScript(targetTabId, {
+        type: "EXTRACT_REVIEWS",
+        ratingFilter,
+        maxItems,
+      }).catch((err) => ({ ok: false, error: err.message }));
+      const data = extracted?.data || {};
+      const reviews = Array.isArray(data.reviews) ? data.reviews : [];
+      for (const review of reviews) {
+        const key = `${review.rating || ""}|${String(review.text || "").slice(0, 220)}`;
+        if (!review.text || seen.has(key)) continue;
+        seen.add(key);
+        collected.push({
+          ...review,
+          imageUrls: includeImages ? review.imageUrls || [] : [],
+          pageIndex,
+        });
+        if (collected.length >= Number(maxItems || 40)) break;
+      }
+      pages.push({
+        pageIndex,
+        ok: Boolean(extracted?.ok),
+        reviewCountVisible: reviews.length,
+        url: data.url || "",
+        title: data.title || "",
+      });
+      if (collected.length >= Number(maxItems || 40) || pageIndex >= pageLimit) break;
+      const next = await tools.go_next_page({
+        tabId: targetTabId,
+        requireProductCardChange: false,
+      }).catch((err) => ({ ok: false, error: err.message }));
+      if (!next?.ok) {
+        pages[pages.length - 1].nextPageBlocked = next.blockingGap || next.error || next.message || "无法继续翻页";
+        break;
+      }
+      await sleep(1000);
+    }
+
+    const blockingGaps = [];
+    if (requestedLowRating && !filterAttempts.some((item) => item?.ok)) {
+      blockingGaps.push(`未能自动点击 ${ratingFilter} 星/低星评论筛选，需要人工确认评论筛选入口。`);
+    }
+    if (collected.length === 0) {
+      blockingGaps.push("当前页面未抽取到可用评论文本，可能需要展开评论区、登录、切换标签或人工滚动。");
+    }
+
+    return {
+      ok: collected.length > 0,
+      tabId: targetTabId,
+      ratingFilter,
+      requestedLowRating,
+      reviews: collected,
+      reviewCountCollected: collected.length,
+      pages,
+      filterAttempts,
+      evidenceOk: collected.length > 0,
+      blockingGaps,
+      limitation: "评论样本来自当前可访问 DOM 与少量自动翻页；若页面虚拟加载、登录墙或评论折叠，需人工补采并在报告中标注。",
+    };
+  },
+
   open_url: async (args) => {
-    const { url } = args;
+    const { url, workflowId = "default", __sourceTabId = null } = args;
     if (!url) throw new Error("url is required");
-    await chrome.tabs.create({ url: safeEncodeURI(url), active: false });
-    return { ok: true, message: `Opened: ${url}` };
+    return new Promise((resolve, reject) => {
+      createBrowserTab({ url: safeEncodeURI(url), active: false, openerTabId: __sourceTabId, workflowId }, async (tab) => {
+        if (chrome.runtime.lastError || !tab) {
+          reject(new Error(chrome.runtime.lastError?.message || "Failed to open url"));
+          return;
+        }
+        const ready = await waitForPageCaptureReady(tab.id, {
+          engine: isOzonPageUrl(url) ? "ozon" : "",
+          workflowId,
+          expectedUrl: url,
+          requireEvidence: false,
+          maxAttempts: 20,
+          minQuietMs: 1600,
+          minStableReads: 1,
+          progressLabel: "新开网页",
+        });
+        resolve({
+          ok: true,
+          tabId: tab.id,
+          url: ready.pageData?.url || ready.tab?.url || url,
+          pageData: ready.pageData || {},
+          evidenceOk: hasUsablePageEvidence(ready.pageData || {}),
+          loadState: ready.loadState || ready.readyReason,
+          message: `Opened: ${url}`,
+        });
+      });
+    });
   },
 
   navigate_to: async (args) => {
@@ -1480,44 +1819,14 @@ ${JSON.stringify(readable.map((item, index) => ({
     if (!key) {
       throw new Error("三方选品数据 API 未配置，无法查询真实数据。请前往设置页面配置 Key。");
     }
-
-    try {
-      if (settings.sellerSpriteApiKey) {
-        return {
-          ok: true,
-          provider: "卖家精灵 (SellerSprite)",
-          keyword,
-          metrics: {
-            monthly_search_volume: Math.floor(Math.random() * 20000) + 5000,
-            purchase_rate: (Math.random() * 5 + 1).toFixed(2) + "%",
-            monthly_sales_estimate: Math.floor(Math.random() * 1500) + 100,
-            bsr_rank: Math.floor(Math.random() * 10000) + 50,
-            competition_index: Math.floor(Math.random() * 80) + 20,
-            source: "卖家精灵实时大数据接口"
-          }
-        };
-      } else {
-        return {
-          ok: true,
-          provider: "Helium 10 (Cerebro/Magnet)",
-          keyword,
-          metrics: {
-            search_volume: Math.floor(Math.random() * 35000) + 12000,
-            competing_products: Math.floor(Math.random() * 5000) + 200,
-            magnet_score: Math.floor(Math.random() * 4000) + 1000,
-            monthly_sales_estimate: Math.floor(Math.random() * 2500) + 150,
-            cpr_8_day_estimate: Math.floor(Math.random() * 50) + 5,
-            source: "Helium 10 Magnet API"
-          }
-        };
-      }
-    } catch (err) {
-      throw new Error(`三方 API 请求失败: ${err.message}`);
-    }
+    // Keys alone are not a data integration. Returning synthetic metrics here
+    // would make an industrial report falsely claim third-party evidence.
+    const provider = settings.sellerSpriteApiKey ? "SellerSprite" : "Helium 10";
+    throw new Error(`${provider} 已配置 Key，但当前扩展尚未实现其正式 API 适配器，不能生成或推测市场指标。请改用平台页面/Google Trends 取证，或接入已验证的 ${provider} API 适配器。`);
   },
 
   agentic_web_search: async (args) => {
-    const { query } = args;
+    const { query, workflowId = "agentic_web_search" } = args;
     if (!query) throw new Error("query is required");
     
     console.log(`Performing silent background agentic web search for: "${query}"`);
@@ -1598,53 +1907,50 @@ ${JSON.stringify(readable.map((item, index) => ({
       }
     } catch (_) {}
     
-    // 2. ULTIMATE FALLBACK: Create a temporary background Bing tab (with strict 3s read timeout and guaranteed removal)
+    // 2. ULTIMATE FALLBACK: Create a temporary owned Bing tab and wait for readable DOM evidence.
     if (results.length === 0) {
       console.log(`Silent search blocked. Falling back to real browser tab search for: "${query}"`);
       const searchUrl = `https://www.bing.com/search?q=${encodeURIComponent(query)}`;
-      results = await new Promise((resolve) => {
-        chrome.tabs.create({ url: safeEncodeURI(searchUrl), active: false }, (newTab) => {
-          let attempts = 0;
-          const maxAttempts = 16; // up to 8 seconds
-          const checkLoad = setInterval(async () => {
-            attempts++;
-            chrome.tabs.get(newTab.id, async (t) => {
-              if (chrome.runtime.lastError || !t) {
-                clearInterval(checkLoad);
-                resolve([]);
-                return;
-              }
-              if (t.status === "complete" || attempts >= maxAttempts) {
-                clearInterval(checkLoad);
-                setTimeout(async () => {
-                  let tabResults = [];
-                  try {
-                    const data = await Promise.race([
-                      sendToContentScript(newTab.id, { type: "READ_CURRENT_PAGE" }),
-                      new Promise((_, rej) => setTimeout(() => rej(new Error("Timeout")), 3000))
-                    ]);
-                    const pageData = data?.data || {};
-                    if (pageData.productLinks && pageData.productLinks.length > 0) {
-                      tabResults = pageData.productLinks.slice(0, 5).map(l => ({
-                        title: l.text || "Bing Result",
-                        link: l.href,
-                        snippet: "Bing search result entry"
-                      }));
-                    }
-                  } catch (_) {
-                    console.warn("Tab search failed to read content script or timed out.");
-                  } finally {
-                    chrome.tabs.remove(newTab.id, () => {
-                      if (chrome.runtime.lastError) {} // ignore
-                    });
-                    resolve(tabResults);
-                  }
-                }, 1500);
-              }
-            });
-          }, 500);
+      let searchTab = null;
+      try {
+        searchTab = await new Promise((resolve, reject) => {
+          createBrowserTab({ url: searchUrl, active: false, workflowId }, (tab) => {
+            if (chrome.runtime.lastError || !tab) {
+              reject(new Error(chrome.runtime.lastError?.message || "Failed to open search tab"));
+              return;
+            }
+            resolve(tab);
+          });
         });
-      });
+        const ready = await waitForPageCaptureReady(searchTab.id, {
+          workflowId,
+          expectedUrl: searchUrl,
+          label: "agentic_web_search",
+          progressLabel: "Bing 搜索兜底页面",
+          timeoutMs: 12_000,
+          maxAttempts: 20,
+          pollMs: 600,
+          minQuietMs: 1400,
+          minStableReads: 1,
+          requireEvidence: false,
+        });
+        const pageData = ready.pageData || {};
+        const links = Array.isArray(pageData.productLinks) && pageData.productLinks.length > 0
+          ? pageData.productLinks
+          : Array.isArray(pageData.links) ? pageData.links : [];
+        results = links
+          .filter((link) => link?.href && /^https?:\/\//i.test(link.href) && !/bing\.com/i.test(link.href))
+          .slice(0, 5)
+          .map((link) => ({
+            title: link.text || link.title || "Bing Result",
+            link: link.href,
+            snippet: "Bing search result entry",
+          }));
+      } catch (_) {
+        console.warn("Owned tab search fallback failed to read page evidence.");
+      } finally {
+        if (searchTab?.id) await closeOwnedTab(workflowId, searchTab.id);
+      }
     }
     
     return {
@@ -1848,7 +2154,7 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
   },
 
   input_text_and_search: async (args) => {
-    const { inputSelector, submitSelector, tabId } = args;
+    const { inputSelector, submitSelector, tabId, workflowId = "default" } = args;
     const keyword = args.keyword || args.search || args.query || args.text;
     if (!keyword) throw new Error("keyword is required");
     
@@ -1859,61 +2165,43 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
       targetTabId = tab.id;
     }
     
-    return new Promise((resolve, reject) => {
-      sendToContentScript(targetTabId, { type: "INPUT_TEXT_AND_SEARCH", keyword, inputSelector, submitSelector })
-        .then(res => {
-          if (!res?.ok) {
-            reject(new Error(res?.error || "Failed to trigger search inside page"));
-            return;
-          }
-          
-          // Poll immediately for DOM readiness and product list elements
-          let attempts = 0;
-          const maxAttempts = 20; // up to 10 seconds total
-          const checkLoad = setInterval(async () => {
-            attempts++;
-            chrome.tabs.get(targetTabId, async (t) => {
-              if (chrome.runtime.lastError || !t) {
-                clearInterval(checkLoad);
-                resolve({ ok: true, tabId: targetTabId, pageData: {}, message: "Tab closed or not found" });
-                return;
-              }
-              
-              const currentUrl = t.url || "";
-              const isVerification = currentUrl.includes("sec.1688.com") || currentUrl.includes("login") || currentUrl.includes("verify") || currentUrl.includes("passport");
-              if (isVerification) {
-                chrome.tabs.update(targetTabId, { active: true });
-                chrome.runtime.sendMessage({ type: "CAPTCHA_DETECTED", url: currentUrl });
-                if (attempts >= maxAttempts) {
-                  clearInterval(checkLoad);
-                  resolve({ ok: true, tabId: targetTabId, isCaptcha: true, pageData: {}, message: "Search redirected to verification wall." });
-                }
-                return;
-              }
+    const res = await sendToContentScript(targetTabId, { type: "INPUT_TEXT_AND_SEARCH", keyword, inputSelector, submitSelector });
+    if (!res?.ok) throw new Error(res?.error || "Failed to trigger search inside page");
 
-              try {
-                const data = await readCompletePageData(targetTabId, { type: "READ_CURRENT_PAGE" });
-                const pageData = data?.data || {};
-                const hasProducts = (pageData.productLinks && pageData.productLinks.length > 0) ||
-                  (pageData.productCards && pageData.productCards.length > 0);
-                
-                if (hasProducts || attempts >= maxAttempts) {
-                  clearInterval(checkLoad);
-                  resolve({ ok: true, tabId: targetTabId, pageData, message: hasProducts ? "Search performed and results loaded." : "Search completed but timeout waiting for product links." });
-                }
-              } catch (err) {
-                if (attempts >= maxAttempts) {
-                  clearInterval(checkLoad);
-                  resolve({ ok: true, tabId: targetTabId, pageData: {}, message: "Search performed but failed to read result page DOM" });
-                }
-              }
-            });
-          }, 500);
-        })
-        .catch(err => {
-          reject(err);
-        });
+    const ready = await waitForPageCaptureReady(targetTabId, {
+      workflowId,
+      expectedUrl: "",
+      label: keyword,
+      progressLabel: "站内搜索结果页",
+      timeoutMs: 14_000,
+      maxAttempts: 24,
+      pollMs: 600,
+      minQuietMs: 1400,
+      minStableReads: 1,
+      requireEvidence: false,
     });
+    if (ready.isVerification) {
+      chrome.tabs.update(targetTabId, { active: true });
+      chrome.runtime.sendMessage({ type: "CAPTCHA_DETECTED", url: ready.tab?.url || "" });
+      return { ok: true, tabId: targetTabId, isCaptcha: true, pageData: {}, loadState: ready.loadState, message: "Search redirected to verification wall." };
+    }
+    if (!ready.tab) return { ok: true, tabId: targetTabId, pageData: {}, loadState: ready.loadState, message: "Tab closed or not found" };
+
+    const pageData = ready.pageData || {};
+    const hasProducts = (pageData.productLinks && pageData.productLinks.length > 0) ||
+      (pageData.productCards && pageData.productCards.length > 0);
+    return {
+      ok: true,
+      tabId: targetTabId,
+      pageData,
+      evidenceOk: hasProducts || hasUsablePageEvidence(pageData),
+      readiness: ready.readiness,
+      loadState: ready.loadState || ready.readyReason,
+      readyReason: ready.readyReason,
+      stableReads: ready.stableReads,
+      loadAttempts: ready.attempts,
+      message: hasProducts ? "Search performed and results loaded." : "Search completed but product links were not detected in stable page evidence.",
+    };
   },
 
   prepare_clean_product_image: async (args) => {
@@ -1982,7 +2270,7 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
           return;
         }
         try {
-          const result = await tools.image_search_in_browser({ imageUrl, tabId: newTab.id });
+          const result = await tools.image_search_in_browser({ imageUrl, tabId: newTab.id, workflowId });
           resolve({ ...result, searchUrl, imageSearchEntry: normalizedEngine === "taobao" ? "taobao" : "1688", loadState: ready.readyReason });
         } catch (err) {
           resolve({ ok: false, tabId: newTab.id, searchUrl, pageData: {}, loadState: ready.readyReason, error: err.message });
@@ -1997,7 +2285,7 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
 
   image_search_in_browser: async (args) => {
     const imageUrl = resolvePreparedImageUrl(args.imageUrl);
-    const { tabId, __sourceTabId = null } = args;
+    const { tabId, workflowId = "default", __sourceTabId = null } = args;
     if (!imageUrl) throw new Error("imageUrl is required");
 
     let targetTabId = tabId;
@@ -2022,106 +2310,74 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
       throw new Error(`Failed to fetch and convert image to base64: ${err.message}`);
     }
 
-	    return new Promise((resolve, reject) => {
-	      sendToContentScript(targetTabId, { type: "IMAGE_SEARCH_IN_BROWSER", base64 })
-	        .then(async res => {
-	          if (!res?.ok) {
-	            reject(new Error(res?.error || "Failed to upload image for search"));
-	            return;
-	          }
-          let uploadResult = res;
+    const res = await sendToContentScript(targetTabId, { type: "IMAGE_SEARCH_IN_BROWSER", base64 });
+    if (!res?.ok) throw new Error(res?.error || "Failed to upload image for search");
+    let uploadResult = res;
 
-          const runVisualSubmitFallback = async () => {
-            if (uploadResult.submitClicked) return null;
-            const visualResult = await visualClickImageSearchSubmit(targetTabId);
-            uploadResult = {
-              ...uploadResult,
-              visualSubmitFallback: visualResult,
-              submitClicked: !!visualResult.ok,
-            };
-            return visualResult;
-          };
+    const runVisualSubmitFallback = async (field = "visualSubmitFallback") => {
+      if (field === "visualSubmitFallback" && uploadResult.submitClicked) return null;
+      const visualResult = await visualClickImageSearchSubmit(targetTabId);
+      uploadResult = {
+        ...uploadResult,
+        [field]: visualResult,
+        submitClicked: !!uploadResult.submitClicked || !!visualResult.ok,
+      };
+      return visualResult;
+    };
 
-          // If DOM/text based submission missed the button, fall back to screenshot-based recognition once.
-          await runVisualSubmitFallback();
-
-	          // Poll immediately for DOM readiness and product list elements
-          let attempts = 0;
-          let retriedVisualSubmitAfterNoResults = false;
-          const maxAttempts = 20; // up to 10 seconds total
-          const checkLoad = setInterval(async () => {
-            attempts++;
-            chrome.tabs.get(targetTabId, async (t) => {
-	              if (chrome.runtime.lastError || !t) {
-	                clearInterval(checkLoad);
-	                resolve({ ok: true, tabId: targetTabId, pageData: {}, uploadResult, submitClicked: !!uploadResult.submitClicked, message: "Tab closed or not found" });
-	                return;
-	              }
-
-              const currentUrl = t.url || "";
-              const isVerification = currentUrl.includes("sec.1688.com") || currentUrl.includes("login") || currentUrl.includes("verify") || currentUrl.includes("passport");
-              if (isVerification) {
-                chrome.tabs.update(targetTabId, { active: true });
-                chrome.runtime.sendMessage({ type: "CAPTCHA_DETECTED", url: currentUrl });
-	                if (attempts >= maxAttempts) {
-	                  clearInterval(checkLoad);
-	                  resolve({ ok: true, tabId: targetTabId, isCaptcha: true, pageData: {}, uploadResult, submitClicked: !!uploadResult.submitClicked, message: "Image search redirected to verification wall." });
-	                }
-                return;
-              }
-
-              try {
-                const data = await readCompletePageData(targetTabId, { type: "READ_CURRENT_PAGE" });
-                const pageData = data?.data || {};
-                const hasProducts = (pageData.productLinks && pageData.productLinks.length > 0) ||
-                  (pageData.productCards && pageData.productCards.length > 0);
-
-                if (!hasProducts && !retriedVisualSubmitAfterNoResults && attempts >= 4) {
-                  retriedVisualSubmitAfterNoResults = true;
-                  const visualResult = await visualClickImageSearchSubmit(targetTabId);
-                  uploadResult = {
-                    ...uploadResult,
-                    visualSubmitAfterNoResults: visualResult,
-                    submitClicked: !!uploadResult.submitClicked || !!visualResult.ok,
-                  };
-                  if (visualResult.ok) return;
-                }
-
-	                if (hasProducts || attempts >= maxAttempts) {
-	                  clearInterval(checkLoad);
-	                  resolve({
-                      ok: !!hasProducts,
-                      tabId: targetTabId,
-                      pageData,
-                      uploadResult,
-                      submitClicked: !!uploadResult.submitClicked,
-                      imageSearchIncomplete: !hasProducts,
-                      requiresImageSearchRetry: !hasProducts,
-                      message: hasProducts ? "Image search performed and results loaded." : "Image search did not reach product results; do not fall back to text search yet. Retry image-search submission or ask for manual verification if the upload overlay disappeared."
-                    });
-	                }
-	              } catch (err) {
-	                if (attempts >= maxAttempts) {
-	                  clearInterval(checkLoad);
-	                  resolve({
-                      ok: false,
-                      tabId: targetTabId,
-                      pageData: {},
-                      uploadResult,
-                      submitClicked: !!uploadResult.submitClicked,
-                      imageSearchIncomplete: true,
-                      requiresImageSearchRetry: true,
-                      message: "Image search did not produce readable product results; do not fall back to text search yet."
-                    });
-	                }
-	              }
-            });
-          }, 500);
-        })
-        .catch(err => {
-          reject(err);
-        });
+    const waitForImageSearchResults = async () => await waitForPageCaptureReady(targetTabId, {
+      workflowId,
+      expectedUrl: "",
+      label: "image_search_results",
+      progressLabel: "图片搜索结果页",
+      timeoutMs: 14_000,
+      maxAttempts: 24,
+      pollMs: 650,
+      minQuietMs: 1500,
+      minStableReads: 1,
+      requireEvidence: false,
     });
+
+    // If DOM/text based submission missed the button, fall back to screenshot-based recognition once.
+    await runVisualSubmitFallback();
+    let ready = await waitForImageSearchResults();
+    if (ready.isVerification) {
+      chrome.tabs.update(targetTabId, { active: true });
+      chrome.runtime.sendMessage({ type: "CAPTCHA_DETECTED", url: ready.tab?.url || "" });
+      return { ok: true, tabId: targetTabId, isCaptcha: true, pageData: {}, uploadResult, submitClicked: !!uploadResult.submitClicked, loadState: ready.loadState, message: "Image search redirected to verification wall." };
+    }
+    if (!ready.tab) return { ok: true, tabId: targetTabId, pageData: {}, uploadResult, submitClicked: !!uploadResult.submitClicked, loadState: ready.loadState, message: "Tab closed or not found" };
+
+    let pageData = ready.pageData || {};
+    let hasProducts = (pageData.productLinks && pageData.productLinks.length > 0) ||
+      (pageData.productCards && pageData.productCards.length > 0);
+
+    if (!hasProducts) {
+      const visualResult = await runVisualSubmitFallback("visualSubmitAfterNoResults");
+      if (visualResult?.ok) {
+        ready = await waitForImageSearchResults();
+        pageData = ready.pageData || {};
+        hasProducts = (pageData.productLinks && pageData.productLinks.length > 0) ||
+          (pageData.productCards && pageData.productCards.length > 0);
+      }
+    }
+
+    return {
+      ok: !!hasProducts,
+      tabId: targetTabId,
+      pageData,
+      uploadResult,
+      submitClicked: !!uploadResult.submitClicked,
+      imageSearchIncomplete: !hasProducts,
+      requiresImageSearchRetry: !hasProducts,
+      evidenceOk: hasProducts || hasUsablePageEvidence(pageData),
+      readiness: ready.readiness,
+      loadState: ready.loadState || ready.readyReason,
+      readyReason: ready.readyReason,
+      stableReads: ready.stableReads,
+      loadAttempts: ready.attempts,
+      message: hasProducts ? "Image search performed and results loaded." : "Image search did not reach product results; do not fall back to text search yet. Retry image-search submission or ask for manual verification if the upload overlay disappeared.",
+    };
   },
 
   click_by_coordinate: async (args) => {
@@ -2196,7 +2452,7 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
   },
 
   close_tab: async (args) => {
-    const { tabId, __sourceTabId = null, __workflowSkillId = "" } = args;
+    const { tabId, workflowId = "default", __sourceTabId = null, __workflowSkillId = "" } = args;
     if (!tabId) throw new Error("tabId is required");
     if (isProtectedTabId(tabId, [__sourceTabId])) {
       return { ok: false, protectedSourceTab: true, message: `Refused to close source tab ${tabId}.` };
@@ -2212,7 +2468,7 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
         url: targetUrl,
       };
     }
-    await chrome.tabs.remove(parseInt(tabId));
+    await closeOwnedTab(workflowId, parseInt(tabId));
     restoreSourceTabFocusBounded(__sourceTabId).catch(() => {});
     return { ok: true, message: `Tab ${tabId} closed.` };
   },
