@@ -43,8 +43,9 @@ assert.match(shop, /定位重构是店铺体检下的 P0 子节点/, "store diag
 assert.match(shop, /2-3 个同类高排名店铺|头部竞品页面/, "store diagnosis must require competitor store learning");
 
 const trends = read("skills/ozon_platform_trends.skill.md");
-assert.match(trends, /平台趋势任务严禁主动关闭任何 Ozon 页面/, "platform trends must keep Ozon tab safety guardrail");
+assert.match(trends, /来源 Ozon 页由运行时保护[\s\S]*本轮任务新开的 Ozon 搜索页[\s\S]*必须关闭/, "platform trends must protect the source tab and close workflow-created evidence tabs");
 assert.match(trends, /不是无限搜索循环/, "platform trends must keep anti-loop stage completion rules");
+assert.match(trends, /recommended_opportunities[\s\S]*rejected_directions[\s\S]*recommendation_status/, "platform trends must separate sellable recommendations from rejected directions");
 
 const operations = read("skills/ozon_operations_tracker.skill.md");
 assert.match(operations, /baseline_window/, "operations tracker must require baseline windows");

@@ -39,6 +39,12 @@
    - `workflow_nodes` 必须能被画布渲染，每个节点包含 `node_id`、`title`、`status`、`depends_on`、`next_action`。节点状态只能是 `validated`、`blocked`、`manual_confirm`、`queued`、`done`。
    - 如果某个结论需要人工完成，例如已换图、已改标题、已补证书、已确认供应商、已报名活动，必须输出为 `manual_confirm` 节点，而不是假装系统已经自动执行。
 
+6. **中小微/个体卖家不卖原则 (Negative Filter)**:
+   - 默认服务对象是中小微/个体经营者，现金流、供应链、合规和售后能力均有限。所有 Skill 在输出机会、选品、寻源、Listing 和优化方案时，必须过滤高资金占用、超大超重易碎、EAC/TR CU 强制认证、高退货/尺码敏感、IP/品牌侵权、Ozon 禁限售、本地易购普通标品、大品牌价格战红海、短生命周期、需本地安装售后等方向。
+   - 命中上述方向时，不得在 `data` 中包装成“可执行机会”；应标记为 `高风险/不建议小微卖家进入`，写入 `risk_guard` 或 `blocking_gaps`，并给出明确原因。
+   - 用户可通过指令动态追加不卖原则（例如“增加不卖原则：xxx、yyy”），追加项同样具有强制过滤效力。
+   - 当用户明确关闭“不卖原则”时，可在报告中放宽过滤，但仍需在 `risk_guard` 中提示风险。
+
 ---
 
 ## 🌍 Ozon 目标市场与受众感知校准 (Ozon Audience & Market Calibration)

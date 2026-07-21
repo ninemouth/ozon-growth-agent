@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-07-15T09:42:23.236Z",
+  "generatedAt": "2026-07-21T07:51:08.577Z",
   "status": "not_run",
   "note": "真实浏览器验收矩阵；需要人工或 Chrome 实机执行后填写 results。",
   "matrix": [

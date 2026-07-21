@@ -40,6 +40,8 @@ const requiredKeys = [
   "monitorTasks",
   "ozonApiKey",
   "ozonClientId",
+  "ozonLogisticsCostProfile",
+  "ozonMarketRatesSnapshot",
   "ozonShops",
   "ozonSkuAnalyticsSnapshot",
   "ozonStoreSnapshotCache",

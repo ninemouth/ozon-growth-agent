@@ -52,9 +52,34 @@ const homeScope = buildResearchScope({
   userInstruction: "",
 });
 assert.equal(homeScope.entry_page_type, "ozon_home");
-assert.equal(homeScope.needs_user_clarification, true);
-assert.equal(homeScope.scope_confidence, "low");
-assert.match(homeScope.forbidden_conclusions.join(" "), /completed|趋势结论|缺少关键词/);
+assert.equal(homeScope.analysis_scope, "platform_trend");
+assert.equal(homeScope.needs_user_clarification, false, "platform trends should auto-discover a seed scope from Ozon/external signals");
+assert.equal(homeScope.auto_discovery_required, true);
+assert.equal(homeScope.scope_confidence, "medium");
+assert.ok(homeScope.discovery_sources.includes("ozon_home_recommendations"));
+
+const unknownPlatformScope = buildResearchScope({
+  pageContext: { url: "chrome://newtab/", title: "New Tab" },
+  userInstruction: "平台趋势",
+  matchedSkills: ["skills/ozon_platform_trends.skill.md"],
+});
+assert.equal(unknownPlatformScope.entry_page_type, "unknown");
+assert.equal(unknownPlatformScope.analysis_scope, "platform_trend");
+assert.equal(unknownPlatformScope.source_page_role, "platform_discovery");
+assert.equal(unknownPlatformScope.needs_user_clarification, false, "platform trends should auto-discover from blank or unknown pages");
+assert.equal(unknownPlatformScope.auto_discovery_required, true);
+assert.equal(unknownPlatformScope.scope_confidence, "medium");
+assert.ok(unknownPlatformScope.discovery_sources.includes("current_page_public_clues"));
+
+const unknownStoreScope = buildResearchScope({
+  pageContext: { url: "chrome://newtab/", title: "New Tab" },
+  userInstruction: "店铺体检",
+  matchedSkills: ["skills/ozon_global_shop_optimizer.skill.md"],
+});
+assert.equal(unknownStoreScope.entry_page_type, "unknown");
+assert.equal(unknownStoreScope.analysis_scope, "store_trend_fit");
+assert.equal(unknownStoreScope.needs_user_clarification, true, "non-trend workflows still need a concrete shop, SKU, category, or keyword");
+assert.equal(unknownStoreScope.auto_discovery_required, false);
 
 const searchScope = buildResearchScope({
   pageContext: { url: "https://www.ozon.ru/search/?text=%D0%BF%D0%BE%D0%BB%D0%BA%D0%B0", title: "полка" },

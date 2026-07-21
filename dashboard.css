@@ -1611,8 +1611,8 @@ body {
 /* Reports Tab view layout */
 .reports-container {
   display: grid;
-  grid-template-columns: 280px 1fr;
-  gap: 24px;
+  grid-template-columns: minmax(320px, 360px) minmax(0, 1fr);
+  gap: 16px;
   height: calc(100vh - 120px);
   flex: 1;
   min-height: 0;
@@ -1644,10 +1644,10 @@ body {
 }
 .report-item {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px;
-  align-items: center;
-  padding: 10px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 14px 16px;
   border-bottom: 1px solid var(--border);
   cursor: pointer;
 }
@@ -1656,11 +1656,41 @@ body {
 }
 .report-item.active {
   background: var(--bg-input);
+  box-shadow: inset 3px 0 0 var(--ozon-blue);
+}
+.report-item-main {
+  min-width: 0;
+}
+.report-item-title {
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.report-item-meta {
+  align-items: center;
+  color: var(--text-secondary);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 10px;
+  gap: 6px 10px;
+  justify-content: space-between;
+  line-height: 1.6;
+  margin-top: 5px;
 }
 .report-item-actions {
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
+  justify-content: flex-start;
+  min-width: 0;
+}
+.report-item > .report-item-actions .btn {
+  justify-content: center;
+  min-height: 28px;
+}
+.report-viewer-toolbar > .report-item-actions {
   justify-content: flex-end;
 }
 .report-evidence-status {
@@ -1708,6 +1738,7 @@ body {
 .report-viewer-toolbar strong,
 .report-viewer-toolbar span {
   display: block;
+  overflow-wrap: anywhere;
 }
 .report-viewer-toolbar span {
   color: var(--text-secondary);
@@ -1990,6 +2021,34 @@ body {
   .reports-container,
   .tracker-layout {
     grid-template-columns: 1fr;
+  }
+  #view-reports {
+    overflow-y: auto;
+  }
+  .reports-container {
+    flex: 0 0 auto;
+    gap: 12px;
+    height: auto;
+    min-height: 0;
+    overflow: visible;
+  }
+  .reports-sidebar {
+    max-height: min(46vh, 420px);
+    min-height: 240px;
+  }
+  .report-viewer {
+    min-height: 520px;
+  }
+  .report-viewer-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .report-viewer-toolbar > .report-item-actions {
+    justify-content: flex-start;
+    width: 100%;
+  }
+  .report-viewer-content > .md-report {
+    padding: 16px;
   }
   .workflow-canvas-space {
     min-height: calc(100vh - 76px);

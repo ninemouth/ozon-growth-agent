@@ -133,8 +133,10 @@
 
 - `target_price`：Ozon 前台实际售价，使用 RUB。
 - `sourcing_cost`：1688/淘宝出厂价/拿样价/阶梯价，CNY 与 RUB 折算。
+- `rate_snapshot`：必须来自 `get_market_rates` 或用户明确确认的汇率，包含 `source`、`fetched_at`、`cny_to_rub` 或 `rub_to_cny`；工具失败时不得输出确定性高利润，只能写待确认。
 - `packaging_cost`：贴标、俄文说明书、包装加固、外箱定制，默认 2-5 CNY/件。
 - `shipping_cost`：国内头程 + 中俄跨境段 + 俄罗斯尾程。无法实时核实时，使用保守估算并标注 assumption。
+- `logistics_profile_snapshot`：必须来自 `get_logistics_cost_profile` 或用户明确确认的物流配置，包含 `source`、`calculated_at`、`formula`、`estimated_shipping_cny` / `estimated_shipping_rub`。
 - `platform_fees`：Ozon 佣金、交易服务费、履约或推广成本假设。
 - `customs_duty`：俄罗斯个人免税额度按 200 EUR 作为风险线；超出部分按 15% 估算，并说明汇率/重量限制需要复核。
 - `margin_rate`：按 `(Ozon售价 - 采购RUB - 包装RUB - 运费RUB - 平台扣款RUB - 关税RUB) / Ozon售价` 测算。
@@ -301,8 +303,21 @@
         "financial_ledger": {
           "target_price": "Ozon 售价 RUB",
           "sourcing_cost": "采购成本 CNY/RUB",
+          "rate_snapshot": {
+            "source": "get_market_rates 或 user_input",
+            "fetched_at": "汇率获取/确认时间",
+            "cny_to_rub": "CNY->RUB 汇率",
+            "rub_to_cny": "RUB->CNY 汇率"
+          },
           "packaging_cost": "包装贴标成本 CNY/RUB",
           "shipping_cost": "跨境物流成本 RUB",
+          "logistics_profile_snapshot": {
+            "source": "get_logistics_cost_profile 或 user_input",
+            "calculated_at": "运费模型计算/确认时间",
+            "formula": "运费计算公式",
+            "estimated_shipping_cny": "预估运费 CNY",
+            "estimated_shipping_rub": "预估运费 RUB"
+          },
           "platform_fees": "Ozon 佣金与交易服务费 RUB",
           "customs_duty": "关税估算 RUB",
           "margin_rate": "预估净利润率"
@@ -349,8 +364,21 @@
         "financial_ledger": {
           "target_price": "Ozon 售价 RUB",
           "sourcing_cost": "采购成本 CNY/RUB",
+          "rate_snapshot": {
+            "source": "get_market_rates 或 user_input",
+            "fetched_at": "汇率获取/确认时间",
+            "cny_to_rub": "CNY->RUB 汇率",
+            "rub_to_cny": "RUB->CNY 汇率"
+          },
           "packaging_cost": "包装贴标成本 CNY/RUB",
           "shipping_cost": "跨境物流成本 RUB",
+          "logistics_profile_snapshot": {
+            "source": "get_logistics_cost_profile 或 user_input",
+            "calculated_at": "运费模型计算/确认时间",
+            "formula": "运费计算公式",
+            "estimated_shipping_cny": "预估运费 CNY",
+            "estimated_shipping_rub": "预估运费 RUB"
+          },
           "platform_fees": "Ozon 佣金与交易服务费 RUB",
           "customs_duty": "关税估算 RUB",
           "margin_rate": "预估净利润率"

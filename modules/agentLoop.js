@@ -5,6 +5,13 @@ import { callLLM, getSettings } from './llmClient.js';
 import { tools } from './toolRegistry.js';
 import { isWorkflowCancellationRequested, isWorkflowGenerationCurrent } from './workflowRuntime.js';
 import { formatBrowserAutomationCapabilityPrompt } from './browserAutomationCapabilities.js';
+import { buildNegativeFilterPrompt } from './negativeFilters.js';
+import {
+  collectGoogleTrendsAttempts,
+  getTrendQueryGuardError,
+  getTrendQueryRefinementState,
+  hasUsableGoogleTrendsAttempt,
+} from './trendQueryPlanner.js';
 
 const globalSessionCache = {};
 const inFlightToolRuns = new Map();
@@ -56,6 +63,7 @@ const IMAGE_SEARCH_TOOLS = ["image_search_1688", "image_search_taobao", "image_s
 const TECHNICAL_JARGON_ERROR = "报告正文中包含内部技术黑话或函数名（如 DOM, read_current_page, xpath 等），请过滤并替换为通俗易懂的商业/供应链分析术语！";
 const TECHNICAL_JARGON_RE = /read_current_page|open_new_tab|close_tab|search_in_browser|click_by_text|click_by_selector|input_text_and_search|agentic_web_search|image_search_1688|image_search_taobao|image_search_in_browser|collect_ozon_shop_pages|collect_ozon_competitor_shops|analyze_ozon_shop_crawl_screenshots|DOM|xpath|GBK 编码|UTF-8|自愈程序|爬虫|人机拦截|验证码/i;
 const REPORT_URL_FIELD_RE = /(^|_)(url|uri|link|href|image|image_src|img|src|thumbnail|photo|picture)(_|$)/i;
+const REPORT_MACHINE_ENUM_FIELD_RE = /^(source_type|original_source_type)$/i;
 const STANDARD_EVIDENCE_SOURCE_TYPES = new Set([
   "page_dom",
   "screenshot_visual",
@@ -157,7 +165,7 @@ function sanitizeReportValueForBusinessAudience(value, key = "") {
 
 function collectBusinessReportStrings(value, key = "", output = []) {
   if (typeof value === "string") {
-    if (!REPORT_URL_FIELD_RE.test(key)) output.push(value);
+    if (!REPORT_URL_FIELD_RE.test(key) && !REPORT_MACHINE_ENUM_FIELD_RE.test(key)) output.push(value);
     return output;
   }
   if (Array.isArray(value)) {
@@ -428,6 +436,26 @@ function hasEvidenceSource(toolHistory = [], pageContext = {}, sourceType = "") 
       entry.tool === "search_in_browser" && String(entry.arguments?.engine || "").toLowerCase() === "yandex"
     );
   }
+  if (normalized === "vk_social") {
+    return hasSuccessfulToolCall(toolHistory, (entry) =>
+      entry.tool === "search_in_browser" && String(entry.arguments?.engine || "").toLowerCase() === "vk_posts"
+    );
+  }
+  if (normalized === "telegram_social") {
+    return hasSuccessfulToolCall(toolHistory, (entry) =>
+      entry.tool === "search_in_browser" && String(entry.arguments?.engine || "").toLowerCase() === "tgstat"
+    );
+  }
+  if (normalized === "dzen_blog") {
+    return hasSuccessfulToolCall(toolHistory, (entry) =>
+      entry.tool === "search_in_browser" && String(entry.arguments?.engine || "").toLowerCase() === "dzen"
+    );
+  }
+  if (normalized === "ru_news") {
+    return hasSuccessfulToolCall(toolHistory, (entry) =>
+      entry.tool === "search_in_browser" && String(entry.arguments?.engine || "").toLowerCase() === "yandex_news"
+    );
+  }
   if (normalized === "google_search") {
     return hasSuccessfulToolCall(toolHistory, (entry) => {
       const engine = String(entry.arguments?.engine || "").toLowerCase();
@@ -435,11 +463,14 @@ function hasEvidenceSource(toolHistory = [], pageContext = {}, sourceType = "") 
     });
   }
   if (normalized === "google_trends") {
-    return hasSuccessfulToolCall(toolHistory, (entry) =>
-      entry.tool === "search_in_browser" &&
-      String(entry.arguments?.engine || "").toLowerCase() === "google_trends" &&
-      (entry.result?.evidenceOk === true || entry.result?.trendsEvidenceState?.readiness === "core_modules_visible")
-    );
+    return hasSuccessfulToolCall(toolHistory, (entry) => {
+      if (entry.tool !== "search_in_browser") return false;
+      if (String(entry.arguments?.engine || "").toLowerCase() !== "google_trends") return false;
+      const result = entry.result || {};
+      if (result.evidenceOk === true) return true;
+      const readiness = result.trendsEvidenceState?.readiness;
+      return readiness === "core_modules_visible" || readiness === "trend_shell_with_screenshot";
+    });
   }
   if (normalized === "official_policy") {
     return hasSuccessfulToolCall(toolHistory, (entry) => {
@@ -510,7 +541,7 @@ function validateEvidenceLedgerEntries({
   label,
   toolHistory,
   pageContext,
-  allowedTypes = ["page_dom", "screenshot_visual", "ozon_api", "ozon_search", "yandex_search", "google_search", "google_trends", "sourcing_search", "supplier_page", "user_input", "assumption"],
+  allowedTypes = ["page_dom", "screenshot_visual", "ozon_api", "ozon_search", "yandex_search", "google_search", "google_trends", "vk_social", "telegram_social", "dzen_blog", "ru_news", "sourcing_search", "supplier_page", "user_input", "assumption"],
 }) {
   const errors = [];
   if (!Array.isArray(entries) || entries.length === 0) {
@@ -553,25 +584,32 @@ function reportTextForValidation(out = {}) {
 }
 
 function hasInvalidGoogleTrendsEvidence(toolHistory = []) {
-  return toolHistory.some((entry) => {
-    if (entry?.tool !== "search_in_browser") return false;
-    if (String(entry.arguments?.engine || "").toLowerCase() !== "google_trends") return false;
-    const result = entry.result || {};
-    const state = result.trendsEvidenceState || {};
-    const text = [
-      result.message,
-      result.error,
-      result.evidenceStatus,
-      state.readiness,
-      result.pageData?.title,
-      result.pageData?.visibleText,
-      result.pageData?.text,
-    ].filter(Boolean).join(" ");
-    return result.ok === false ||
-      result.evidenceOk === false ||
-      state.readiness !== "core_modules_visible" ||
-      /not enough data|doesn.?t have enough data|数据不足|只看到壳页|模块未稳定|invalid_or_blocked|trend_shell_visible/i.test(text);
+  const attempts = collectGoogleTrendsAttempts(toolHistory);
+  return attempts.length > 0 && !hasUsableGoogleTrendsAttempt(toolHistory);
+}
+
+function getTrendEvidenceExecutionCorrections(out = {}, toolHistory = []) {
+  const refinement = getTrendQueryRefinementState("ozon_platform_trends", toolHistory);
+  if (!refinement.exhausted || hasUsableGoogleTrendsAttempt(toolHistory)) return [];
+  const corrections = [];
+  const reportText = reportTextForValidation(out);
+  const dataItems = Array.isArray(out.data) ? out.data : [];
+  const hasUnsafeItem = dataItems.some((item) => {
+    const text = JSON.stringify(item || {});
+    const downgraded = ["assumption", "blocked"].includes(String(item?.demand_signal || ""));
+    return /Google Trends|谷歌趋势|搜索趋势|季节性|峰值|需求曲线/i.test(text) && !downgraded;
   });
+  if (hasUnsafeItem) corrections.push("所有引用 Google Trends、峰值或季节性的 data 项必须把 demand_signal 改为 assumption 或 blocked。");
+  if (/Google Trends[^。；\n]*(证明|表明|显示|因此|说明)|谷歌趋势[^。；\n]*(证明|表明|显示|因此|说明)/i.test(reportText)) {
+    corrections.push("删除 Google Trends 的确定性或因果表述，只能说明 3 个查询词均数据不足。可以保留 Ozon/Yandex 独立支持的需求结论，但不能冒充趋势证据。");
+  }
+  if (!hasReportBlockingGap(out, /Google Trends|谷歌趋势|趋势页|数据不足|not enough data|壳页/i)) {
+    corrections.push("在 blocking_gaps 中记录 3 个不同趋势词均数据不足、业务影响和后续恢复动作。");
+  }
+  if (String(out.report_status || "") === "completed") {
+    corrections.push("存在趋势证据缺口时 report_status 不能是 completed，应按其余证据覆盖降级为 partial 或 assumption_only。");
+  }
+  return corrections;
 }
 
 function countOzonCompetitorDetailEvidence(toolHistory = []) {
@@ -650,6 +688,69 @@ function validateOzonPlatformTrendReport(out = {}, toolHistory = [], pageContext
   if (!out.store_fit || typeof out.store_fit !== "object") {
     errors.push("Ozon 平台趋势报告缺少 store_fit。即使当前不是自营店铺入口，也必须说明 fit=unknown 及原因，避免把平台趋势直接写成店铺行动。");
   }
+  const queryFunnel = out.query_funnel;
+  if (!queryFunnel || typeof queryFunnel !== "object") {
+    errors.push("Ozon 平台趋势报告缺少 query_funnel，无法说明用户问题如何经过撒网、评分和聚焦转成最终俄语关键词。");
+  } else {
+    const dimensions = Array.isArray(queryFunnel.intent_dimensions) ? queryFunnel.intent_dimensions : [];
+    const discoveryQueries = Array.isArray(queryFunnel.discovery_queries) ? queryFunnel.discovery_queries : [];
+    const scoredQueries = Array.isArray(queryFunnel.scored_queries) ? queryFunnel.scored_queries : [];
+    const focusQueries = Array.isArray(queryFunnel.focus_queries) ? queryFunnel.focus_queries : [];
+    if (!queryFunnel.user_intent || !queryFunnel.as_of_date || !["next_3_months", "next_6_months", "next_12_months"].includes(String(queryFunnel.forecast_horizon || "")) || dimensions.length < 3) {
+      errors.push("query_funnel 必须保留 user_intent、as_of_date、3/6/12 个月 forecast_horizon，并至少拆出 3 个意图维度。");
+    }
+    if (status !== "blocked" && discoveryQueries.length < 6) {
+      errors.push("query_funnel.discovery_queries 至少需要 6 个跨词族俄语候选，避免从用户问题过早收敛到单一长尾词。");
+    }
+    if (status !== "blocked" && scoredQueries.length < 3) {
+      errors.push("query_funnel.scored_queries 至少需要 3 个轻量验证词，并按 Ozon 关注信号、跨站覆盖、未来信号和卖家适配进行排序。");
+    }
+    if (status !== "blocked" && (focusQueries.length < 2 || focusQueries.length > 4)) {
+      errors.push("query_funnel.focus_queries 必须保留 2-4 个聚焦词，不能只凭一个关键词代表整类需求。");
+    }
+    scoredQueries.forEach((item, idx) => {
+      const scoreFields = ["ozon_attention", "cross_site_coverage", "future_signal", "seller_fit", "total_score"];
+      if (!item?.query_ru || !["exact", "parent_proxy", "adjacent_proxy"].includes(String(item?.scope_relation || "")) || !["focus", "reserve", "reject"].includes(String(item?.decision || "")) || !item?.evidence) {
+        errors.push(`query_funnel.scored_queries 第 ${idx + 1} 项必须包含 query_ru、scope_relation、decision 和 evidence。`);
+      }
+      const scoreRanges = { ozon_attention: 3, cross_site_coverage: 2, future_signal: 2, seller_fit: 3, total_score: 10 };
+      scoreFields.forEach((field) => {
+        const value = Number(item?.[field]);
+        if (!Number.isFinite(value) || value < 0 || value > scoreRanges[field]) {
+          errors.push(`query_funnel.scored_queries 第 ${idx + 1} 项缺少数值评分 ${field}。`);
+        }
+      });
+    });
+  }
+  const recommendedIds = Array.isArray(out.recommended_opportunities)
+    ? out.recommended_opportunities.map((id) => String(id || "")).filter(Boolean)
+    : [];
+  const validatedIds = Array.isArray(out.validated_opportunities)
+    ? out.validated_opportunities.map((id) => String(id || "")).filter(Boolean)
+    : [];
+  const assumptionIds = Array.isArray(out.assumption_opportunities)
+    ? out.assumption_opportunities.map((id) => String(id || "")).filter(Boolean)
+    : [];
+  if (!Array.isArray(out.recommended_opportunities)) {
+    errors.push("Ozon 平台趋势报告缺少 recommended_opportunities 数组，无法区分可卖候选与已淘汰方向。");
+  }
+  if (["partial", "completed", "assumption_only"].includes(status) && recommendedIds.length === 0) {
+    errors.push("Ozon 平台趋势报告不能在只有不建议售卖方向时结束 partial/completed/assumption_only。请继续扩展候选池，并至少交付 1 个通过不卖原则的可卖候选；只有公开页面整体阻断时才可用 blocked 且不推荐。");
+  }
+  if (!Array.isArray(out.rejected_directions)) {
+    errors.push("Ozon 平台趋势报告缺少 rejected_directions 数组。命中不卖原则的方向应在这里简短记录，不能混入主推荐 data。");
+  } else {
+    out.rejected_directions.forEach((item, idx) => {
+      if (!item?.direction || !Array.isArray(item?.filter_ids) || item.filter_ids.length === 0 || !item?.reason) {
+        errors.push(`rejected_directions 第 ${idx + 1} 项必须包含 direction、非空 filter_ids 和 reason。`);
+      }
+    });
+  }
+  [...validatedIds, ...assumptionIds].forEach((id) => {
+    if (!recommendedIds.includes(id)) {
+      errors.push(`机会 ${id} 出现在 validated_opportunities/assumption_opportunities，但未进入 recommended_opportunities。可验证机会必须先通过不卖原则。`);
+    }
+  });
 
   (Array.isArray(out.follow_up_tasks) ? out.follow_up_tasks : []).forEach((task, idx) => {
     ["task_id", "task_type", "priority", "target", "reason", "required_evidence", "expected_output", "requires_manual_confirmation"].forEach((field) => {
@@ -684,10 +785,19 @@ function validateOzonPlatformTrendReport(out = {}, toolHistory = [], pageContext
   }
 
   const dataItems = Array.isArray(out.data) ? out.data : [];
+  const dataOpportunityIds = new Set(dataItems.map((item) => String(item?.opportunity_id || "")).filter(Boolean));
+  recommendedIds.forEach((id) => {
+    if (!dataOpportunityIds.has(id)) {
+      errors.push(`recommended_opportunities 中的 ${id} 没有对应 data 商品机会卡片，不能只写推荐编号而不交付可执行候选。`);
+    }
+  });
   dataItems.forEach((item, idx) => {
     const title = item?.opportunity_id || item?.keyword_or_category || `机会 #${idx + 1}`;
     const required = [
       "opportunity_id",
+      "recommendation_status",
+      "filter_verdict",
+      "seller_fit_reason",
       "keyword_or_category",
       "buyer_scenario",
       "price_band",
@@ -709,13 +819,19 @@ function validateOzonPlatformTrendReport(out = {}, toolHistory = [], pageContext
     if (!["observed", "assumption", "blocked"].includes(String(item?.demand_signal || ""))) {
       errors.push(`平台趋势 data 第 ${idx + 1} 项 (${title}) 的 demand_signal 必须是 observed / assumption / blocked。`);
     }
+    if (String(item?.recommendation_status || "") !== "recommended" || String(item?.filter_verdict || "") !== "passed") {
+      errors.push(`平台趋势 data 第 ${idx + 1} 项 (${title}) 不是通过不卖原则的可卖候选。被淘汰方向只能进入 rejected_directions，不能占用主报告 data。`);
+    }
+    if (!recommendedIds.includes(String(item?.opportunity_id || ""))) {
+      errors.push(`平台趋势 data 第 ${idx + 1} 项 (${title}) 未被 recommended_opportunities 引用，不能进入主推荐清单。`);
+    }
     const ledgerEntries = Array.isArray(item?.evidence_ledger) ? item.evidence_ledger : [];
     errors.push(...validateEvidenceLedgerEntries({
       entries: ledgerEntries,
       label: `平台趋势 data 第 ${idx + 1} 项 (${title})`,
       toolHistory,
       pageContext,
-      allowedTypes: ["ozon_search", "yandex_search", "google_search", "google_trends", "page_dom", "screenshot_visual", "official_policy", "assumption", "blocked"],
+      allowedTypes: ["ozon_search", "yandex_search", "google_search", "google_trends", "vk_social", "telegram_social", "dzen_blog", "ru_news", "page_dom", "screenshot_visual", "official_policy", "assumption", "blocked"],
     }));
     const itemText = JSON.stringify(item || {});
     const hasAssumptionOrBlocked = hasAnyLedgerType(ledgerEntries, ["assumption", "blocked"]) ||
@@ -944,6 +1060,23 @@ function domesticVisualRouteActive(skillId, pageContext, toolHistory) {
   return hasImageSearchAttempt(toolHistory) || hasPreparedCleanImageAttempt(toolHistory);
 }
 
+function hasFinancialSnapshot(value, requiredKeys = []) {
+  if (!value || typeof value !== "object") return false;
+  return requiredKeys.every((key) => value[key] !== undefined && value[key] !== null && String(value[key]).trim() !== "");
+}
+
+function hasRateSnapshot(ledger = {}) {
+  const snapshot = ledger.rate_snapshot || ledger.exchange_rate_snapshot || ledger.market_rate_snapshot || ledger.market_rates;
+  return hasFinancialSnapshot(snapshot, ["source", "fetched_at"]) &&
+    (snapshot.cny_to_rub || snapshot.rub_to_cny || snapshot.rate);
+}
+
+function hasLogisticsSnapshot(ledger = {}) {
+  const snapshot = ledger.logistics_profile_snapshot || ledger.shipping_profile_snapshot || ledger.logistics_cost_profile;
+  return hasFinancialSnapshot(snapshot, ["source", "calculated_at"]) &&
+    (snapshot.formula || snapshot.estimated_shipping_cny || snapshot.estimated_shipping_rub);
+}
+
 function validateReport(parsed, userInstruction, skillId, toolHistory = [], pageContext = {}) {
   const errors = [];
   if (!parsed || parsed.type !== "final" || !parsed.output) {
@@ -1015,7 +1148,7 @@ function validateReport(parsed, userInstruction, skillId, toolHistory = [], page
         const observedValue = entry?.observed_value;
         const usedFor = entry?.used_for;
         const limitation = entry?.limitation;
-        const allowedTypes = ["page_dom", "screenshot_visual", "ozon_api", "ozon_search", "yandex_search", "google_search", "google_trends", "official_policy", "blocked", "assumption"];
+        const allowedTypes = ["page_dom", "screenshot_visual", "ozon_api", "ozon_search", "yandex_search", "google_search", "google_trends", "vk_social", "telegram_social", "dzen_blog", "ru_news", "official_policy", "blocked", "assumption"];
         if (!allowedTypes.includes(sourceType)) {
           errors.push(`${prefix} 的 source_type 无效，必须是 ${allowedTypes.join(" / ")}。`);
         }
@@ -1088,7 +1221,7 @@ function validateReport(parsed, userInstruction, skillId, toolHistory = [], page
         toolHistory,
         pageContext,
         allowedTypes: platformTrendReport
-          ? ["ozon_search", "yandex_search", "google_search", "google_trends", "page_dom", "screenshot_visual", "official_policy", "assumption", "blocked"]
+          ? ["ozon_search", "yandex_search", "google_search", "google_trends", "vk_social", "telegram_social", "dzen_blog", "ru_news", "page_dom", "screenshot_visual", "official_policy", "assumption", "blocked"]
           : undefined,
       }));
 
@@ -1222,18 +1355,22 @@ function validateReport(parsed, userInstruction, skillId, toolHistory = [], page
         if (!cost || !shipping || !price || !margin) {
           errors.push(`商品列表第 ${idx + 1} 项 (${title}) 的财务账本不完整（financial_ledger 必须包含 sourcing_cost, shipping_cost, target_price 和 margin_rate）！`);
         }
+        if (!hasRateSnapshot(ledger)) {
+          errors.push(`商品列表第 ${idx + 1} 项 (${title}) 的财务账本缺少 rate_snapshot/exchange_rate_snapshot。必须先调用 get_market_rates 或引用用户确认汇率，并写入 source、fetched_at 和 cny_to_rub/rub_to_cny，禁止凭静态 Prompt 猜测利润率。`);
+        }
+        if (!hasLogisticsSnapshot(ledger)) {
+          errors.push(`商品列表第 ${idx + 1} 项 (${title}) 的财务账本缺少 logistics_profile_snapshot/shipping_profile_snapshot。必须先调用 get_logistics_cost_profile 或引用用户确认运费配置，并写入 source、calculated_at 和 formula/estimated_shipping，禁止凭静态 Prompt 猜测运费。`);
+        }
       }
     });
   }
 
   // 4. Evidence validation must match the current skill semantics.
-  out.data.forEach((item, idx) => {
-    const evidence = item.trend_evidence || item.selection_rationale || item.evidence || item.diagnosis_basis || "";
-    if (!evidence || evidence.trim().length < 20) {
-      const label = isShopOptimizerOnly(skillId) ? "方案" : "商品列表";
-      errors.push(`${label}第 ${idx + 1} 项 (${item.title || item.name || item.plan_id || "未命名实体"}) 缺少充分证据链（trend_evidence / evidence / diagnosis_basis / selection_rationale 字段长度必须大于 20 字，并说明真实页面、截图、API、竞品或假设来源）！`);
-    }
-  });
+  // NOTE: Generic evidence-length gating for data items has been removed from Critic.
+  // The requirement (trend_evidence / evidence / diagnosis_basis / selection_rationale
+  // must be > 20 chars and cite real sources) is now enforced in the task flow via
+  // next_step_instruction when productCards are returned, so it is guaranteed before
+  // the report reaches audit rather than rejected here.
 
   // 5. Inferred target market verification in report text
   const overviewText = out.overview || "";
@@ -1310,9 +1447,9 @@ function describeToolAction(toolName = "", toolArgs = {}, toolResult = null) {
     return { actionKind: "browser_search", actionLabel: "浏览器搜索取证", lifecycle: "临时搜索页可能在证据保存后自动关闭" };
   }
   if (toolName === "open_new_tab") {
-    if (/ozon\.ru\/product\//i.test(url)) return { actionKind: "product_detail", actionLabel: "Ozon 商品详情页取证", lifecycle: "详情页会保持打开，除非后续显式关闭或工具超时回收" };
-    if (/ozon\.ru\/seller\/|ozon\.ru\/shop\//i.test(url)) return { actionKind: "shop_detail", actionLabel: "Ozon 店铺页取证", lifecycle: "店铺页会保持打开，用于后续竞品采集或截图分析" };
-    return { actionKind: "detail_page", actionLabel: "详情页取证", lifecycle: "详情页会保持打开，除非后续显式关闭或工具超时回收" };
+    if (/ozon\.ru\/product\//i.test(url)) return { actionKind: "product_detail", actionLabel: "Ozon 商品详情页取证", lifecycle: "详情页保存页面文本和截图证据后必须关闭" };
+    if (/ozon\.ru\/seller\/|ozon\.ru\/shop\//i.test(url)) return { actionKind: "shop_detail", actionLabel: "Ozon 店铺页取证", lifecycle: "店铺页完成竞品采集或截图分析后必须关闭" };
+    return { actionKind: "detail_page", actionLabel: "详情页取证", lifecycle: "详情页保存证据后必须关闭" };
   }
   if (toolName === "collect_ozon_shop_pages") return { actionKind: "shop_page_crawl", actionLabel: "Ozon 店铺/商品页面采集", lifecycle: "采集会打开页面、保存页面文本/截图/商品卡片后关闭临时页" };
   if (toolName === "collect_ozon_competitor_shops") return { actionKind: "competitor_shop_crawl", actionLabel: "Ozon 竞品页面批量采集", lifecycle: "批量采集会读取竞品页面和截图证据" };
@@ -1379,7 +1516,7 @@ async function closeTabsCreatedDuringTimedOutTool(beforeTabIds = new Set(), prot
     if (!Number.isInteger(tab.id) || beforeTabIds.has(tab.id)) return false;
     if (isProtectedRuntimeTab(tab.id, protectedTabIds)) return false;
     const url = String(tab.url || "");
-    return /google\.|yandex\.ru|bing\.com|1688\.com|taobao\.com/i.test(url);
+    return /ozon\.ru|google\.|yandex\.ru|bing\.com|1688\.com|taobao\.com/i.test(url);
   });
   await Promise.all(candidates.map((tab) => new Promise((resolve) => {
     chrome.tabs.remove(tab.id, () => resolve());
@@ -1393,7 +1530,9 @@ export async function runAgentLoop({ tabId, skillId, skillMarkdown, userInstruct
 
   let systemPrompt = skillMarkdown;
   if (negativeFilter === false) {
-    systemPrompt += `\n\n=========================================\n\n⚠️ 【用户已手动关闭“不卖原则”过滤限制】：当前处于国内国内电商或不受限的宽容寻源环境，用户已手动取消了默认的“不卖原则”（Negative Filter）负面过滤。因此，你【无须】过滤服饰、鞋帽、内衣、大件重货、陶瓷玻璃易碎品、本地容易买到的普通日杂标品或医疗/成人等高风险品类。请完全根据当前页面商品的实际销量表现、货源品质以及用户指令，自由挖掘上述常规品类并推荐它们的源头供应商！`;
+    systemPrompt += `\n\n=========================================\n\n⚠️ 【用户已手动关闭“不卖原则”过滤限制】：当前处于国内国内电商或不受限的宽容寻源环境，用户已手动取消了默认的“不卖原则”（Negative Filter）负面过滤。因此，你【无须】过滤高资金占用、超大超重易碎、EAC/TR CU 强制认证、高退货/尺码敏感、IP/品牌侵权、Ozon 禁限售、本地易购标品、大品牌价格战红海、短生命周期或需本地售后安装等方向。请完全根据当前页面商品的实际销量表现、货源品质以及用户指令，自由挖掘上述常规品类并推荐它们的源头供应商！`;
+  } else {
+    systemPrompt += buildNegativeFilterPrompt(skillId, userInstruction);
   }
   
   const isApiActive = !!(settings.helium10ApiKey || settings.sellerSpriteApiKey);
@@ -1425,7 +1564,7 @@ ${formatBrowserAutomationCapabilityPrompt()}
 - 地址打开/站内搜索/键盘输入/筛选翻页/DOM 采集/多模态截图/网页关闭都必须通过对应工具完成。
 - 页面动态加载时必须相信工具返回的 loadState、evidenceOk、pageEvidence、blocking 状态；证据不足时输出 blocking_gaps。
 - 视觉截图用于图片、布局、趋势图和竞品陈列；正文、标题、参数、价格、评论等文本判断必须优先使用 DOM 或 API。
-- 临时标签页完成取证后要关闭；来源 Ozon 页和趋势任务中的 Ozon 页不得主动关闭。
+- 临时标签页完成取证后要关闭；只保护用户发起任务时所在的来源页，以及等待人工验证的阻断页。
 
 ## 报告语言防火墙
 - 工具名、函数名和内部采集术语只允许出现在 tool_call JSON 或内部推理中，严禁写入 final.output。
@@ -1474,9 +1613,13 @@ ${userInstruction ? `用户补充了以下核心探索方向。这是你的**最
 
 ${highRandomness ? `\n\n## ⚠️ [Anti-Cache] 强制发散与破局指令 (Nonce: ${Date.now()})\n用户要求进行**【全新视角的探索】**。请你**完全抛弃最常规、最容易想到的思路**。如果之前的方向是 A，这次请尝试 B 甚至是冷门的 C。突破固有套路，给我极具差异化的答案！` : ""}
 
-${((skillId || "").includes("domestic_sourcing_finder") || (skillId || "").includes("ozon_sourcing_finder")) ? `\n\n## 国内供应链寻源运行硬约束\n- 如果目标是非标外观/造型/模具商品且存在 targetImageUrl，优先调用 image_search_1688 或 image_search_taobao。若已配置生图模型、且平台自动框选主体不完整，可先调用 prepare_clean_product_image，并把返回的 image_search_argument.imageUrl 用作图片搜索输入。\n- 非标品一旦启动图片搜索或干净搜图图准备流程，后续 Critic 打回也严禁调用 input_text_and_search 文本框搜索；必须继续用 productCards 候选主图、截图和视觉相似度证据筛选。\n- agentic_web_search 最多调用 1 次，且只用于物流、费率、政策或认证核算；严禁用它寻找 1688/淘宝货源或替代站内图片搜索。` : ""}
+${((skillId || "").includes("domestic_sourcing_finder") || (skillId || "").includes("ozon_sourcing_finder")) ? `\n\n## 国内供应链寻源运行硬约束\n- 如果目标是非标外观/造型/模具商品且存在 targetImageUrl，优先调用 image_search_1688 或 image_search_taobao。若已配置生图模型、且平台自动框选主体不完整，可先调用 prepare_clean_product_image，并把返回的 image_search_argument.imageUrl 用作图片搜索输入。\n- 非标品一旦启动图片搜索或干净搜图图准备流程，后续 Critic 打回也严禁调用 input_text_and_search 文本框搜索；必须继续用 productCards 候选主图、截图和视觉相似度证据筛选。\n- agentic_web_search 最多调用 1 次，且只用于物流、费率、政策或认证核算；严禁用它寻找 1688/淘宝货源或替代站内图片搜索。\n- 只要输出 financial_ledger 或 margin_rate，必须先调用 get_market_rates 获取 RUB/CNY 汇率快照，并调用 get_logistics_cost_profile 获取运费模型快照；把返回对象分别写入 financial_ledger.rate_snapshot 和 financial_ledger.logistics_profile_snapshot。若工具失败或用户未确认参数，利润率必须降级为待确认，不能写确定性高利润。` : ""}
 
-${(skillId || "").includes("ozon_") ? `\n\n## Ozon 浏览器标签页生命周期纪律\n- agentic_web_search 是静默信息检索工具，它自己的临时浏览器标签页由工具内部清理。\n${isOzonPlatformTrendsSkill(skillId) ? "- 当前是 Ozon 平台趋势任务：严禁主动关闭任何 Ozon 页面，包括来源店铺页、搜索页、类目页、商品页或店铺页；站外临时页由运行时按安全策略处理。\n- 如果 Ozon 页面已经完成取证，只需在报告中引用其 URL、tabId 或截图证据，不要调用 close_tab。\n" : "- search_in_browser、open_new_tab、image_search_1688、image_search_taobao、image_search_in_browser 会打开可见标签页。凡是仅用于 Ozon 取证、竞品查看、站外搜索或详情页抽样的新标签页，在读取证据后必须调用 close_tab 关闭对应 tabId。\n- 只有遇到验证码、登录态、人机验证、上传控件等待人工处理，或用户明确需要保留页面继续人工比对时，才允许暂时不关闭；最终报告必须说明保留原因和 tabId。\n- 输出 final 前必须自检：本轮由你打开且已经完成取证的无关标签页是否已经关闭。\n"}` : ""}
+${isOzonPlatformTrendsSkill(skillId) ? `\n\n## 平台趋势自动发现与可卖候选规则\n- 如果 research_scope.auto_discovery_required=true，说明用户从 Ozon 首页、空白页或平台入口发起趋势研究但尚不确定关键词；这不是缺陷，不能要求用户先补关键词，也不能直接输出空报告。\n- 你必须先建立 6-10 个不同品类的候选研究范围：读取当前页面可见公开线索、Ozon 首页/公开入口的推荐、热词、排行、类目入口或可见商品卡；再用 Yandex.ru、Google RU 或 Google Trends RU 的公开资料交叉验证。候选池应优先轻小件、低认证、低退货、可差异化、适合小批测试的商品方向。\n- 先应用中小微卖家不卖原则做初筛。命中强制认证、超大超重、尺码高退货、侵权、平台禁限售、本地安装售后或明显价格战的方向，只能进入 rejected_directions 简短记录，禁止占用 data、recommended_opportunities 或主结论篇幅。\n- 初筛后至少选出 2 个通过不卖原则的可卖候选继续做 Ozon 与站外证据验证。partial/completed 报告至少要交付 1 个 recommendation_status=recommended 的候选；如果第一批全部淘汰，必须继续扩展候选池，不能用“全部不建议卖”结束正常可访问的趋势任务。\n- 每个候选方向必须说明 seed_source（例如当前页面公开线索、Ozon 首页推荐、Ozon 热词/排行、Yandex RU 公开搜索、Google Trends RU related queries）、为什么适合俄罗斯/独联体市场、下一步要用哪个 Ozon 搜索词验证。\n- 自动发现阶段只能输出平台机会窗口，不能写成当前店铺已适合采购或上架。` : ""}
+
+${isOzonPlatformTrendsSkill(skillId) ? `\n\n## 用户问题到关键词的执行漏斗\n- 在第一次市场搜索前，先在内部建立 query_funnel：把用户原问题拆成需求头词、品类词、具体商品词、场景/节日词、文化/产地修饰词，生成 6-12 个俄语候选。\n- 只对 3-5 个代表词做 Ozon/Yandex 轻量撒网，使用可见商品/评价关注信号、跨站覆盖、有效未来信号、小微卖家适配四项量表聚焦 2-4 个词。评分是本轮排序量表，不是平台搜索量。\n- query_funnel 必须声明 as_of_date 和未来 3/6/12 个月 forecast_horizon；已经结束的节日、生肖或季节窗口不能计入未来趋势分。\n- Google Trends 已加载但数据不足时，必须先退宽语义，再切同义词族，最多 3 个不同查询。运行时会拒绝重复词并在 final 前强制完成小循环。\n- 如果改写词成功，旧失败词只进入 refinement_log，不得污染成功证据；3 个词均不足时停止搜索，在成稿前降级，不能等待 Critic 才发现。\n- 退宽词必须标记 exact / parent_proxy / adjacent_proxy；父级或相邻代理有数据不能直接证明原始细分品类增长。\n- final.output 必须包含完整 query_funnel，包括 user_intent、as_of_date、forecast_horizon、intent_dimensions、discovery_queries、scored_queries、focus_queries、refinement_log。` : ""}
+
+${(skillId || "").includes("ozon_") ? `\n\n## Ozon 浏览器标签页生命周期纪律\n- agentic_web_search 是静默信息检索工具，它自己的临时浏览器标签页由工具内部清理。\n- 来源 Ozon 页由运行时保护，不得关闭；本轮新开的 Ozon 搜索页、类目页、商品详情页以及站外证据页在读取并保存证据后必须调用 close_tab 关闭。\n- 只有遇到登录、人工验证、上传控件等待人工处理，或用户明确需要保留页面继续人工比对时，才允许暂时不关闭；最终报告必须说明保留原因和 tabId。\n- 输出 final 前必须自检：本轮由你打开且已经完成取证的标签页是否已经关闭；运行时还会在成功、失败或普通暂停时兜底回收 workflow 自建页。` : ""}
 
 ${(skillId || "").includes("tiktok_shop_monitor") ? `\n\n## ⚠️ TikTok 监控运行硬约束 (TikTok Monitor Hard Constraints)\n- 【严禁直接输出 final】：你绝对不能在第 1 步就直接输出 final 最终报告！\n- 【详情页深挖流程】：你必须挑选出 2-3 个核心/爆款商品，对这 2-3 个商品依次执行：(1) 调用 open_new_tab 打开该商品详情页，(2) 自动读取页面（在 open_new_tab 返回中会自动包含最新的 pageData，或调用 read_current_page 确认），(3) 调用 close_tab 关闭该标签页。只有将这 2-3 个重点商品对应的详情页细节深度抓取合并后，才允许输出 final 最终报告！` : ""}
 `;
@@ -1629,6 +1772,50 @@ ${(skillId || "").includes("tiktok_shop_monitor") ? `\n\n## ⚠️ TikTok 监控
           },
         };
       }
+      if (isOzonPlatformTrendsSkill(skillId)) {
+        const refinement = getTrendQueryRefinementState(skillId, toolHistory);
+        if (refinement.required && step < maxSteps - 1) {
+          sendProgress({
+            type: "trend_query_refinement_required",
+            step,
+            attempt: refinement.nextAttempt,
+            message: refinement.message,
+          });
+          messages.push({ role: "assistant", content: assistantContent });
+          messages.push({
+            role: "user",
+            content: `【趋势查询执行步骤未完成】\n${refinement.message}\n请现在调用 search_in_browser(engine="google_trends") 执行不同的新词，不要输出 final。新词必须记录到最终 query_funnel.refinement_log，包含 from_query、to_query、reason、scope_relation、result。退宽词若只是 parent_proxy/adjacent_proxy，不得证明原始细分品类增长。`,
+          });
+          await checkpoint("running", {
+            step,
+            lastStage: "trend_query_refinement_required",
+            trendQueryAttempts: refinement.attempts,
+          });
+          continue;
+        }
+
+        const executionCorrections = getTrendEvidenceExecutionCorrections(finalParsed.output || {}, toolHistory);
+        const correctionCount = Number(ctxForPrompt.__trendEvidenceCorrectionCount || 0);
+        if (executionCorrections.length > 0 && correctionCount < 1 && step < maxSteps - 1) {
+          ctxForPrompt.__trendEvidenceCorrectionCount = correctionCount + 1;
+          sendProgress({
+            type: "trend_evidence_downgrade_required",
+            step,
+            message: "趋势查询小循环已到上限，正在成稿前降级无效趋势结论，不进入 Critic 打回。",
+          });
+          messages.push({ role: "assistant", content: assistantContent });
+          messages.push({
+            role: "user",
+            content: `【趋势证据成稿前修正】\nGoogle Trends 的关键词恢复已达到上限。请直接修正报告后重新输出 final，不要继续搜索，也不要等待 Critic：\n${executionCorrections.map((item, index) => `${index + 1}. ${item}`).join("\n")}\n保留 Ozon/Yandex 已有真实证据，但必须明确它们不能替代 Google Trends 的未来增长曲线。`,
+          });
+          await checkpoint("running", {
+            step,
+            lastStage: "trend_evidence_downgrade_required",
+            trendEvidenceCorrections: executionCorrections,
+          });
+          continue;
+        }
+      }
       const preCriticSanitized = sanitizeFinalReportBeforeCritic(finalParsed);
       if (preCriticSanitized.sanitized || preCriticSanitized.normalized) {
         finalParsed = preCriticSanitized.parsed;
@@ -1733,6 +1920,29 @@ ${(skillId || "").includes("tiktok_shop_monitor") ? `\n\n## ⚠️ TikTok 监控
           await checkpoint("running", { step, lastStage: "tool_guard_rejected", blockedTool: toolName });
           continue;
         }
+      }
+
+      const trendQueryGuardError = getTrendQueryGuardError({
+        skillId,
+        toolName,
+        toolArgs,
+        toolHistory,
+      });
+      if (trendQueryGuardError) {
+        messages.push({ role: "assistant", content: assistantContent });
+        messages.push({ role: "user", content: JSON.stringify(trendQueryGuardError) });
+        sendProgress({
+          type: "trend_query_guard",
+          step,
+          message: trendQueryGuardError.error,
+        });
+        await checkpoint("running", {
+          step,
+          lastStage: "trend_query_guard",
+          blockedTool: toolName,
+          attemptedQueries: trendQueryGuardError.attemptedQueries || [],
+        });
+        continue;
       }
 
       const sourcingWorkflowGuardError = getSourcingWorkflowGuardError({
@@ -1967,10 +2177,21 @@ ${(skillId || "").includes("tiktok_shop_monitor") ? `\n\n## ⚠️ TikTok 监控
 
       if (toolResult && toolResult.isCaptcha) {
         sendProgress({
-          type: "captcha_warning",
+          type: "paused_for_verification",
           step,
-          message: "【采购平台人机拦截预警】：检测到当前页面被验证码（滑块）或登录限制卡住！请立刻前往打开的浏览器窗口，滑动通过验证或完成登录。操作完成后 Agent 将自动继续。"
+          tabId: toolResult.tabId,
+          toolName,
+          message: "【采购平台人机协同】：检测到当前页面被验证码、滑块或登录限制卡住。请前往已打开的货源页面完成验证/登录，再返回插件发送“继续”恢复；本轮报告不得把受阻货源写成已验证供应商。"
         });
+        await checkpoint("interrupted", {
+          step,
+          lastStage: "paused_for_verification",
+          currentTool: toolName,
+          currentToolRunId: toolRunId,
+          verificationTabId: toolResult.tabId,
+          interruptionReason: "paused_for_verification",
+        });
+        throw new Error("workflow verification required");
       }
 
       let nextScreenshot = null;
@@ -2004,10 +2225,39 @@ ${(skillId || "").includes("tiktok_shop_monitor") ? `\n\n## ⚠️ TikTok 监控
         tool: toolName,
         result: toolResult,
       };
+      if (isOzonPlatformTrendsSkill(skillId) && toolName === "search_in_browser" && String(toolArgs.engine || "").toLowerCase() === "google_trends") {
+        const refinement = getTrendQueryRefinementState(skillId, toolHistory);
+        if (refinement.required) {
+          userResultObj.trend_query_refinement = {
+            required: true,
+            attempt: refinement.nextAttempt,
+            previous_queries: refinement.attempts.map((attempt) => attempt.queryUsed || attempt.requestedQuery),
+          };
+          userResultObj.next_step_instruction = `${refinement.message} 必须先执行新的 Google Trends 查询，再继续报告；不要把当前数据不足页面写成趋势证据。`;
+          sendProgress({
+            type: "trend_query_refinement_required",
+            step,
+            attempt: refinement.nextAttempt,
+            message: refinement.message,
+          });
+        } else if (refinement.exhausted) {
+          userResultObj.trend_query_refinement = {
+            required: false,
+            exhausted: true,
+            attempted_queries: refinement.attempts.map((attempt) => attempt.queryUsed || attempt.requestedQuery),
+          };
+          userResultObj.next_step_instruction = `${refinement.message} 不要再调用 Google Trends；在成稿前把相关 demand_signal 降级为 assumption/blocked，并记录 blocking_gaps。`;
+          sendProgress({
+            type: "trend_query_refinement_exhausted",
+            step,
+            message: refinement.message,
+          });
+        }
+      }
       const productCards = toolResult?.pageData?.productCards || [];
       if (Array.isArray(productCards) && productCards.length > 0) {
         userResultObj.visual_candidate_summary = summarizeProductCards(productCards);
-        userResultObj.next_step_instruction = "当前页面已经抽取到带主图与屏幕坐标的 productCards。下一步必须停止继续搜索，先对照目标商品主图和最新截图，把这些卡片按外观/材质/结构视觉相似度排序；只允许打开视觉排名最高且未触发材质/造型红线的 1-3 个详情页。最终 data 每项必须写入 candidate_image_url、list_page_visual_score、visual_match_evidence，禁止只按标题关键词选择。";
+        userResultObj.next_step_instruction = "当前页面已经抽取到带主图与屏幕坐标的 productCards。下一步必须停止继续搜索，先对照目标商品主图和最新截图，把这些卡片按外观/材质/结构视觉相似度排序；只允许打开视觉排名最高且未触发材质/造型红线的 1-3 个详情页。最终 data 每项必须写入 candidate_image_url、list_page_visual_score、visual_match_evidence，且必须包含 trend_evidence / evidence / diagnosis_basis / selection_rationale 之一（长度大于 20 字，明确说明真实页面、截图、API、竞品或假设来源），禁止只按标题关键词选择，禁止在审计环节才补证据链。";
       }
       if (isShopOptimizerOnly(skillId) && toolName === "collect_ozon_competitor_shops") {
         userResultObj.next_step_instruction = "批量 Ozon 竞品页面采集已完成。下一步不要重复打开这些页面；请把 allPages 或 screenshotRefs 传给 analyze_ozon_shop_crawl_screenshots 做独立视觉解读，然后基于 shops[].pages[].productCards 逐竞品输出 competitor_benchmarks、价格分布、商品样本、促销/评价/履约信号和 diagnostic_depth_matrix。";

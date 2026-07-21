@@ -10,6 +10,7 @@ import {
   loadWorkflowSnapshot,
   releaseWorkflowLease,
   requestWorkflowCancellation,
+  recoverStaleWorkflows,
   saveWorkflowSnapshot,
 } from "../modules/workflowRuntime.js";
 
@@ -41,6 +42,27 @@ assert.equal(leaseB.ok, true);
 assert.notEqual(leaseB.generation, leaseA.generation, "a resumed owner must receive a new workflow generation");
 assert.equal(await isWorkflowGenerationCurrent(workflowId, leaseA.generation), false, "late results from an old generation must be rejected");
 await releaseWorkflowLease(workflowId, ownerB, "completed");
+
+const staleWorkflowId = `${workflowId}-stale`;
+await saveWorkflowSnapshot(staleWorkflowId, {
+  status: "running",
+  leaseOwnerId: "stale-owner",
+  leaseExpiresAt: Date.now() - 10_000,
+  snapshot: { step: 7 },
+});
+const recovery = await recoverStaleWorkflows({ staleAfterMs: 30_000, reason: "smoke" });
+assert.ok(recovery.recovered.some((entry) => entry.workflowId === staleWorkflowId), "stale active workflows should be recovered");
+const recoveredWorkflow = await loadWorkflowSnapshot(staleWorkflowId);
+assert.equal(recoveredWorkflow.status, "interrupted", "recovered workflow should become resumable");
+assert.equal(recoveredWorkflow.leaseOwnerId, "", "recovered workflow should release stale leases");
+
+for (let index = 0; index < 105; index += 1) {
+  await saveWorkflowSnapshot(`${workflowId}-memory-cap-${index}`, { status: "created", snapshot: { index } });
+}
+assert.ok(__testInternals.memoryWorkflows.size <= 100, "memory workflow fallback should stay bounded");
+
 __testInternals.memoryWorkflows.delete(workflowId);
+__testInternals.memoryWorkflows.delete(staleWorkflowId);
 __testInternals.memoryEvents.delete(workflowId);
+__testInternals.memoryEvents.delete(staleWorkflowId);
 console.log("workflow runtime smoke passed");

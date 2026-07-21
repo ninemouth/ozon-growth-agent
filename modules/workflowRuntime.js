@@ -11,10 +11,21 @@ const TASK_LOG_STORE = "taskLogs";
 const DEFAULT_LOG_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const DEFAULT_MAX_TASK_LOGS = 5000;
 const DEFAULT_MAX_LOGS_PER_WORKFLOW = 500;
+const DEFAULT_MAX_MEMORY_WORKFLOWS = 100;
+const DEFAULT_MAX_MEMORY_EVENTS_PER_WORKFLOW = 500;
+const RECOVERABLE_WORKFLOW_STATUSES = new Set([
+  "queued",
+  "leased",
+  "running",
+  "resuming",
+  "cancellation_requested",
+]);
 const memoryWorkflows = new Map();
 const memoryEvents = new Map();
 const memoryTaskLogs = [];
 let writeQueue = Promise.resolve();
+let cachedDb = null;
+let openDbPromise = null;
 
 function enqueueWrite(operation) {
   const next = writeQueue.then(operation, operation);
@@ -28,7 +39,9 @@ function hasIndexedDb() {
 
 function openDb() {
   if (!hasIndexedDb()) return Promise.resolve(null);
-  return new Promise((resolve, reject) => {
+  if (cachedDb) return Promise.resolve(cachedDb);
+  if (openDbPromise) return openDbPromise;
+  openDbPromise = new Promise((resolve, reject) => {
     const request = globalThis.indexedDB.open(DB_NAME, DB_VERSION);
     request.onupgradeneeded = () => {
       const db = request.result;
@@ -49,9 +62,25 @@ function openDb() {
         taskLogs.createIndex("severity", "severity", { unique: false });
       }
     };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error || new Error("Failed to open workflow runtime database"));
+    request.onsuccess = () => {
+      cachedDb = request.result;
+      cachedDb.onversionchange = () => {
+        closeDb(cachedDb);
+        cachedDb = null;
+        openDbPromise = null;
+      };
+      cachedDb.onclose = () => {
+        cachedDb = null;
+        openDbPromise = null;
+      };
+      resolve(cachedDb);
+    };
+    request.onerror = () => {
+      openDbPromise = null;
+      reject(request.error || new Error("Failed to open workflow runtime database"));
+    };
   });
+  return openDbPromise;
 }
 
 function closeDb(db) {
@@ -126,21 +155,36 @@ function defaultWorkflow(workflowId) {
   };
 }
 
+function rememberMemoryWorkflow(workflowId, record) {
+  memoryWorkflows.delete(workflowId);
+  memoryWorkflows.set(workflowId, clone(record));
+  while (memoryWorkflows.size > DEFAULT_MAX_MEMORY_WORKFLOWS) {
+    const oldestWorkflowId = memoryWorkflows.keys().next().value;
+    memoryWorkflows.delete(oldestWorkflowId);
+    memoryEvents.delete(oldestWorkflowId);
+  }
+}
+
+function rememberMemoryEvents(workflowId, events) {
+  memoryEvents.delete(workflowId);
+  memoryEvents.set(workflowId, events.slice(-DEFAULT_MAX_MEMORY_EVENTS_PER_WORKFLOW));
+  while (memoryEvents.size > DEFAULT_MAX_MEMORY_WORKFLOWS) {
+    const oldestWorkflowId = memoryEvents.keys().next().value;
+    memoryEvents.delete(oldestWorkflowId);
+  }
+}
+
 async function readWorkflow(workflowId) {
   if (!workflowId) return null;
   const memory = memoryWorkflows.get(workflowId);
   if (memory) return clone(memory);
   const db = await openDb();
   if (!db) return null;
-  try {
-    return await withTransaction(db, [WORKFLOW_STORE], "readonly", (stores, finish) => {
-      const request = stores[WORKFLOW_STORE].get(workflowId);
-      request.onsuccess = () => finish(request.result || null);
-      request.onerror = () => finish(null);
-    });
-  } finally {
-    closeDb(db);
-  }
+  return await withTransaction(db, [WORKFLOW_STORE], "readonly", (stores, finish) => {
+    const request = stores[WORKFLOW_STORE].get(workflowId);
+    request.onsuccess = () => finish(request.result || null);
+    request.onerror = () => finish(null);
+  });
 }
 
 export async function loadWorkflowSnapshot(workflowId) {
@@ -159,16 +203,12 @@ export async function saveWorkflowSnapshot(workflowId, patch = {}) {
       snapshot: patch.snapshot ? clone(patch.snapshot) : existing.snapshot,
       updatedAt: nowIso(),
     };
-    memoryWorkflows.set(workflowId, clone(next));
+    rememberMemoryWorkflow(workflowId, next);
     const db = await openDb();
     if (!db) return clone(next);
-    try {
-      await withTransaction(db, [WORKFLOW_STORE], "readwrite", (stores) => {
-        stores[WORKFLOW_STORE].put(next);
-      });
-    } finally {
-      closeDb(db);
-    }
+    await withTransaction(db, [WORKFLOW_STORE], "readwrite", (stores) => {
+      stores[WORKFLOW_STORE].put(next);
+    });
     return clone(next);
   });
 }
@@ -188,20 +228,16 @@ export async function appendWorkflowEvent(workflowId, type, payload = {}) {
     };
     workflow.sequence = sequence;
     workflow.updatedAt = event.createdAt;
-    memoryWorkflows.set(workflowId, clone(workflow));
+    rememberMemoryWorkflow(workflowId, workflow);
     const events = memoryEvents.get(workflowId) || [];
     events.push(event);
-    memoryEvents.set(workflowId, events.slice(-500));
+    rememberMemoryEvents(workflowId, events);
     const db = await openDb();
     if (!db) return clone(event);
-    try {
-      await withTransaction(db, [WORKFLOW_STORE, EVENT_STORE], "readwrite", (stores) => {
-        stores[WORKFLOW_STORE].put(workflow);
-        stores[EVENT_STORE].put(event);
-      });
-    } finally {
-      closeDb(db);
-    }
+    await withTransaction(db, [WORKFLOW_STORE, EVENT_STORE], "readwrite", (stores) => {
+      stores[WORKFLOW_STORE].put(workflow);
+      stores[EVENT_STORE].put(event);
+    });
     return clone(event);
   });
 }
@@ -211,18 +247,14 @@ export async function listWorkflowEvents(workflowId, { afterSequence = 0, limit 
   if (memory) return clone(memory.filter((event) => event.sequence > afterSequence).slice(-limit));
   const db = await openDb();
   if (!db) return [];
-  try {
-    return await withTransaction(db, [EVENT_STORE], "readonly", (stores, finish) => {
-      const request = stores[EVENT_STORE].index("workflowId").getAll(workflowId);
-      request.onsuccess = () => finish((request.result || [])
-        .filter((event) => event.sequence > afterSequence)
-        .sort((a, b) => a.sequence - b.sequence)
-        .slice(-limit));
-      request.onerror = () => finish([]);
-    });
-  } finally {
-    closeDb(db);
-  }
+  return await withTransaction(db, [EVENT_STORE], "readonly", (stores, finish) => {
+    const request = stores[EVENT_STORE].index("workflowId").getAll(workflowId);
+    request.onsuccess = () => finish((request.result || [])
+      .filter((event) => event.sequence > afterSequence)
+      .sort((a, b) => a.sequence - b.sequence)
+      .slice(-limit));
+    request.onerror = () => finish([]);
+  });
 }
 
 export async function appendTaskLog({
@@ -250,13 +282,9 @@ export async function appendTaskLog({
     if (memoryTaskLogs.length > DEFAULT_MAX_TASK_LOGS) memoryTaskLogs.splice(0, memoryTaskLogs.length - DEFAULT_MAX_TASK_LOGS);
     const db = await openDb();
     if (!db) return clone(record);
-    try {
-      await withTransaction(db, [TASK_LOG_STORE], "readwrite", (stores) => {
-        stores[TASK_LOG_STORE].put(record);
-      });
-    } finally {
-      closeDb(db);
-    }
+    await withTransaction(db, [TASK_LOG_STORE], "readwrite", (stores) => {
+      stores[TASK_LOG_STORE].put(record);
+    });
     return clone(record);
   });
 }
@@ -271,18 +299,14 @@ export async function listTaskLogs({ workflowId = "", severity = "", limit = 200
   if (!hasIndexedDb()) return clone(filterLogs(memoryTaskLogs));
   const db = await openDb();
   if (!db) return clone(filterLogs(memoryTaskLogs));
-  try {
-    const entries = await withTransaction(db, [TASK_LOG_STORE], "readonly", (stores, finish) => {
-      const request = workflowId
-        ? stores[TASK_LOG_STORE].index("workflowId").getAll(String(workflowId))
-        : stores[TASK_LOG_STORE].getAll();
-      request.onsuccess = () => finish(request.result || []);
-      request.onerror = () => finish([]);
-    });
-    return clone(filterLogs(entries));
-  } finally {
-    closeDb(db);
-  }
+  const entries = await withTransaction(db, [TASK_LOG_STORE], "readonly", (stores, finish) => {
+    const request = workflowId
+      ? stores[TASK_LOG_STORE].index("workflowId").getAll(String(workflowId))
+      : stores[TASK_LOG_STORE].getAll();
+    request.onsuccess = () => finish(request.result || []);
+    request.onerror = () => finish([]);
+  });
+  return clone(filterLogs(entries));
 }
 
 export async function pruneTaskLogs({
@@ -314,22 +338,88 @@ export async function pruneTaskLogs({
   }
   const db = await openDb();
   if (!db) return { ok: true, deleted: memoryDelete.size, storage: "memory" };
-  try {
-    const entries = await withTransaction(db, [TASK_LOG_STORE], "readonly", (stores, finish) => {
-      const request = stores[TASK_LOG_STORE].getAll();
+  const entries = await withTransaction(db, [TASK_LOG_STORE], "readonly", (stores, finish) => {
+    const request = stores[TASK_LOG_STORE].getAll();
+    request.onsuccess = () => finish(request.result || []);
+    request.onerror = () => finish([]);
+  });
+  const ids = shouldDelete(entries);
+  if (ids.size) {
+    await withTransaction(db, [TASK_LOG_STORE], "readwrite", (stores) => {
+      ids.forEach((logId) => stores[TASK_LOG_STORE].delete(logId));
+    });
+  }
+  return { ok: true, deleted: ids.size, storage: "indexeddb" };
+}
+
+export async function recoverStaleWorkflows({
+  now = Date.now(),
+  staleAfterMs = 3 * 60 * 1000,
+  limit = 50,
+  reason = "workflow_recovery_sweep",
+} = {}) {
+  const cutoff = Number(now) - Math.max(30_000, Number(staleAfterMs) || 3 * 60 * 1000);
+  const isRecoverable = (record = {}) => {
+    if (!record.workflowId || !RECOVERABLE_WORKFLOW_STATUSES.has(record.status)) return false;
+    const leaseExpired = record.leaseExpiresAt && Number(record.leaseExpiresAt) < Number(now);
+    const updatedAt = Date.parse(record.updatedAt || record.createdAt || "");
+    const staleUpdate = updatedAt && updatedAt < cutoff;
+    return Boolean(leaseExpired || staleUpdate);
+  };
+  const candidates = [];
+
+  for (const record of memoryWorkflows.values()) {
+    if (isRecoverable(record)) candidates.push(clone(record));
+  }
+
+  const db = await openDb();
+  if (db) {
+    const records = await withTransaction(db, [WORKFLOW_STORE], "readonly", (stores, finish) => {
+      const request = stores[WORKFLOW_STORE].getAll();
       request.onsuccess = () => finish(request.result || []);
       request.onerror = () => finish([]);
     });
-    const ids = shouldDelete(entries);
-    if (ids.size) {
-      await withTransaction(db, [TASK_LOG_STORE], "readwrite", (stores) => {
-        ids.forEach((logId) => stores[TASK_LOG_STORE].delete(logId));
-      });
+    for (const record of records) {
+      if (isRecoverable(record) && !candidates.some((item) => item.workflowId === record.workflowId)) {
+        candidates.push(record);
+      }
     }
-    return { ok: true, deleted: ids.size, storage: "indexeddb" };
-  } finally {
-    closeDb(db);
   }
+
+  const recovered = [];
+  for (const record of candidates
+    .sort((a, b) => String(a.updatedAt || "").localeCompare(String(b.updatedAt || "")))
+    .slice(0, Math.max(1, Number(limit) || 50))) {
+    const next = await saveWorkflowSnapshot(record.workflowId, {
+      status: "interrupted",
+      leaseOwnerId: "",
+      leaseExpiresAt: 0,
+      recoveryReason: reason,
+      recoveredAt: nowIso(),
+    });
+    await appendWorkflowEvent(record.workflowId, "workflow_recovered", {
+      previousStatus: record.status,
+      reason,
+      staleAfterMs,
+    });
+    await appendTaskLog({
+      workflowId: record.workflowId,
+      category: "workflow_recovery",
+      severity: "warning",
+      event: "workflow_recovered",
+      message: "检测到后台工作流租约或运行状态已过期，已释放为可恢复断点。",
+      details: {
+        previousStatus: record.status,
+        leaseOwnerId: record.leaseOwnerId || "",
+        leaseExpiresAt: record.leaseExpiresAt || 0,
+        reason,
+      },
+      source: "workflow_runtime",
+    });
+    recovered.push({ workflowId: record.workflowId, previousStatus: record.status, status: next.status });
+  }
+
+  return { ok: true, recovered, checked: candidates.length };
 }
 
 export async function acquireWorkflowLease(workflowId, ownerId, ttlMs = 45_000) {
@@ -394,4 +484,11 @@ export async function isWorkflowGenerationCurrent(workflowId, generation) {
   return current?.generation === generation && current?.status !== "cancellation_requested";
 }
 
-export const __testInternals = { defaultWorkflow, memoryWorkflows, memoryEvents, memoryTaskLogs, sanitizeLogValue };
+export const __testInternals = {
+  defaultWorkflow,
+  memoryWorkflows,
+  memoryEvents,
+  memoryTaskLogs,
+  sanitizeLogValue,
+  recoverStaleWorkflows,
+};

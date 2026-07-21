@@ -9,13 +9,19 @@ const root = process.cwd();
 const html = fs.readFileSync(path.join(root, "dashboard.html"), "utf8");
 const js = fs.readFileSync(path.join(root, "dashboard.js"), "utf8");
 const css = fs.readFileSync(path.join(root, "dashboard.css"), "utf8");
+const contentSource = fs.readFileSync(path.join(root, "content.js"), "utf8");
+const sidepanelSource = fs.readFileSync(path.join(root, "sidepanel.js"), "utf8");
 const shopOptimizerSkill = fs.readFileSync(path.join(root, "skills/ozon_global_shop_optimizer.skill.md"), "utf8");
 const agentLoopSource = fs.readFileSync(path.join(root, "modules/agentLoop.js"), "utf8");
 const backgroundSource = fs.readFileSync(path.join(root, "background.js"), "utf8");
+const researchScopeSource = fs.readFileSync(path.join(root, "modules/researchScope.js"), "utf8");
 const workflowRuntimeSource = fs.readFileSync(path.join(root, "modules/workflowRuntime.js"), "utf8");
+const artifactStoreSource = fs.readFileSync(path.join(root, "modules/artifactStore.js"), "utf8");
+const browserSessionSource = fs.readFileSync(path.join(root, "modules/browserSessionManager.js"), "utf8");
 const toolRegistrySource = fs.readFileSync(path.join(root, "modules/toolRegistry.js"), "utf8");
 const platformTrendsSkill = fs.readFileSync(path.join(root, "skills/ozon_platform_trends.skill.md"), "utf8");
 const complianceSkill = fs.readFileSync(path.join(root, "skills/ozon_compliance_auditor.skill.md"), "utf8");
+const sourcingSkill = fs.readFileSync(path.join(root, "skills/ozon_sourcing_finder.skill.md"), "utf8");
 
 const dom = new JSDOM(html, {
   url: "chrome-extension://test/dashboard.html",
@@ -282,15 +288,42 @@ assert.match(agentLoopSource, /缺少 2-3 个同类高排名店铺/, "critic sho
 assert.match(agentLoopSource, /resumeState/, "agent loop should accept persisted resume state");
 assert.match(agentLoopSource, /onCheckpoint/, "agent loop should emit durable checkpoints");
 assert.match(backgroundSource, /agentWorkflowCheckpoints/, "background should persist agent workflow checkpoints");
+assert.match(backgroundSource, /CLARIFICATION_REQUIRED/, "background should request user clarification before weak-context runs");
+assert.match(backgroundSource, /needs_user_clarification[\s\S]*!researchScope\.auto_discovery_required[\s\S]*CLARIFICATION_REQUIRED/, "platform trend auto-discovery should bypass clarification modal");
+assert.match(backgroundSource, /auto_discovery_scope[\s\S]*当前页面公开线索[\s\S]*Ozon 首页推荐/, "background should announce automatic trend-scope discovery");
+assert.match(backgroundSource, /hasClarificationInput/, "background should allow clarified runs to continue");
+assert.match(contentSource, /CLARIFICATION_REQUIRED[\s\S]*用户补充分析范围/, "floating dock should collect clarification input and rerun");
+assert.match(sidepanelSource, /CLARIFICATION_REQUIRED[\s\S]*用户补充分析范围/, "sidepanel should collect clarification input and rerun");
+assert.match(backgroundSource, /outer_visitor_diagnosis[\s\S]*外围诊断/, "background should explicitly announce public-only diagnosis mode");
+assert.match(researchScopeSource, /diagnosis_mode/, "research scope should expose diagnosis mode");
+assert.match(researchScopeSource, /outer_visitor_diagnosis[\s\S]*api_bound_diagnosis|api_bound_diagnosis[\s\S]*outer_visitor_diagnosis/, "research scope should classify API downgrade modes");
+assert.match(researchScopeSource, /auto_discovery_required[\s\S]*current_page_public_clues[\s\S]*ozon_home_recommendations/, "research scope should support platform trend auto-discovery");
+assert.match(agentLoopSource, /paused_for_verification[\s\S]*人机协同/, "agent loop should emit a human verification pause when captcha blocks sourcing");
+assert.match(contentSource, /paused_for_verification[\s\S]*采购平台需要人工验证/, "floating dock should surface human verification pauses");
+assert.match(sidepanelSource, /paused_for_verification[\s\S]*采购平台需要人工验证/, "sidepanel should surface human verification pauses");
+assert.match(backgroundSource, /verificationPaused[\s\S]*workflow_paused_for_verification/, "background should classify verification pauses separately");
+assert.match(backgroundSource, /if \(!verificationPaused\)[\s\S]*cleanupActiveWorkflowTabs/, "verification pauses should preserve the opened supplier page for human action");
 assert.match(backgroundSource, /isResumableCheckpoint/, "background should detect resumable workflow checkpoints");
 assert.match(backgroundSource, /shouldResumeFromCheckpoint/, "background should resume interrupted workflows when user sends follow-up input");
 assert.match(js, /已保存断点/, "dashboard should expose interrupted workflow state as a resumable checkpoint");
 assert.match(workflowRuntimeSource, /ozonGrowthAgentRuntime/, "Ozon should use its own IndexedDB workflow runtime");
+assert.match(workflowRuntimeSource, /cachedDb/, "workflow runtime should reuse a cached IndexedDB connection");
+assert.match(workflowRuntimeSource, /DEFAULT_MAX_MEMORY_WORKFLOWS/, "workflow runtime memory fallback should stay bounded");
+assert.match(workflowRuntimeSource, /recoverStaleWorkflows/, "workflow runtime should expose stale workflow recovery");
+assert.match(artifactStoreSource, /cachedArtifactDb/, "artifact store should reuse a cached IndexedDB connection");
+assert.match(artifactStoreSource, /FileReader/, "artifact store should use FileReader for async blob data URL conversion");
+assert.doesNotMatch(artifactStoreSource, /binary \+= String\.fromCharCode/, "artifact store must not build large base64 payloads by byte-by-byte string concatenation");
+assert.match(browserSessionSource, /historyPreservedTabs/, "browser session manager should retain preserved tabs in a global registry");
+assert.match(browserSessionSource, /cleanupPreservedTabs/, "browser session manager should expose a cleanup path for preserved tabs");
 assert.match(backgroundSource, /acquireWorkflowLease/, "background should acquire durable workflow leases");
 assert.match(backgroundSource, /renewWorkflowLease/, "background should renew workflow leases during long runs");
 assert.match(backgroundSource, /releaseWorkflowLease/, "background should release workflow leases on completion or interruption");
 assert.match(backgroundSource, /GET_TASK_LOGS/, "background should expose durable task logs to the dashboard");
 assert.match(backgroundSource, /TASK_LOG_PRUNE_ALARM/, "background should prune durable task logs on a schedule");
+assert.match(backgroundSource, /WORKFLOW_RECOVERY_ALARM/, "background should schedule workflow recovery sweeps");
+assert.match(backgroundSource, /runWorkflowRecoverySweep/, "background should run stale workflow recovery from alarms and startup");
+assert.match(backgroundSource, /cleanupActiveWorkflowTabs[\s\S]*cleanupOwnedTabs\(checkpointKey\)/, "workflow completion should close every workflow-created tab while the source tab remains protected");
+assert.doesNotMatch(backgroundSource, /preserveOzonPages|preserveUrlPattern:\s*preserveOzonPages/, "platform trend cleanup must not preserve every workflow-created Ozon evidence tab");
 assert.match(workflowRuntimeSource, /TASK_LOG_STORE/, "workflow runtime should have a dedicated task log store");
 assert.match(workflowRuntimeSource, /appendTaskLog/, "workflow runtime should append task logs");
 assert.match(workflowRuntimeSource, /pruneTaskLogs/, "workflow runtime should prune task logs");
@@ -303,6 +336,14 @@ const alarmHandlerSource = backgroundSource.slice(
 assert.doesNotMatch(alarmHandlerSource, /chrome\.tabs\.create|setInterval\(/, "scheduled monitor alarm must not use raw tab creation or local polling loops");
 assert.doesNotMatch(toolRegistrySource, /monthly_search_volume|monthly_sales_estimate/, "tool registry should not include synthetic third-party market metrics");
 assert.match(toolRegistrySource, /尚未实现其正式 API 适配器|不能生成或推测市场指标/, "query_market_data should fail closed until a verified provider adapter exists");
+assert.match(toolRegistrySource, /get_market_rates/, "tool registry should expose dynamic currency rate snapshots");
+assert.match(toolRegistrySource, /get_logistics_cost_profile/, "tool registry should expose logistics cost profile snapshots");
+assert.match(toolRegistrySource, /ozonMarketRatesSnapshot[\s\S]*stale_fallback/, "market rate tool should use cached fallback when live fetch fails");
+assert.match(toolRegistrySource, /ozonLogisticsCostProfile[\s\S]*ozonWarehouseType/, "logistics tool should read user-configured cost profiles");
+assert.match(agentLoopSource, /rate_snapshot[\s\S]*get_market_rates/, "critic should require market-rate snapshots for profit ledgers");
+assert.match(agentLoopSource, /logistics_profile_snapshot[\s\S]*get_logistics_cost_profile/, "critic should require logistics snapshots for profit ledgers");
+assert.match(sourcingSkill, /rate_snapshot[\s\S]*get_market_rates[\s\S]*logistics_profile_snapshot[\s\S]*get_logistics_cost_profile/, "sourcing skill should require rate and logistics snapshots");
+assert.match(contentSource, /diagnose_sku_funnel:[\s\S]*short:\s*"诊断"[\s\S]*rewrite_listing:[\s\S]*short:\s*"改页"/, "product-page floating dock should distinguish diagnosis from listing rewrite");
 const agenticSearchSource = toolRegistrySource.slice(
   toolRegistrySource.indexOf("agentic_web_search: async"),
   toolRegistrySource.indexOf("search_in_browser: async")
@@ -312,6 +353,19 @@ assert.doesNotMatch(agenticSearchSource, /chrome\.tabs\.create|setInterval\(/, "
 assert.match(backgroundSource, /ozon_platform_trends/, "background should route platform trends to the dedicated skill");
 assert.match(backgroundSource, /ozon_compliance_auditor/, "background should expose the compliance auditor skill");
 assert.match(platformTrendsSkill, /不能把自营店铺 API 数据写成平台大盘数据/, "platform trends skill should enforce API boundary");
+assert.match(platformTrendsSkill, /auto_discovery_required=true[\s\S]*不要要求用户先输入关键词[\s\S]*空白页或未知页面/, "platform trends skill should auto-discover scope when user is unsure");
+assert.match(platformTrendsSkill, /6-10 个跨品类候选方向[\s\S]*recommended_opportunities[\s\S]*recommendation_status/, "platform trends should expand beyond rejected directions and deliver sellable candidates");
+assert.match(agentLoopSource, /只有不建议售卖方向[\s\S]*只有公开页面整体阻断时才可用 blocked/, "critic should reject non-blocked trend reports without sellable candidates");
+assert.match(agentLoopSource, /recommended_opportunities 中的[\s\S]*没有对应 data 商品机会卡片/, "critic should require every recommended trend id to have a full candidate card");
+const newSessionHandlerSource = contentSource.slice(
+  contentSource.indexOf('shadow.getElementById("chat-new-session-btn")?.addEventListener'),
+  contentSource.indexOf('shadow.getElementById("chat-session-history-btn")?.addEventListener')
+);
+assert.match(newSessionHandlerSource, /请输入要分析的关键词、类目、商品或店铺/, "new session should prompt for scope before a task starts");
+assert.doesNotMatch(newSessionHandlerSource, /runOverlayGrowthActionNow|runSelectedSkill|RUN_SKILL/, "clicking new session must not auto-start the last task");
+assert.match(css, /\.report-item\s*\{[\s\S]*grid-template-columns:\s*minmax\(0, 1fr\)[\s\S]*\.report-item-title/, "report list items should reserve a full row for readable titles");
+assert.match(css, /@media \(max-width: 760px\)[\s\S]*\.reports-container[\s\S]*height:\s*auto[\s\S]*\.report-viewer-toolbar[\s\S]*flex-direction:\s*column/, "report center should use a stacked mobile layout without clipped toolbar actions");
+assert.match(js, /关键词发现与聚焦漏斗[\s\S]*原始问题[\s\S]*最终聚焦词[\s\S]*查询调整/, "report center should expose the problem-to-keyword funnel and refinement history");
 assert.match(platformTrendsSkill, /report_status/, "platform trends skill should require industrial report status");
 assert.match(platformTrendsSkill, /blocking_gaps/, "platform trends skill should require structured blocking gaps");
 assert.match(platformTrendsSkill, /follow_up_tasks/, "platform trends skill should generate executable follow-up tasks");

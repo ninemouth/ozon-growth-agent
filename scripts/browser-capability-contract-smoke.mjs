@@ -80,7 +80,7 @@ assert.match(sourcing, /apply_page_filter[\s\S]*go_next_page/, "sourcing skill s
 assert.match(sourcing, /click_by_coordinate/, "sourcing skill must allow necessary filter/sort coordinate actions");
 assert.match(sourcing, /open_new_tab[\s\S]*close_tab/, "sourcing skill must require detail tab lifecycle control");
 assert.match(shop, /DOM 文本审计双轨制|双轨分析模式/, "shop diagnosis must preserve DOM plus visual dual-track audit");
-assert.match(trends, /平台趋势任务严禁主动关闭任何 Ozon 页面/, "trend skill must preserve source Ozon tab protection");
+assert.match(trends, /来源 Ozon 页由运行时保护[\s\S]*本轮任务新开的 Ozon 搜索页[\s\S]*必须关闭/, "trend skill must protect only the source Ozon tab and close task-created evidence tabs");
 assert.match(reviews, /collect_reviews/, "review analyzer should use the dedicated review collection tool");
 assert.match(reviews, /review_dom/, "review analyzer should support review_dom evidence");
 

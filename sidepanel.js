@@ -46,14 +46,14 @@ const GROWTH_ACTIONS = {
     instruction: "一键体检当前 Ozon 店铺增长瓶颈。不能只凭截图下结论：请先读取平台属性、主营类目、价格带、目标客群、使用场景、店铺定位和视觉调性/格调，再结合 Seller API、Ozon 站内搜索/热卖榜、Yandex/Google RU 趋势，并打开 2-3 个同类高排名店铺或头部竞品页面做截屏学习；必须区分真实页面/API/搜索证据、AI推断和待验证假设。",
   },
   diagnose_sku_funnel: {
-    label: "SKU 漏斗诊断",
+    label: "商品诊断/追踪",
     skillId: "ozon_operations_tracker",
-    instruction: "诊断当前 Ozon SKU 的销售漏斗瓶颈。请区分曝光弱、点击弱、加购弱、付款弱、利润弱、履约风险和评论风险，并给出下一步实验动作。",
+    instruction: "诊断并追踪当前 Ozon SKU 的销售漏斗瓶颈。请区分曝光弱、点击弱、加购弱、付款弱、利润弱、履约风险和评论风险，并给出下一步实验动作；这是商品经营体检，不是直接改写 Listing。",
   },
   rewrite_listing: {
-    label: "Listing 改版",
+    label: "商品页改版",
     skillId: "ozon_listing_generator",
-    instruction: "基于当前 Ozon 页面或 Dashboard 选中的 SKU，生成俄语 SEO 标题、主图卖点文案、详情页描述和 Характеристики 补齐建议。",
+    instruction: "基于当前 Ozon 页面或 Dashboard 选中的 SKU，生成俄语 SEO 标题、主图卖点文案、详情页描述和 Характеристики 补齐建议；这是页面表达改写，不承担完整商品经营体检。",
   },
   diagnose_visual_conversion: {
     label: "首图诊断",
@@ -580,6 +580,11 @@ async function runSkill() {
     
     // Connect to background Service Worker via Port
     activePort = chrome.runtime.connect({ name: "ozon-agent-loop" });
+    let pendingRunPayload = null;
+    const submitPendingRun = (patch = {}) => {
+      pendingRunPayload = { ...(pendingRunPayload || {}), ...patch };
+      activePort.postMessage(pendingRunPayload);
+    };
 
     // Start active pinging using one-time message (chrome.runtime.sendMessage) 
     // to reset MV3 Service Worker's idle timer, as port.postMessage does not count as activity in Chrome's idle timer.
@@ -605,6 +610,10 @@ async function runSkill() {
             addLog("info", "⏱", msg.message || `${msg.toolName || "工具"} 仍在执行`);
           } else if (msg.type === "tool_timeout") {
             addLog("warning", "⏸", msg.message || `${msg.actionLabel || msg.toolName || "工具"} 超时，已回收临时标签页`);
+          } else if (msg.type === "paused_for_verification" || msg.type === "captcha_warning") {
+            addLog("warning", "🧩", msg.message || "采购平台需要人工验证。请完成验证码/登录后发送“继续”恢复。");
+          } else if (["trend_query_refinement_required", "trend_query_guard", "trend_query_refinement_exhausted", "trend_evidence_downgrade_required"].includes(msg.type)) {
+            addLog(msg.type === "trend_query_refinement_required" ? "info" : "warning", "↻", msg.message || "趋势关键词正在调整。");
           } else if (msg.type === "stale_tool_result_discarded") {
             addLog("warning", "↩", msg.message || "已丢弃旧 workflow 的迟到结果");
           } else if (msg.type === "reflection" || msg.type === "thinking") {
@@ -638,6 +647,25 @@ async function runSkill() {
         addLog("error", "❌", `错误: ${message.error}`);
         showError(message.error);
         cleanupPort();
+      } else if (message.type === "CLARIFICATION_REQUIRED") {
+        const request = message.data || {};
+        addLog("warning", "🧭", request.message || "当前页面缺少必要分析线索，请补充关键词、类目或店铺范围。");
+        const answer = window.prompt("请补充分析关键词、目标类目或店铺/SKU，例如：电动牙刷 / 家居收纳 / 目标店铺", "");
+        if (!answer || !answer.trim()) {
+          addLog("warning", "⏸", "已暂停：缺少分析范围。补充关键词后可重新发起。");
+          showError("缺少分析范围，未启动正式工作流。");
+          cleanupPort();
+          return;
+        }
+        addLog("info", "✅", `已补充范围：${answer.trim()}，重新启动分析。`);
+        submitPendingRun({
+          userInstruction: `${pendingRunPayload?.userInstruction || userInstruction}\n\n【用户补充分析范围】${answer.trim()}`,
+          clarificationInput: {
+            seedKeyword: answer.trim(),
+            note: answer.trim(),
+          },
+          forceNewSession: false,
+        });
       }
     });
 
@@ -682,7 +710,7 @@ async function runSkill() {
       ? resumeSessionKey
       : createWorkflowSessionId();
 
-    activePort.postMessage({
+    pendingRunPayload = {
       type: "RUN_SKILL",
       skillPath: selectedSkill.path,
       growthActionId: activeGrowthAction?.id || "",
@@ -693,7 +721,8 @@ async function runSkill() {
       forceNewSession: !shouldContinueSession,
       highRandomness: $("highRandomnessCheckbox").checked,
       negativeFilter: $("negativeFilterCheckbox").checked,
-    });
+    };
+    submitPendingRun();
 
   } catch (err) {
     addLog("error", "❌", `错误: ${err.message}`);
@@ -1477,7 +1506,13 @@ function bindEvents() {
   $("newSessionBtn")?.addEventListener("click", () => {
     startNewSessionMode();
     $("sessionHistoryPanel")?.classList.add("hidden");
-    addLog("info", "+", "已切换为新会话：下一次运行不会沿用旧断点。");
+    const instructionInput = $("instruction");
+    if (instructionInput) {
+      instructionInput.value = "";
+      instructionInput.placeholder = "输入关键词、类目、商品或店铺，再点击执行";
+      instructionInput.focus();
+    }
+    addLog("info", "+", "新会话已就绪。请输入关键词、类目、商品或店铺；点击执行后才会开始任务。");
   });
   $("sessionHistoryBtn")?.addEventListener("click", async () => {
     const panel = $("sessionHistoryPanel");

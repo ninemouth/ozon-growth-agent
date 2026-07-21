@@ -27,6 +27,8 @@ for (const term of [
 assert.match(agentLoop, /trend_context_type/, "agent loop must pass and validate trend_context_type");
 assert.match(agentLoop, /platform_signal/, "agent loop must require platform_signal");
 assert.match(agentLoop, /store_fit/, "agent loop must require store_fit");
+assert.match(agentLoop, /recommended_opportunities/, "agent loop must require sellable trend recommendations");
+assert.match(agentLoop, /不是通过不卖原则的可卖候选/, "agent loop must keep rejected trend directions out of report data");
 assert.match(agentLoop, /needs_user_clarification[\s\S]*report_status[\s\S]*completed/, "agent loop must block completed reports for weak research scope");
 assert.match(background, /buildResearchScope/, "background must build research_scope before running skills");
 assert.match(background, /pageContext\.research_scope/, "background must inject research_scope into page context");

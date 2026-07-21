@@ -5,6 +5,8 @@ const DB_NAME = "ozonGrowthAgentArtifacts";
 const DB_VERSION = 1;
 const STORE_NAME = "artifacts";
 const memoryFallback = new Map();
+let cachedArtifactDb = null;
+let openArtifactDbPromise = null;
 
 function indexedDbAvailable() {
   return typeof globalThis.indexedDB !== "undefined";
@@ -12,7 +14,9 @@ function indexedDbAvailable() {
 
 function openArtifactDb() {
   if (!indexedDbAvailable()) return Promise.resolve(null);
-  return new Promise((resolve, reject) => {
+  if (cachedArtifactDb) return Promise.resolve(cachedArtifactDb);
+  if (openArtifactDbPromise) return openArtifactDbPromise;
+  openArtifactDbPromise = new Promise((resolve, reject) => {
     const request = globalThis.indexedDB.open(DB_NAME, DB_VERSION);
     request.onupgradeneeded = () => {
       const db = request.result;
@@ -22,9 +26,25 @@ function openArtifactDb() {
         store.createIndex("namespace", "namespace", { unique: false });
       }
     };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error || new Error("Failed to open artifact database"));
+    request.onsuccess = () => {
+      cachedArtifactDb = request.result;
+      cachedArtifactDb.onversionchange = () => {
+        closeDb(cachedArtifactDb);
+        cachedArtifactDb = null;
+        openArtifactDbPromise = null;
+      };
+      cachedArtifactDb.onclose = () => {
+        cachedArtifactDb = null;
+        openArtifactDbPromise = null;
+      };
+      resolve(cachedArtifactDb);
+    };
+    request.onerror = () => {
+      openArtifactDbPromise = null;
+      reject(request.error || new Error("Failed to open artifact database"));
+    };
   });
+  return openArtifactDbPromise;
 }
 
 function closeDb(db) {
@@ -36,25 +56,21 @@ function closeDb(db) {
 async function withArtifactStore(mode, callback) {
   const db = await openArtifactDb();
   if (!db) throw new Error("IndexedDB is unavailable");
-  try {
-    return await new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE_NAME, mode);
-      const store = tx.objectStore(STORE_NAME);
-      let settled = false;
-      const finish = (value) => {
-        settled = true;
-        resolve(value);
-      };
-      tx.onerror = () => reject(tx.error || new Error("Artifact transaction failed"));
-      tx.onabort = () => reject(tx.error || new Error("Artifact transaction aborted"));
-      tx.oncomplete = () => {
-        if (!settled) resolve(undefined);
-      };
-      callback(store, finish, reject);
-    });
-  } finally {
-    closeDb(db);
-  }
+  return await new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, mode);
+    const store = tx.objectStore(STORE_NAME);
+    let settled = false;
+    const finish = (value) => {
+      settled = true;
+      resolve(value);
+    };
+    tx.onerror = () => reject(tx.error || new Error("Artifact transaction failed"));
+    tx.onabort = () => reject(tx.error || new Error("Artifact transaction aborted"));
+    tx.oncomplete = () => {
+      if (!settled) resolve(undefined);
+    };
+    callback(store, finish, reject);
+  });
 }
 
 function dataUrlToBlob(dataUrl = "") {
@@ -67,11 +83,26 @@ function dataUrlToBlob(dataUrl = "") {
 }
 
 function blobToDataUrl(blob) {
+  if (typeof FileReader !== "undefined") {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result);
+      reader.onerror = () => reject(reader.error || new Error("Failed to convert blob to data URL"));
+      reader.readAsDataURL(blob);
+    });
+  }
   return blob.arrayBuffer().then((buffer) => {
+    const mimeType = blob.type || "application/octet-stream";
+    if (typeof globalThis.Buffer !== "undefined") {
+      return `data:${mimeType};base64,${globalThis.Buffer.from(buffer).toString("base64")}`;
+    }
     const bytes = new Uint8Array(buffer);
-    let binary = "";
-    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-    return `data:${blob.type || "application/octet-stream"};base64,${btoa(binary)}`;
+    const chunks = [];
+    const chunkSize = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      chunks.push(String.fromCharCode(...bytes.subarray(i, i + chunkSize)));
+    }
+    return `data:${mimeType};base64,${btoa(chunks.join(""))}`;
   });
 }
 

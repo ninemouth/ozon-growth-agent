@@ -1911,9 +1911,9 @@
         instruction: "一键感知当前 Ozon 店铺经营状态。不能只凭当前截图下结论：请先判断当前页面是店铺页、商品页还是搜索/类目页，并读取平台属性、主营类目、价格带、目标客群、使用场景、店铺定位和视觉调性/格调；若是店铺页，必须结合 Ozon 站内搜索/热卖榜与 2-3 个同类高排名店铺或头部竞品页面截屏学习，再分析商品结构、转化漏斗、履约风险、评分信任、竞品对标，并输出今日必须处理的增长动作。",
       },
       diagnose_sku_funnel: {
-        label: "商品分析/追踪",
-        short: "商品",
-        instruction: "分析并追踪当前 Ozon 商品。请读取页面标题、价格、评分、评论、主图、详情页和可见竞品信息，判断曝光、点击、加购、付款、利润、履约和评价风险，并给出是否加入 7 天增长实验。",
+        label: "商品诊断/追踪",
+        short: "诊断",
+        instruction: "诊断并追踪当前 Ozon 商品。请读取页面标题、价格、评分、评论、主图、详情页和可见竞品信息，判断曝光、点击、加购、付款、利润、履约和评价风险，并给出是否加入 7 天增长实验；这是商品经营体检，不是直接改写 Listing。",
       },
       scan_competitor_changes: {
         label: "竞品跟踪",
@@ -1937,8 +1937,8 @@
       },
       rewrite_listing: {
         label: "Listing 改版",
-        short: "改版",
-        instruction: "基于当前 Ozon 商品页生成俄语 SEO Listing 改版方案，包括标题、主图俄语卖点、详情页描述、规格参数和风险词提醒。",
+        short: "改页",
+        instruction: "基于当前 Ozon 商品页生成俄语 SEO Listing 改版方案，包括标题、主图俄语卖点、详情页描述、规格参数和风险词提醒；这是商品页表达改写，不承担完整商品经营体检。",
       },
       analyze_review_defects: {
         label: "评论缺陷",
@@ -3172,7 +3172,6 @@
     let overlaySelectedResumeSessionKey = "";
     let overlaySelectedResumeSessionMeta = null;
     let overlayPendingGrowthAction = null;
-    let overlayLastGrowthAction = null;
     let overlayNewSessionConfirmed = false;
     let activeAgentPort = null;
     let activePauseRequested = false;
@@ -3470,7 +3469,6 @@
       chatOverlay.classList.remove("hidden");
       settingsDrawer.classList.add("hidden");
       overlayPendingGrowthAction = { actionId, instruction };
-      overlayLastGrowthAction = { actionId, instruction };
 
       const selectedResumeSessionKey = getOverlayActiveResumeSessionKey();
       const resumableEntries = selectedResumeSessionKey ? [] : await getOverlayCheckpointEntriesForAction(actionId);
@@ -3951,6 +3949,19 @@
       try {
         const port = chrome.runtime.connect({ name: "ozon-agent-loop" });
         activeAgentPort = port;
+        let runPayload = {
+          type: "RUN_SKILL",
+          skillPath: skillPath,
+          workflowSessionId,
+          growthActionId,
+          userInstruction: instruction,
+          continueSession: Boolean(shouldContinueSession),
+          forceNewSession: !shouldContinueSession
+        };
+        const submitRunPayload = (patch = {}) => {
+          runPayload = { ...runPayload, ...patch };
+          port.postMessage(runPayload);
+        };
         
         port.onMessage.addListener((message) => {
           if (message.type === "PROGRESS") {
@@ -3968,6 +3979,10 @@
               log(`↪ ${data.message || `${data.actionLabel || data.toolName || "工具"} 正在执行`}`);
             } else if (data.type === "tool_result") {
               log(`📥 执行完毕，获取到相关数据。`);
+            } else if (data.type === "paused_for_verification" || data.type === "captcha_warning") {
+              log(`🧩 ${data.message || "采购平台需要人工验证。请完成验证码/登录后发送“继续”恢复。"}`);
+            } else if (["trend_query_refinement_required", "trend_query_guard", "trend_query_refinement_exhausted", "trend_evidence_downgrade_required"].includes(data.type)) {
+              log(`↻ ${data.message || "趋势关键词正在调整。"}`);
             } else if (data.type === "reflection" && data.message) {
               log(`⚠️ Critic 审计反思: ${data.message}`);
             }
@@ -3993,6 +4008,27 @@
               log(`↩ ${message.resumeHint}`);
             }
             finishGrowthRun("failed", message.error || "unknown error").catch((err) => console.warn("Failed to finish growth run:", err.message));
+          } else if (message.type === "CLARIFICATION_REQUIRED") {
+            const request = message.data || {};
+            log(`🧭 ${request.message || "当前页面线索不足，请补充分析范围。"}`);
+            const answer = window.prompt("请补充分析关键词、目标类目或店铺/SKU，例如：电动牙刷 / 家居收纳 / 目标店铺", "");
+            if (!answer || !answer.trim()) {
+              statusDot.className = "status-dot";
+              activeAgentPort = null;
+              updateChatRunControls({ running: false });
+              log("⏸ 已暂停：缺少分析范围。补充关键词后可重新发起。");
+              finishGrowthRun("interrupted", "needs_user_clarification").catch((err) => console.warn("Failed to finish clarification run:", err.message));
+              return;
+            }
+            log(`✅ 已补充范围：${answer.trim()}，重新启动分析。`);
+            submitRunPayload({
+              userInstruction: `${runPayload.userInstruction || instruction}\n\n【用户补充分析范围】${answer.trim()}`,
+              clarificationInput: {
+                seedKeyword: answer.trim(),
+                note: answer.trim(),
+              },
+              forceNewSession: false,
+            });
           } else if (message.type === "INTERRUPTED") {
             statusDot.className = "status-dot";
             activeAgentPort = null;
@@ -4005,15 +4041,7 @@
         });
 
         // Trigger Run
-        port.postMessage({
-          type: "RUN_SKILL",
-          skillPath: skillPath,
-          workflowSessionId,
-          growthActionId,
-          userInstruction: instruction,
-          continueSession: Boolean(shouldContinueSession),
-          forceNewSession: !shouldContinueSession
-        });
+        submitRunPayload();
 
       } catch (err) {
         statusDot.className = "status-dot";
@@ -4390,17 +4418,17 @@
 
     shadow.getElementById("chat-new-session-btn")?.addEventListener("click", () => {
       startOverlayNewSessionMode();
+      overlayPendingGrowthAction = null;
       shadow.getElementById("chat-session-history-panel")?.classList.add("hidden");
       shadow.getElementById("chat-session-history-btn")?.classList.remove("active");
-      showToast("已切换为新会话，下一次运行不会沿用旧断点。");
-      const actionToRun = overlayPendingGrowthAction || overlayLastGrowthAction;
-      if (actionToRun && !activeGrowthRun) {
-        runOverlayGrowthActionNow({
-          actionId: actionToRun.actionId,
-          instruction: actionToRun.instruction,
-          resume: false,
-        }).catch((err) => showToast(`启动新会话失败：${err.message}`));
+      const inputEl = shadow.getElementById("chat-input-el");
+      if (inputEl) {
+        inputEl.value = "";
+        inputEl.placeholder = "输入关键词、类目、商品或店铺，再发送开始分析";
+        inputEl.focus();
       }
+      addMessage("assistant", "新会话已就绪。请输入要分析的关键词、类目、商品或店铺，或从右侧选择一个业务动作；发送后才会开始任务。");
+      showToast("新会话已就绪，等待你输入分析范围。");
     });
 
     shadow.getElementById("chat-session-history-btn")?.addEventListener("click", async () => {

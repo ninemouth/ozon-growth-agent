@@ -155,6 +155,37 @@ assert.equal(
   "pre-critic sanitizer should not mutate URL/link fields"
 );
 
+const legalEvidenceEnumReport = {
+  type: "final",
+  output: {
+    overview: "公开页面信息已完成整理。",
+    analysis: "证据账本使用稳定的机器枚举，不应被当成业务正文。",
+    summary: "继续按已核实信息推进。",
+    data: [{
+      title: "候选方向",
+      evidence_ledger: [{
+        source_type: "page_dom",
+        original_source_type: "page_dom",
+        source_ref: "当前 Ozon 公开页面",
+        observed_value: "可见商品信息完整",
+        used_for: "候选方向判断",
+        confidence: "medium",
+        limitation: "仅代表本轮可见样本",
+      }],
+    }],
+  },
+};
+assert.equal(
+  hasTechnicalJargonInBusinessReport(legalEvidenceEnumReport),
+  false,
+  "legal page_dom source_type enums must not trigger repeated pre-critic jargon rejection"
+);
+assert.equal(
+  sanitizeFinalReportBeforeCritic(legalEvidenceEnumReport).sanitized,
+  false,
+  "legal evidence enums should pass deterministic pre-critic hygiene without rewrite loops"
+);
+
 const ledgerNormalization = normalizeFinalReportEvidenceLedger({
   type: "final",
   output: {

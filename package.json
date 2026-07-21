@@ -17,6 +17,7 @@
     "test:skills": "node scripts/skill-contract-smoke.mjs",
     "test:research-scope": "node scripts/research-scope-smoke.mjs",
     "test:trend-context": "node scripts/trend-context-smoke.mjs",
+    "test:trend-query": "node scripts/trend-query-planner-smoke.mjs",
     "test:growth-case": "node scripts/growth-case-contract-smoke.mjs",
     "test:evidence-quality": "node scripts/evidence-quality-smoke.mjs",
     "test:storage-schema": "node scripts/storage-schema-smoke.mjs",

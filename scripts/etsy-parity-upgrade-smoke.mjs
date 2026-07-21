@@ -48,12 +48,17 @@ assert.match(contentSource, /settingsBtn\.addEventListener\("click"[\s\S]*if \(a
 assert.match(contentSource, /bindShopBtn\.addEventListener\("click"[\s\S]*if \(activeGrowthRun\)/, "floating dock shop binding button should be blocked during an active workflow");
 assert.match(contentSource, /pickLatestOverlayResumableSessionForContinue[\s\S]*legacyContinueInstruction[\s\S]*pickLatestOverlayResumableSessionForContinue/, "floating overlay plain continue messages should auto-select the latest resumable checkpoint");
 assert.match(contentSource, /workflowSessionId[\s\S]*continueSession[\s\S]*forceNewSession/, "floating overlay should pass explicit session intent into RUN_SKILL");
-assert.match(contentSource, /startOverlayNewSessionMode[\s\S]*不会沿用旧断点/, "floating overlay should make fresh-session mode visible");
+assert.match(contentSource, /startOverlayNewSessionMode[\s\S]*新会话已就绪[\s\S]*请输入要分析的关键词、类目、商品或店铺/, "floating overlay should make fresh-session mode visible and prompt for scope");
 assert.match(contentSource, /runSelectedSkill\(runInstruction \|\| instruction, actionId, \{ forceNewSession: !resume \}\)/, "floating overlay new-session action runs should explicitly force a fresh workflow");
 assert.match(contentSource, /explicitForceNewSession[\s\S]*resumeSessionKey = explicitForceNewSession \? "" : getOverlayActiveResumeSessionKey/, "floating overlay forced-new runs must ignore any previously selected history session key");
 assert.match(contentSource, /resumableEntries\.length > 0[\s\S]*已暂停自动运行[\s\S]*return;[\s\S]*runOverlayGrowthActionNow/, "floating overlay action clicks should pause for session choice when resumable checkpoints exist");
 assert.match(contentSource, /chat-session-resume-btn[\s\S]*overlayPendingGrowthAction[\s\S]*resume:\s*true/, "choosing a history item from the floating overlay should resume the pending action");
-assert.match(contentSource, /chat-new-session-btn[\s\S]*overlayPendingGrowthAction \|\| overlayLastGrowthAction[\s\S]*resume:\s*false/, "clicking + new session from a pending or last floating action should start a fresh run explicitly");
+const overlayNewSessionHandler = contentSource.slice(
+  contentSource.indexOf('shadow.getElementById("chat-new-session-btn")?.addEventListener'),
+  contentSource.indexOf('shadow.getElementById("chat-session-history-btn")?.addEventListener')
+);
+assert.match(overlayNewSessionHandler, /overlayPendingGrowthAction = null[\s\S]*inputEl\.focus\(\)[\s\S]*发送后才会开始任务/, "clicking + new session should clear pending work and focus the scope input");
+assert.doesNotMatch(overlayNewSessionHandler, /runOverlayGrowthActionNow|runSelectedSkill|RUN_SKILL/, "clicking + new session must not start the pending or last action automatically");
 assert.match(contentSource, /activeAgentPort[\s\S]*CANCEL_WORKFLOW[\s\S]*pauseActiveWorkflow/, "floating overlay pause button should request workflow cancellation through the active port");
 assert.match(contentSource, /sendBtn\.innerText = pausing \? "暂停中" : "暂停"/, "floating overlay send button should become a pause button while a workflow is running");
 assert.doesNotMatch(contentSource, /Привет|Здравствуйте|Спасибо|Пожалуйста/, "content overlay should not contain Russian greeting copy");
@@ -70,7 +75,7 @@ assert.match(agentLoop, /checkpoint\("interrupted"[\s\S]*workflow_cancellation_r
 assert.match(agentLoop, /closeTabsCreatedDuringTimedOutTool\(beforeTabIds = new Set\(\), protectedTabIds = \[\]\)/, "agent loop timeout cleanup should accept protected source tab ids");
 assert.match(agentLoop, /isProtectedRuntimeTab\(tab\.id, protectedTabIds\)[\s\S]*return false/, "agent loop timeout cleanup must refuse to close protected source tabs");
 assert.match(agentLoop, /closeTabsCreatedDuringTimedOutTool\(tabsBeforeTool, \[tabId\]\)/, "agent loop must pass the source tab id into timeout cleanup");
-assert.doesNotMatch(agentLoop, /return \/[^\n]*ozon\\\.ru[^\n]*google\\\./, "agent loop timeout cleanup must not auto-close Ozon tabs");
+assert.match(agentLoop, /return \/ozon\\\.ru\|google\\\./, "agent loop timeout cleanup should close newly opened Ozon tabs while protecting the source tab id");
 assert.match(agentLoop, /isWorkflowGenerationCurrent/, "agent loop must discard late results from stale workflow generations");
 assert.match(background, /workflowGeneration: lease\.generation/, "background must pass workflow generation into the agent loop");
 assert.match(background, /port\.sender\?\.tab\?\.id \? port\.sender\.tab : await getCurrentTab\(\)/, "background should bind overlay workflows to the sender source tab instead of whichever temporary tab is active");
@@ -85,8 +90,8 @@ assert.match(contentSource, /data\.type === "tool_stage"/, "floating overlay sho
 assert.match(platformTrends, /证据阶段完成条件/, "Ozon platform trends must define stage completion conditions");
 assert.match(platformTrends, /不是无限搜索循环/, "Ozon platform trends must guard against repeated search loops");
 assert.match(platformTrends, /stage_observations/, "Ozon platform trends must require staged screenshot evidence");
-assert.match(platformTrends, /平台趋势任务严禁主动关闭任何 Ozon 页面/, "Ozon platform trends must explicitly forbid closing Ozon pages");
-assert.match(platformTrends, /protectedOzonTrendTab[\s\S]*protectedSourceTab/, "Ozon platform trends must treat protected-tab responses as safety success");
+assert.match(platformTrends, /来源 Ozon 页由运行时保护[\s\S]*本轮任务新开的 Ozon 搜索页[\s\S]*必须关闭/, "Ozon platform trends must protect the source page and close workflow-created Ozon evidence tabs");
+assert.match(platformTrends, /protectedSourceTab/, "Ozon platform trends must treat source-tab protection as safety success");
 assert.match(platformTrends, /report_status/, "Ozon platform trends must expose industrial report status");
 assert.match(platformTrends, /blocking_gaps/, "Ozon platform trends must structure evidence gaps");
 assert.match(platformTrends, /follow_up_tasks/, "Ozon platform trends must emit workflow-ready follow-up tasks");
@@ -118,8 +123,8 @@ assert.match(toolRegistry, /captureFullPageScreenshot[\s\S]*captureVisibleTab_vi
 assert.match(toolRegistry, /screenshotCaptureMode/, "screenshot artifacts should retain capture mode metadata");
 assert.match(background, /protectWorkflowTab\(checkpointKey,\s*tab\.id\)/, "background must register the source Ozon tab as protected for workflow-owned cleanup");
 assert.match(background, /cleanupActiveWorkflowTabs/, "background must centralize workflow-owned temporary tab cleanup");
-assert.match(background, /preserveOzonPages[\s\S]*ozon_platform_trends/, "platform-trend workflows must enable Ozon page preservation during cleanup");
-assert.match(background, /cleanupOwnedTabs\(checkpointKey,[\s\S]*preserveUrlPattern/, "background cleanup must pass an explicit preservation policy into the tab session manager");
+assert.match(background, /cleanupActiveWorkflowTabs[\s\S]*cleanupOwnedTabs\(checkpointKey\)/, "platform-trend workflows must close all workflow-owned tabs after preserving the protected source tab");
+assert.doesNotMatch(background, /preserveOzonPages|preserveUrlPattern:\s*preserveOzonPages/, "background must not preserve every Ozon evidence tab for trend workflows");
 assert.match(toolRegistry, /isProtectedTabId\(newTab\.id,\s*\[__sourceTabId\]\)[\s\S]*protectedSourceTab/, "browser search auto-close should detect protected source tabs");
 assert.match(toolRegistry, /createOwnedTabCallback[\s\S]*createBrowserTab[\s\S]*workflowId/, "workflow-created tabs should be tracked by the browser session manager");
 assert.match(toolRegistry, /restoreSourceTabFocusBounded[\s\S]*Promise\.race/, "source-tab focus restoration should be bounded and not block tool completion");
@@ -135,7 +140,7 @@ assert.match(toolRegistry, /isProtectedTabId\(tabId,\s*\[__sourceTabId\]\)[\s\S]
 assert.match(toolRegistry, /search_source_tab_protected[\s\S]*protectedSourceTab/, "browser search auto-close should refuse to close the source tab and report the protection state");
 assert.match(toolRegistry, /restoreSourceTabFocus[\s\S]*search_tab_closed/, "browser searches should restore focus to the source Ozon tab after closing temporary evidence tabs");
 assert.match(toolRegistry, /protectedSourceTab[\s\S]*Refused to close source tab/, "close_tab must refuse to close the original source tab");
-assert.match(toolRegistry, /protectedOzonTrendTab[\s\S]*Refused to close Ozon page/, "platform trends close_tab must refuse to close any Ozon page");
+assert.doesNotMatch(toolRegistry, /protectedOzonTrendTab|Refused to close Ozon page/, "platform trends close_tab should close workflow-created Ozon pages");
 assert.match(toolRegistry, /openerTabId[\s\S]*createOwnedTabCallback/, "workflow-created tabs should preserve the source tab as opener through the owned-tab manager");
 assert.equal(hasValidGoogleTrendsEvidence({
   ok: true,
@@ -155,6 +160,15 @@ assert.equal(hasValidGoogleTrendsEvidence({
     visibleText: "Google Trends Explore Interest over time Related queries Related topics",
   },
 }), true, "Google Trends evidence should require core trend modules, not just the shell");
+assert.equal(hasValidGoogleTrendsEvidence({
+  ok: true,
+  screenshotCaptured: true,
+  screenshotRef: "artifact://trend/no-data",
+  pageData: {
+    title: "Google Trends",
+    visibleText: "Google Trends Explore Hmm, your search doesn't have enough data to show here",
+  },
+}), false, "a loaded Trends page with screenshot but explicit no-data warning must enter query refinement");
 
 assert.match(operationsTracker, /运营追踪硬门槛/, "Ozon operations tracker must include attribution gates");
 assert.match(operationsTracker, /baseline_window/, "Ozon operations tracker must require baseline windows");

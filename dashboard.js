@@ -54,14 +54,14 @@ const GROWTH_ACTIONS = {
     instruction: "一键体检当前 Ozon 店铺增长瓶颈。不能只凭截图下结论：请先读取平台属性、主营类目、价格带、目标客群、使用场景、店铺定位和视觉调性/格调，再结合 Seller API、Ozon 站内搜索/热卖榜、Yandex/Google RU 趋势，并打开 2-3 个同类高排名店铺或头部竞品页面做截屏学习，最后按曝光、点击、加购、付款、利润、履约、评分和商品结构输出优先级行动清单。",
   },
   diagnose_sku_funnel: {
-    title: "SKU 漏斗诊断",
+    title: "商品诊断/追踪",
     skillPath: "skills/ozon_operations_tracker.skill.md",
-    instruction: "诊断当前低转化 SKU 的漏斗瓶颈，区分曝光弱、点击弱、加购弱、付款弱、利润弱、履约风险和评论风险。",
+    instruction: "诊断并追踪当前低转化 SKU 的漏斗瓶颈，区分曝光弱、点击弱、加购弱、付款弱、利润弱、履约风险和评论风险；这是商品经营体检，不是直接改写 Listing。",
   },
   rewrite_listing: {
-    title: "商品页转化改版",
+    title: "商品页改版",
     skillPath: "skills/ozon_listing_generator.skill.md",
-    instruction: "基于当前商品或 SKU 队列生成 Ozon 俄语 SEO 标题、主图卖点、详情页描述和规格补齐建议。",
+    instruction: "基于当前商品或 SKU 队列生成 Ozon 俄语 SEO 标题、主图卖点、详情页描述和规格补齐建议；这是页面表达改写，不承担完整商品经营体检。",
   },
   diagnose_visual_conversion: {
     title: "首图点击力诊断",
@@ -1815,6 +1815,27 @@ function resultToReportMarkdown(result = {}) {
   if (data.overview) lines.push(`### ${data.overview}`);
   if (data.analysis) lines.push(`**决策诊断与数据推演**:\n${data.analysis}`);
   if (data.summary) lines.push(`**下一步建议**:\n${data.summary}`);
+  const queryFunnel = data.query_funnel;
+  if (queryFunnel && typeof queryFunnel === "object") {
+    lines.push("### 关键词发现与聚焦漏斗");
+    if (queryFunnel.user_intent) lines.push(`- 原始问题: ${queryFunnel.user_intent}`);
+    if (Array.isArray(queryFunnel.intent_dimensions) && queryFunnel.intent_dimensions.length) {
+      lines.push(`- 意图维度: ${queryFunnel.intent_dimensions.join("；")}`);
+    }
+    if (Array.isArray(queryFunnel.focus_queries) && queryFunnel.focus_queries.length) {
+      lines.push(`- 最终聚焦词: ${queryFunnel.focus_queries.join("；")}`);
+    }
+    if (Array.isArray(queryFunnel.scored_queries) && queryFunnel.scored_queries.length) {
+      queryFunnel.scored_queries.slice(0, 6).forEach((item) => {
+        lines.push(`- ${item.query_ru || "未命名查询"}: ${item.total_score ?? "-"}/10 · ${item.decision || "reserve"} · ${item.evidence || "待补证"}`);
+      });
+    }
+    if (Array.isArray(queryFunnel.refinement_log) && queryFunnel.refinement_log.length) {
+      queryFunnel.refinement_log.slice(0, 3).forEach((item) => {
+        lines.push(`- 查询调整: ${item.from_query || "-"} -> ${item.to_query || "-"} · ${item.reason || ""} · ${item.result || ""}`);
+      });
+    }
+  }
   if (Array.isArray(data.data) && data.data.length) {
     lines.push("### 结构化行动项");
     data.data.slice(0, 12).forEach((item, index) => {
@@ -1823,6 +1844,9 @@ function resultToReportMarkdown(result = {}) {
       const actions = item.first_actions || item.next_steps || item.actionable_tasks || item.actions;
       const fields = [
         ["优先级", item.diagnosis_level || item.priority || item.severity],
+        ["推荐状态", item.recommendation_status === "recommended" ? "可卖候选" : item.recommendation_status],
+        ["筛选结论", item.filter_verdict === "passed" ? "已通过不卖原则" : item.filter_verdict],
+        ["卖家适配", item.seller_fit_reason],
         ["方向", item.direction || item.recommendation || item.strategy],
         ["证据", item.evidence || item.diagnosis_basis || item.selection_rationale || item.trend_evidence],
         ["首批动作", Array.isArray(actions) ? actions.join("；") : actions],
@@ -1856,7 +1880,7 @@ function renderCaseIntelligence(caseItem = null) {
         <span>${escapeHtml(scope.entry_page_type || "unknown")}</span>
         <span>${escapeHtml(scope.analysis_scope || "unknown")}</span>
         <span>置信度: ${escapeHtml(scope.scope_confidence || "unknown")}</span>
-        ${scope.needs_user_clarification ? "<span>需确认范围</span>" : "<span>范围已识别</span>"}
+        ${scope.auto_discovery_required ? "<span>自动发现范围</span>" : scope.needs_user_clarification ? "<span>需确认范围</span>" : "<span>范围已识别</span>"}
       </div>
     </section>
     <section>
@@ -2432,6 +2456,18 @@ function startDashboardGrowthRun(run) {
     }
     const port = chrome.runtime.connect({ name: "ozon-agent-loop" });
     let settled = false;
+    let runPayload = {
+      type: "RUN_SKILL",
+      skillPath: run.skillPath,
+      growthActionId: run.actionId,
+      growthRunId: run.id,
+      growthCaseId: run.caseId,
+      userInstruction: run.instruction,
+    };
+    const submitRunPayload = (patch = {}) => {
+      runPayload = { ...runPayload, ...patch };
+      port.postMessage(runPayload);
+    };
     port.onMessage.addListener(async (message) => {
       try {
         if (message.type === "PROGRESS") {
@@ -2464,6 +2500,33 @@ function startDashboardGrowthRun(run) {
           port.disconnect?.();
           reject(new Error(message.error || "运行失败"));
         }
+        if (message.type === "CLARIFICATION_REQUIRED") {
+          const request = message.data || {};
+          const answer = window.prompt(request.message || "当前页面缺少足够分析线索，请补充关键词、类目或店铺/SKU。", "");
+          if (!answer || !answer.trim()) {
+            settled = true;
+            await persistGrowthRunUpdate(run.caseId, run.id, {
+              status: "interrupted",
+              error: "needs_user_clarification",
+              interruptedAt: new Date().toISOString(),
+            }, { status: "interrupted" });
+            port.disconnect?.();
+            reject(new Error("缺少分析范围，未启动正式工作流。"));
+            return;
+          }
+          await persistGrowthRunUpdate(run.caseId, run.id, {
+            status: "running",
+            lastProgress: `已补充分析范围：${answer.trim()}`,
+          }, { status: "running" });
+          submitRunPayload({
+            userInstruction: `${runPayload.userInstruction || run.instruction}\n\n【用户补充分析范围】${answer.trim()}`,
+            clarificationInput: {
+              seedKeyword: answer.trim(),
+              note: answer.trim(),
+            },
+            forceNewSession: false,
+          });
+        }
       } catch (err) {
         settled = true;
         port.disconnect?.();
@@ -2479,14 +2542,7 @@ function startDashboardGrowthRun(run) {
       }, { status: "interrupted" });
       reject(new Error("后台连接中断，已保存断点，可再次运行继续。"));
     });
-    port.postMessage({
-      type: "RUN_SKILL",
-      skillPath: run.skillPath,
-      growthActionId: run.actionId,
-      growthRunId: run.id,
-      growthCaseId: run.caseId,
-      userInstruction: run.instruction,
-    });
+    submitRunPayload();
   });
 }
 
@@ -3396,6 +3452,7 @@ function renderReportsList(monitorReports = [], savedResults = []) {
 
   savedResults.forEach(r => {
     let name = "决策诊断书";
+    if (r.skillId && r.skillId.includes("platform_trends")) name = "Ozon平台趋势可卖机会";
     if (r.skillId && r.skillId.includes("opportunity")) name = "Ozon选品机会书";
     if (r.skillId && r.skillId.includes("sourcing")) name = "Ozon-1688寻源账本";
     if (r.skillId && r.skillId.includes("optimizer")) name = "商品页对标诊断";
@@ -3430,8 +3487,8 @@ function renderReportsList(monitorReports = [], savedResults = []) {
   container.innerHTML = list.map((rep, index) => `
     <div class="report-item" id="report-item-${index}" data-report-index="${index}">
       <div class="report-item-main">
-        <div style="font-weight:600; font-size:12px;">${escapeHtml(rep.title)}</div>
-        <div style="font-size:10px; color:var(--text-secondary); margin-top:4px; display:flex; justify-content:space-between">
+        <div class="report-item-title">${escapeHtml(rep.title)}</div>
+        <div class="report-item-meta">
           <span>${escapeHtml(rep.tag)}${rep.evidenceStatus ? ` · <span class="report-evidence-status ${escapeHtml(rep.evidenceStatus.tone)}">${escapeHtml(rep.evidenceStatus.label)}</span>` : ""}</span>
           <span>${escapeHtml(rep.date)}</span>
         </div>

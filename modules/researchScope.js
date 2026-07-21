@@ -18,6 +18,20 @@ function normalizeText(value = "") {
   return String(value || "").trim();
 }
 
+function normalizeClarificationInput(input = {}) {
+  if (!input || typeof input !== "object") return {};
+  const seedKeyword = normalizeText(input.seedKeyword || input.keyword || input.query || "");
+  const seedCategory = normalizeText(input.seedCategory || input.category || "");
+  const targetShop = normalizeText(input.targetShop || input.shop || "");
+  const note = normalizeText(input.note || input.extra || input.userInput || "");
+  return {
+    seedKeyword,
+    seedCategory,
+    targetShop,
+    note,
+  };
+}
+
 function extractSearchParam(urlObj) {
   if (!urlObj) return "";
   return normalizeText(
@@ -99,7 +113,7 @@ function trendContextType(analysisScope = "", entryPageType = "") {
   return "unknown";
 }
 
-function buildConclusionPolicy({ entryPageType, analysisScope, sourcePageRole, seedKeywords }) {
+function buildConclusionPolicy({ entryPageType, analysisScope, sourcePageRole, seedKeywords, autoDiscoveryRequired = false }) {
   const allowed = [];
   const forbidden = [];
   if (analysisScope === "store_trend_fit") {
@@ -109,6 +123,9 @@ function buildConclusionPolicy({ entryPageType, analysisScope, sourcePageRole, s
   }
   if (analysisScope === "platform_trend") {
     allowed.push("输出 Ozon 公开页面、Yandex.ru、Google RU/Trends 支撑的平台需求窗口");
+    if (autoDiscoveryRequired) {
+      allowed.push("在用户没有明确关键词时，先从 Ozon 首页推荐、热词/排行/类目入口和俄区外部公开趋势自动生成候选研究范围");
+    }
     forbidden.push("在没有店铺适配证据时直接声称当前店铺应该执行该机会");
   }
   if (analysisScope === "category_opportunity") {
@@ -132,7 +149,7 @@ function buildConclusionPolicy({ entryPageType, analysisScope, sourcePageRole, s
     allowed.push("验证供应商、规格、MOQ、价格、认证和跨境毛利");
     forbidden.push("把 1688/淘宝供应商页当作 Ozon 平台趋势证据");
   }
-  if (entryPageType === "ozon_home" && seedKeywords.length === 0) {
+  if (entryPageType === "ozon_home" && seedKeywords.length === 0 && !autoDiscoveryRequired) {
     forbidden.push("缺少关键词/类目/店铺适配范围时输出 completed 趋势结论");
   }
   return { allowed_conclusions: allowed, forbidden_conclusions: forbidden };
@@ -146,6 +163,7 @@ export function buildResearchScope({
   matchedSkills = [],
   activeShopId = "",
   boundShops = [],
+  clarificationInput = {},
 } = {}) {
   const url = normalizeText(pageContext.url || tab.url || "");
   const urlObj = safeUrl(url);
@@ -165,21 +183,42 @@ export function buildResearchScope({
   } else if (isStorePage && instructionScope === "store_trend_fit") {
     entryPageType = "external_store";
   }
+  const clarification = normalizeClarificationInput(clarificationInput || pageContext.clarification_input || {});
   const seedKeyword = extractSearchParam(urlObj);
   const seedKeywords = Array.from(new Set([
     seedKeyword,
+    clarification.seedKeyword,
+    clarification.targetShop,
     ...(Array.isArray(pageContext.keywords) ? pageContext.keywords : []),
     ...(Array.isArray(pageContext.productCards) ? pageContext.productCards.slice(0, 3).map((card) => card.title || card.name || "") : []),
   ].map(normalizeText).filter(Boolean))).slice(0, 8);
-  const seedCategory = normalizeText(pageContext.category || pageContext.pageType || "");
+  const seedCategory = normalizeText(clarification.seedCategory || pageContext.category || pageContext.pageType || "");
   const analysisScope = analysisScopeForEntry(entryPageType, instructionScope);
-  const sourcePageRole = roleForEntry(entryPageType, analysisScope);
-  const weakContext = entryPageType === "unknown" || (entryPageType === "ozon_home" && seedKeywords.length === 0 && !seedCategory);
-  const scopeConfidence = weakContext ? "low" : (seedKeywords.length > 0 || seedCategory || sourcePageRole !== "unknown" ? "high" : "medium");
-  const policy = buildConclusionPolicy({ entryPageType, analysisScope, sourcePageRole, seedKeywords });
+  const canAutoDiscoverPlatformTrend = ["ozon_home", "unknown"].includes(entryPageType);
+  const autoDiscoveryRequired = analysisScope === "platform_trend" && canAutoDiscoverPlatformTrend && seedKeywords.length === 0 && !seedCategory;
+  const sourcePageRole = autoDiscoveryRequired ? "platform_discovery" : roleForEntry(entryPageType, analysisScope);
+  const weakContext = (entryPageType === "unknown" && !autoDiscoveryRequired) || (
+    entryPageType === "ozon_home" &&
+    seedKeywords.length === 0 &&
+    !seedCategory &&
+    !autoDiscoveryRequired
+  );
+  const scopeConfidence = weakContext
+    ? "low"
+    : autoDiscoveryRequired
+    ? "medium"
+    : (seedKeywords.length > 0 || seedCategory || sourcePageRole !== "unknown" ? "high" : "medium");
+  const policy = buildConclusionPolicy({ entryPageType, analysisScope, sourcePageRole, seedKeywords, autoDiscoveryRequired });
   const isBoundStorePage = Boolean(matchedBoundShopId);
   const isActiveShopPage = Boolean(matchedBoundShopId) && matchedBoundShopId === normalizeText(activeShopId);
   const runtimeShopId = entryPageType === "owned_store" ? (matchedBoundShopId || normalizeText(activeShopId)) : "";
+  const diagnosisMode = analysisScope === "store_trend_fit"
+    ? runtimeShopId
+      ? "api_bound_diagnosis"
+      : normalizeText(activeShopId)
+      ? "mixed_diagnosis"
+      : "outer_visitor_diagnosis"
+    : "";
 
   return {
     entry_page_type: entryPageType,
@@ -191,6 +230,11 @@ export function buildResearchScope({
     trend_context_type: trendContextType(analysisScope, entryPageType),
     scope_confidence: scopeConfidence,
     needs_user_clarification: weakContext,
+    auto_discovery_required: autoDiscoveryRequired,
+    discovery_sources: autoDiscoveryRequired
+      ? ["current_page_public_clues", "ozon_home_recommendations", "ozon_hot_words_or_rankings", "ozon_category_entrypoints", "yandex_ru_public_trends", "google_ru_public_search", "google_trends_ru"]
+      : [],
+    clarification_input: clarification,
     current_url: url,
     current_title: normalizeText(pageContext.title || tab.title || ""),
     active_shop_id: runtimeShopId,
@@ -199,6 +243,14 @@ export function buildResearchScope({
     matched_bound_shop_name: matchedBoundShopName,
     is_bound_store_page: isBoundStorePage,
     is_active_shop_page: isActiveShopPage,
+    diagnosis_mode: diagnosisMode,
+    api_evidence_policy: diagnosisMode === "api_bound_diagnosis"
+      ? "seller_api_allowed_for_bound_store"
+      : diagnosisMode === "mixed_diagnosis"
+      ? "seller_api_only_for_selected_bound_shop_not_current_page"
+      : diagnosisMode === "outer_visitor_diagnosis"
+      ? "public_page_only_bind_seller_api_for_private_metrics"
+      : "",
     ...policy,
   };
 }

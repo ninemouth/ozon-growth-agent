@@ -5,6 +5,8 @@
 
 const ownedTabs = new Map();
 const protectedTabs = new Map();
+const historyPreservedTabs = new Map();
+const MAX_HISTORY_PRESERVED_TABS = 60;
 
 function workflowTabs(workflowId = "default") {
   if (!ownedTabs.has(workflowId)) ownedTabs.set(workflowId, new Set());
@@ -72,15 +74,38 @@ export async function closeOwnedTab(workflowId = "default", tabId) {
   return true;
 }
 
-async function tabUrlMatches(tabId, preserveUrlPattern = null) {
-  if (!preserveUrlPattern) return false;
+async function getTabUrl(tabId) {
   try {
     const tab = await chrome.tabs.get(Number(tabId));
-    const url = String(tab?.url || "");
+    return String(tab?.url || "");
+  } catch (_) {
+    return "";
+  }
+}
+
+function urlMatchesPattern(url, preserveUrlPattern = null) {
+  if (!preserveUrlPattern || !url) return false;
+  try {
     if (preserveUrlPattern instanceof RegExp) return preserveUrlPattern.test(url);
     return new RegExp(String(preserveUrlPattern)).test(url);
   } catch (_) {
     return false;
+  }
+}
+
+function rememberPreservedTab(workflowId, tabId, url = "") {
+  const id = Number(tabId);
+  if (!Number.isInteger(id)) return;
+  historyPreservedTabs.delete(id);
+  historyPreservedTabs.set(id, {
+    tabId: id,
+    workflowId,
+    url,
+    preservedAt: Date.now(),
+  });
+  while (historyPreservedTabs.size > MAX_HISTORY_PRESERVED_TABS) {
+    const oldestTabId = historyPreservedTabs.keys().next().value;
+    historyPreservedTabs.delete(oldestTabId);
   }
 }
 
@@ -90,8 +115,10 @@ export async function cleanupOwnedTabs(workflowId = "default", { preserveUrlPatt
   const preserved = [];
   const closable = [];
   for (const id of ids) {
-    if (await tabUrlMatches(id, preserveUrlPattern)) {
+    const url = await getTabUrl(id);
+    if (urlMatchesPattern(url, preserveUrlPattern)) {
       preserved.push(id);
+      rememberPreservedTab(workflowId, id, url);
     } else {
       closable.push(id);
     }
@@ -102,8 +129,36 @@ export async function cleanupOwnedTabs(workflowId = "default", { preserveUrlPatt
   return { closed: closable, preserved };
 }
 
+export async function cleanupPreservedTabs({ maxAgeMs = 6 * 60 * 60 * 1000, preserveUrlPattern = null } = {}) {
+  const now = Date.now();
+  const closed = [];
+  const retained = [];
+  const entries = Array.from(historyPreservedTabs.values());
+  for (const entry of entries) {
+    const url = await getTabUrl(entry.tabId);
+    const tooOld = Number(entry.preservedAt || 0) + Math.max(0, Number(maxAgeMs) || 0) < now;
+    const shouldKeepByPattern = preserveUrlPattern && urlMatchesPattern(url || entry.url, preserveUrlPattern);
+    if (!tooOld || shouldKeepByPattern) {
+      retained.push(entry.tabId);
+      continue;
+    }
+    try {
+      await chrome.tabs.remove(entry.tabId);
+    } catch (_) {
+      // Already closed tabs are removed from the preserved registry below.
+    }
+    historyPreservedTabs.delete(entry.tabId);
+    closed.push(entry.tabId);
+  }
+  return { closed, retained };
+}
+
 export function listOwnedTabs(workflowId = "default") {
   return Array.from(ownedTabs.get(workflowId) || []);
 }
 
-export const __testInternals = { ownedTabs, protectedTabs };
+export function listPreservedTabs() {
+  return Array.from(historyPreservedTabs.values()).map((entry) => ({ ...entry }));
+}
+
+export const __testInternals = { ownedTabs, protectedTabs, historyPreservedTabs };

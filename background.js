@@ -20,6 +20,7 @@ import {
   listTaskLogs,
   loadWorkflowSnapshot,
   pruneTaskLogs,
+  recoverStaleWorkflows,
   releaseWorkflowLease,
   renewWorkflowLease,
   requestWorkflowCancellation,
@@ -125,6 +126,9 @@ const UPDATE_CHECK_ALARM = "ozon_update_check";
 const UPDATE_CHECK_INTERVAL_MINUTES = 12 * 60;
 const TASK_LOG_PRUNE_ALARM = "ozon_task_log_prune";
 const TASK_LOG_PRUNE_INTERVAL_MINUTES = 24 * 60;
+const WORKFLOW_RECOVERY_ALARM = "ozon_workflow_recovery_sweep";
+const WORKFLOW_RECOVERY_INTERVAL_MINUTES = 5;
+const WORKFLOW_RECOVERY_STALE_AFTER_MS = 2 * 60 * 1000;
 const GITHUB_RELEASES_URL = "https://github.com/ninemouth/ozon-growth-agent/releases";
 const GITHUB_LATEST_RELEASE_API = "https://api.github.com/repos/ninemouth/ozon-growth-agent/releases/latest";
 const GITHUB_MANIFEST_URL = "https://raw.githubusercontent.com/ninemouth/ozon-growth-agent/main/manifest.json";
@@ -144,9 +148,39 @@ function summarizeTaskLogDetails(value = {}) {
 }
 
 function taskLogSeverityForProgress(progress = {}) {
-  if (["tool_timeout", "captcha_warning", "reflection", "workflow_timeout"].includes(progress.type)) return "warning";
+  if ([
+    "tool_timeout",
+    "captcha_warning",
+    "paused_for_verification",
+    "reflection",
+    "workflow_timeout",
+    "trend_query_guard",
+    "trend_query_refinement_exhausted",
+    "trend_evidence_downgrade_required",
+  ].includes(progress.type)) return "warning";
   if (["error", "failed"].includes(progress.type)) return "error";
   return "info";
+}
+
+function hasClarificationInput(input = {}) {
+  if (!input || typeof input !== "object") return false;
+  return Boolean(String(input.seedKeyword || input.keyword || input.query || input.seedCategory || input.category || input.targetShop || input.shop || input.note || "").trim());
+}
+
+function buildClarificationRequest(researchScope = {}, message = {}) {
+  const actionKind = message.growthActionId || "manual";
+  const needsCategory = ["platform_trend", "category_opportunity", "store_trend_fit"].includes(researchScope.analysis_scope);
+  return {
+    actionKind,
+    researchScope,
+    title: "需要补充分析范围",
+    message: "当前页面缺少足够的商品、类目或店铺线索。请补充一个关键词、目标类目或店铺方向后再启动正式分析，避免生成空报告。",
+    fields: [
+      { id: "seedKeyword", label: "探索关键词", placeholder: "例如：электрическая зубная щетка / 电动牙刷" },
+      ...(needsCategory ? [{ id: "seedCategory", label: "目标类目", placeholder: "例如：3C / 家居 / 母婴 / 汽配" }] : []),
+      { id: "targetShop", label: "关联店铺或 SKU", placeholder: "可选：店铺名、SKU、商品链接或经营目标" },
+    ],
+  };
 }
 
 async function recordTaskLog(input = {}) {
@@ -156,6 +190,24 @@ async function recordTaskLog(input = {}) {
     console.warn("Task log persistence failed:", err.message);
     return null;
   }
+}
+
+async function runWorkflowRecoverySweep(reason = "alarm") {
+  const result = await recoverStaleWorkflows({
+    staleAfterMs: WORKFLOW_RECOVERY_STALE_AFTER_MS,
+    reason,
+  });
+  if (result.recovered?.length) {
+    await recordTaskLog({
+      category: "maintenance",
+      severity: "warning",
+      event: "workflow_recovery_sweep",
+      message: `后台自愈巡检释放 ${result.recovered.length} 个过期 workflow，已保留为可恢复断点。`,
+      details: result,
+      source: "alarm",
+    });
+  }
+  return result;
 }
 
 function getExtensionVersion() {
@@ -585,15 +637,11 @@ chrome.runtime.onConnect.addListener((port) => {
     activePorts.set(portId, port);
     let isCancelled = false;
     let activeCheckpointKey = "";
-    let activeMatchedSkills = [];
     let runInFlight = false;
     let leaseRenewTimer = null;
     const cleanupActiveWorkflowTabs = (checkpointKey = activeCheckpointKey) => {
       if (!checkpointKey) return Promise.resolve();
-      const preserveOzonPages = activeMatchedSkills.some((skillPath) => String(skillPath || "").includes("ozon_platform_trends"));
-      return cleanupOwnedTabs(checkpointKey, {
-        preserveUrlPattern: preserveOzonPages ? /(^|\.)ozon\.ru/i : null,
-      });
+      return cleanupOwnedTabs(checkpointKey);
     };
 
     port.onDisconnect.addListener(() => {
@@ -688,7 +736,6 @@ chrome.runtime.onConnect.addListener((port) => {
 
           // Reset the session data cache at the start of a new run
           resetSessionData();
-
           // Step 1: Read current page context
           let pageContext = {};
           try {
@@ -771,8 +818,49 @@ chrome.runtime.onConnect.addListener((port) => {
             matchedSkills,
             activeShopId,
             boundShops,
+            clarificationInput: message.clarificationInput || {},
           });
-          activeMatchedSkills = matchedSkills;
+          if (researchScope.needs_user_clarification && !researchScope.auto_discovery_required && !hasClarificationInput(message.clarificationInput) && !message.continueSession) {
+            const request = buildClarificationRequest(researchScope, message);
+            await recordTaskLog({
+              workflowId: buildWorkflowCheckpointKey({ tabId: tab.id, matchedSkills, message }),
+              category: "workflow",
+              severity: "warning",
+              event: "clarification_required",
+              message: "页面上下文不足，已暂停正式工作流并请求用户补充关键词、类目或店铺范围。",
+              details: { actionKind: message.growthActionId || "manual", sourcePageRole: researchScope.source_page_role },
+              source: "background",
+            });
+            port.postMessage({
+              type: "CLARIFICATION_REQUIRED",
+              data: request,
+              originalMessage: {
+                ...message,
+                matchedSkills,
+              },
+            });
+            return;
+          }
+          if (researchScope.diagnosis_mode === "outer_visitor_diagnosis") {
+            port.postMessage({
+              type: "PROGRESS",
+              data: {
+                type: "workflow_scope_notice",
+                step: 0,
+                message: "当前未匹配到已绑定 Seller API 店铺，本轮将按外围诊断执行：只使用公开页面、搜索、竞品和趋势证据，不伪造后台流量/订单数据。",
+              },
+            });
+          }
+          if (researchScope.auto_discovery_required) {
+            port.postMessage({
+              type: "PROGRESS",
+              data: {
+                type: "auto_discovery_scope",
+                step: 0,
+                message: "当前未指定关键词，平台趋势将自动从当前页面公开线索、Ozon 首页推荐、热词/排行/类目入口和 Yandex/Google RU 公开趋势生成候选研究范围。",
+              },
+            });
+          }
           console.log("Matched Ozon skills:", matchedSkills);
           const checkpointKey = buildWorkflowCheckpointKey({ tabId: tab.id, matchedSkills, message });
           activeCheckpointKey = checkpointKey;
@@ -1010,44 +1098,53 @@ chrome.runtime.onConnect.addListener((port) => {
             });
             pruneTaskLogs().catch((err) => console.warn("Task log prune skipped:", err.message));
             activeCheckpointKey = "";
-            activeMatchedSkills = [];
           }
           if (isCancelled) {
             throw new Error("workflow cancellation requested");
           }
           });
         } catch (err) {
-          const workflowPaused = /workflow cancellation requested|user_paused|cancelled before start/i.test(String(err.message || ""));
+          const verificationPaused = /workflow verification required|paused_for_verification/i.test(String(err.message || ""));
+          const workflowPaused = verificationPaused || /workflow cancellation requested|user_paused|cancelled before start/i.test(String(err.message || ""));
           if (workflowPaused && activeCheckpointKey) {
+            const interruptionReason = verificationPaused ? "paused_for_verification" : "user_paused";
             await recordTaskLog({
               workflowId: activeCheckpointKey,
               category: "workflow",
               severity: "warning",
-              event: "workflow_interrupted",
-              message: "工作流已暂停，断点可恢复。",
+              event: verificationPaused ? "workflow_paused_for_verification" : "workflow_interrupted",
+              message: verificationPaused ? "工作流已暂停等待人工完成验证码/登录验证，断点可恢复。" : "工作流已暂停，断点可恢复。",
               source: "background",
             });
             await setWorkflowCheckpoint(activeCheckpointKey, {
               status: "interrupted",
               error: "",
-              lastStage: "user_paused",
+              lastStage: interruptionReason,
               interruptedAt: new Date().toISOString(),
-              interruptionReason: "user_paused",
+              interruptionReason,
             });
-            cleanupActiveWorkflowTabs(activeCheckpointKey).catch((cleanupErr) => console.warn("Could not cleanup owned tabs:", cleanupErr.message));
+            if (!verificationPaused) {
+              cleanupActiveWorkflowTabs(activeCheckpointKey).catch((cleanupErr) => console.warn("Could not cleanup owned tabs:", cleanupErr.message));
+            }
             releaseWorkflowLease(activeCheckpointKey, portId, "interrupted").catch((leaseErr) => console.warn("Could not release interrupted workflow lease:", leaseErr.message));
             if (leaseRenewTimer) clearInterval(leaseRenewTimer);
             leaseRenewTimer = null;
             try {
               port.postMessage({
                 type: "INTERRUPTED",
-                result: { type: "interrupted", result: "工作流已暂停并保存断点。" },
+                result: {
+                  type: "interrupted",
+                  result: verificationPaused
+                    ? "工作流已暂停等待人工验证。请在打开的货源页面完成验证码/登录后发送“继续”。"
+                    : "工作流已暂停并保存断点。",
+                },
                 resumable: true,
-                resumeHint: "发送“继续”或从历史会话选择该断点即可恢复。",
+                resumeHint: verificationPaused
+                  ? "完成验证/登录后发送“继续”，系统会从验证码阻断点后的上下文恢复。"
+                  : "发送“继续”或从历史会话选择该断点即可恢复。",
               });
             } catch (_) {}
             activeCheckpointKey = "";
-            activeMatchedSkills = [];
             return;
           }
           if (activeCheckpointKey) {
@@ -1303,6 +1400,10 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     await checkForUpdates({ force: true });
     return;
   }
+  if (alarm.name === WORKFLOW_RECOVERY_ALARM) {
+    await runWorkflowRecoverySweep("alarm");
+    return;
+  }
 
   if (alarm.name.startsWith("monitor_task_")) {
     const taskJson = alarm.name.slice("monitor_task_".length);
@@ -1493,17 +1594,30 @@ chrome.runtime.onInstalled.addListener(() => {
         temperature: "0.2",
         maxLoopSteps: "25",
         ozonTargetMargin: "20",
-        ozonWarehouseType: "FBS"
+        ozonWarehouseType: "FBS",
+        ozonLogisticsCostProfile: {
+          warehouseType: "FBS",
+          baseFeeCny: 2,
+          cnyPerKg: 5.5,
+          packagingFeeCny: 2,
+          source: "default_profile",
+          updatedAt: new Date().toISOString(),
+        }
       });
     }
   })().catch((err) => console.warn("Default settings initialization skipped:", err.message));
   chrome.alarms.create(UPDATE_CHECK_ALARM, { periodInMinutes: UPDATE_CHECK_INTERVAL_MINUTES });
   chrome.alarms.create(TASK_LOG_PRUNE_ALARM, { periodInMinutes: TASK_LOG_PRUNE_INTERVAL_MINUTES });
+  chrome.alarms.create(WORKFLOW_RECOVERY_ALARM, { periodInMinutes: WORKFLOW_RECOVERY_INTERVAL_MINUTES });
   pruneTaskLogs().catch((err) => console.warn("Initial task log prune skipped:", err.message));
+  runWorkflowRecoverySweep("installed").catch((err) => console.warn("Initial workflow recovery sweep skipped:", err.message));
   checkForUpdates({ force: true });
 });
 
 chrome.runtime.onStartup.addListener(() => {
+  chrome.alarms.create(UPDATE_CHECK_ALARM, { periodInMinutes: UPDATE_CHECK_INTERVAL_MINUTES });
   chrome.alarms.create(TASK_LOG_PRUNE_ALARM, { periodInMinutes: TASK_LOG_PRUNE_INTERVAL_MINUTES });
+  chrome.alarms.create(WORKFLOW_RECOVERY_ALARM, { periodInMinutes: WORKFLOW_RECOVERY_INTERVAL_MINUTES });
   pruneTaskLogs().catch((err) => console.warn("Startup task log prune skipped:", err.message));
+  runWorkflowRecoverySweep("startup").catch((err) => console.warn("Startup workflow recovery sweep skipped:", err.message));
 });

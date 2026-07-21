@@ -85,16 +85,6 @@ function isProtectedTabId(tabId, protectedTabIds = []) {
     .some((protectedTabId) => Number.isInteger(Number(protectedTabId)) && Number(protectedTabId) === Number(tabId));
 }
 
-async function getTabUrlQuietly(tabId) {
-  if (!Number.isInteger(Number(tabId))) return "";
-  try {
-    const tab = await chrome.tabs.get(Number(tabId));
-    return tab?.url || "";
-  } catch (_) {
-    return "";
-  }
-}
-
 function cachePreparedImage(dataUrl) {
   const ref = `__CLEAN_PRODUCT_IMAGE_${Date.now()}_${Math.random().toString(36).slice(2, 8)}__`;
   preparedImageCache.set(ref, dataUrl);
@@ -103,6 +93,115 @@ function cachePreparedImage(dataUrl) {
 
 function resolvePreparedImageUrl(imageUrl) {
   return preparedImageCache.get(imageUrl) || imageUrl;
+}
+
+async function fetchJsonWithTimeout(url, { timeoutMs = 8000 } = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.max(1000, Number(timeoutMs) || 8000));
+  try {
+    const response = await fetch(url, { cache: "no-store", signal: controller.signal });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return await response.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function parsePositiveNumber(value, fallback = 0) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : fallback;
+}
+
+function isFreshIso(iso = "", maxAgeMs = 12 * 60 * 60 * 1000) {
+  const timestamp = Date.parse(iso || "");
+  return Boolean(timestamp && Date.now() - timestamp <= maxAgeMs);
+}
+
+async function getRubCnyMarketRate() {
+  const fetchedAt = new Date().toISOString();
+  const storage = await new Promise((resolve) =>
+    chrome.storage.local.get(["ozonMarketRatesSnapshot"], resolve)
+  );
+  const cached = storage.ozonMarketRatesSnapshot || null;
+  if (cached?.ok && cached.cny_to_rub && isFreshIso(cached.fetched_at)) {
+    return {
+      ...cached,
+      cache_status: "fresh",
+    };
+  }
+  try {
+    const data = await fetchJsonWithTimeout("https://open.er-api.com/v6/latest/CNY");
+    const cnyToRub = parsePositiveNumber(data?.rates?.RUB, 0);
+    if (!cnyToRub) throw new Error("RUB rate missing");
+    const snapshot = {
+      ok: true,
+      base: "CNY",
+      quote: "RUB",
+      cny_to_rub: cnyToRub,
+      rub_to_cny: Number((1 / cnyToRub).toFixed(6)),
+      source: "open.er-api.com",
+      fetched_at: fetchedAt,
+      provider_timestamp: data?.time_last_update_utc || "",
+      cache_status: "refreshed",
+    };
+    await new Promise((resolve) => chrome.storage.local.set({ ozonMarketRatesSnapshot: snapshot }, resolve));
+    return snapshot;
+  } catch (err) {
+    if (cached?.cny_to_rub) {
+      return {
+        ...cached,
+        ok: true,
+        cache_status: "stale_fallback",
+        warning: `实时汇率获取失败，使用本地缓存：${err.message}`,
+        required_action: "报告必须标注汇率为本地缓存，正式采购前复核实时汇率。",
+      };
+    }
+    return {
+      ok: false,
+      base: "CNY",
+      quote: "RUB",
+      error: err.message,
+      source: "open.er-api.com",
+      fetched_at: fetchedAt,
+      required_action: "请在报告中把利润率降级为待确认，并提示用户补充实时汇率或稍后重试。",
+    };
+  }
+}
+
+function buildLogisticsCostProfile(args = {}) {
+  const weightKg = parsePositiveNumber(args.weightKg || args.weight_kg || args.weight, 1);
+  const warehouseType = String(args.warehouseType || args.warehouse_type || "FBS").toUpperCase() === "FBO" ? "FBO" : "FBS";
+  const baseFeeCny = parsePositiveNumber(args.baseFeeCny || args.base_fee_cny, warehouseType === "FBO" ? 3 : 2);
+  const cnyPerKg = parsePositiveNumber(args.cnyPerKg || args.cny_per_kg, warehouseType === "FBO" ? 7 : 5.5);
+  const packagingFeeCny = parsePositiveNumber(args.packagingFeeCny || args.packaging_fee_cny, 2);
+  const customRubPerCny = parsePositiveNumber(args.cnyToRub || args.cny_to_rub, 0);
+  const subtotalCny = Number((baseFeeCny + cnyPerKg * weightKg + packagingFeeCny).toFixed(2));
+  return {
+    ok: true,
+    warehouse_type: warehouseType,
+    weight_kg: weightKg,
+    base_fee_cny: baseFeeCny,
+    cny_per_kg: cnyPerKg,
+    packaging_fee_cny: packagingFeeCny,
+    estimated_shipping_cny: subtotalCny,
+    estimated_shipping_rub: customRubPerCny ? Number((subtotalCny * customRubPerCny).toFixed(2)) : null,
+    formula: "base_fee_cny + cny_per_kg * weight_kg + packaging_fee_cny",
+    source: "user_config_or_default_profile",
+    calculated_at: new Date().toISOString(),
+    limitation: "基础运费模型仅用于上架前估算；正式备货前必须用货代报价、Ozon 费用明细和包裹尺寸复核。",
+  };
+}
+
+async function getStoredLogisticsCostProfile(args = {}) {
+  const storage = await new Promise((resolve) =>
+    chrome.storage.local.get(["ozonLogisticsCostProfile", "ozonWarehouseType"], resolve)
+  );
+  const configured = storage.ozonLogisticsCostProfile || {};
+  return buildLogisticsCostProfile({
+    ...configured,
+    warehouseType: args.warehouseType || args.warehouse_type || configured.warehouseType || configured.warehouse_type || storage.ozonWarehouseType || "FBS",
+    ...args,
+  });
 }
 
 function checkTabUrl(url) {
@@ -305,10 +404,16 @@ export function hasValidGoogleTrendsEvidence(result = {}) {
     pageData.metaDescription,
     pageData.text,
   ].filter(Boolean).join("\n");
-  const hasTrendShell = /google trends|explore|趋势/i.test(text);
-  const hasCoreTrendModule = /interest over time|趋势变化|随时间变化/i.test(text);
-  const hasRelatedModule = /related queries|related topics|相关查询|相关主题/i.test(text);
+  const hasTrendShell = /google trends|explore|趋势|тренды google/i.test(text);
+  const hasCoreTrendModule = /interest over time|趋势变化|随时间变化|интерес во времени/i.test(text);
+  const hasRelatedModule = /related queries|related topics|相关查询|相关主题|связанные запросы|связанные темы/i.test(text);
+  const hasExplicitNoData = /not enough data|doesn.?t have enough data|данных недостаточно|недостаточно данных|数据不足/i.test(text);
   const visibleTextLength = String(pageData.visibleText || pageData.text || "").trim().length;
+  // Google Trends charts are rendered dynamically; a captured screenshot is considered
+  // primary evidence when the trend shell is present, even if DOM text is thin.
+  const hasScreenshotEvidence = Boolean(result?.screenshotRef || result?.screenshotCaptured);
+  if (hasExplicitNoData) return false;
+  if (hasTrendShell && hasScreenshotEvidence) return true;
   return hasTrendShell && ((hasCoreTrendModule && hasRelatedModule) || visibleTextLength >= 320);
 }
 
@@ -322,20 +427,29 @@ function getGoogleTrendsEvidenceState(result = {}) {
     pageData.text,
   ].filter(Boolean).join("\n");
   const visibleTextLength = String(pageData.visibleText || pageData.text || "").trim().length;
-  const hasTrendShell = /google trends|explore|趋势/i.test(text);
-  const hasCoreTrendModule = /interest over time|趋势变化|随时间变化/i.test(text);
-  const hasRelatedModule = /related queries|related topics|相关查询|相关主题/i.test(text);
+  const hasTrendShell = /google trends|explore|趋势|тренды google/i.test(text);
+  const hasCoreTrendModule = /interest over time|趋势变化|随时间变化|интерес во времени/i.test(text);
+  const hasRelatedModule = /related queries|related topics|相关查询|相关主题|связанные запросы|связанные темы/i.test(text);
+  const hasExplicitNoData = /not enough data|doesn.?t have enough data|данных недостаточно|недостаточно данных|数据不足/i.test(text);
+  const hasScreenshotEvidence = Boolean(result?.screenshotRef || result?.screenshotCaptured);
+  const coreModulesReady = hasCoreTrendModule && hasRelatedModule;
   return {
     hasTrendShell,
     hasCoreTrendModule,
     hasRelatedModule,
+    hasExplicitNoData,
+    hasScreenshotEvidence,
     visibleTextLength,
     stableEnough: hasValidGoogleTrendsEvidence(result),
-    readiness: hasCoreTrendModule && hasRelatedModule
+    readiness: hasExplicitNoData
+      ? "loaded_but_not_enough_data"
+      : coreModulesReady
       ? "core_modules_visible"
-      : hasTrendShell
-        ? "trend_shell_visible"
-        : "not_trends_ready",
+      : hasTrendShell && hasScreenshotEvidence
+        ? "trend_shell_with_screenshot"
+        : hasTrendShell
+          ? "trend_shell_visible"
+          : "not_trends_ready",
   };
 }
 
@@ -353,7 +467,9 @@ function withSearchEvidenceStatus(payload, engine) {
     evidenceStatus: evidenceOk ? "valid" : "invalid_or_blocked",
     message: evidenceOk
       ? (payload.message || "Valid Google Trends RU evidence captured.")
-      : "Google Trends RU 页面只看到壳页或模块未稳定加载，不能作为趋势/季节性结论证据。请等待核心模块、截图后重试，或降级为待验证假设。",
+      : trendsEvidenceState.hasExplicitNoData
+        ? "Google Trends RU 页面已加载，但当前关键词数据不足。需要退宽语义层级或切换俄语同义词，达到恢复上限后再降级为待验证假设。"
+        : "Google Trends RU 页面只看到壳页或模块未稳定加载，不能作为趋势/季节性结论证据。请等待核心模块、截图后重试，或降级为待验证假设。",
   };
 }
 
@@ -1183,6 +1299,15 @@ async function visualClickImageSearchSubmit(tabId) {
 }
 
 export const tools = {
+  get_market_rates: async () => {
+    return await getRubCnyMarketRate();
+  },
+
+  get_logistics_cost_profile: async (args = {}) => {
+    const rate = parsePositiveNumber(args.cnyToRub || args.cny_to_rub, 0);
+    return await getStoredLogisticsCostProfile({ ...(args || {}), cnyToRub: rate });
+  },
+
   read_current_page: async (args = {}) => {
     const tab = await getSourceOrCurrentTab(args.__sourceTabId);
     if (!tab) throw new Error("No active tab found");
@@ -1973,22 +2098,25 @@ ${JSON.stringify(readable.map((item, index) => ({
     };
     
     let targetQuery = query;
-    const isForeignPlatform = ["amazon", "etsy", "google", "google_ru", "google_trends", "bing", "yandex", "ozon"].includes(normalizedEngine);
+    const isForeignPlatform = ["amazon", "etsy", "google", "google_ru", "google_trends", "bing", "yandex", "ozon", "vk_posts", "tgstat", "dzen", "yandex_news"].includes(normalizedEngine);
     const hasChinese = /[\u4e00-\u9fa5]/.test(query);
+    const hasCyrillic = /[\u0400-\u04ff]/.test(query);
+    const isRussianSearchEngine = ["google_ru", "google_trends", "yandex", "ozon", "vk_posts", "tgstat", "dzen", "yandex_news"].includes(normalizedEngine);
+    const shouldLocalizeQuery = hasChinese || (isRussianSearchEngine && !hasCyrillic);
 
-    if (isForeignPlatform && (hasChinese || normalizedEngine === "etsy" || normalizedEngine === "amazon" || normalizedEngine === "yandex" || normalizedEngine === "ozon" || normalizedEngine === "google_trends" || normalizedEngine === "google_ru")) {
+    if (isForeignPlatform && shouldLocalizeQuery) {
       try {
         console.log(`Localizing query "${query}" for ${engine}...`);
         const messages = [
           {
             role: "system",
-            content: "You are a cross-border e-commerce local search optimization expert. Your task is to translate and optimize search queries into the most native, high-frequency, and precise keywords used by local shoppers on that platform."
+            content: "You translate cross-border ecommerce search queries into native shopper language. Preserve the original semantic breadth and modifiers; do not silently broaden or narrow the research question."
           },
           {
             role: "user",
             content: `The user wants to search for "${query}" on the ${normalizedEngine} platform.
-Please brainstorm the top 3 most common local search terms used by shoppers on this platform for this product category.
-Output ONLY the single best, highest-volume local search term (in English or the platform's local language).
+Translate it into one natural shopper query at the same semantic level for that platform.
+Output ONLY the translated query in the platform's local language.
 Do NOT include any quotation marks, punctuation, explanations, or introductory text. Output the raw term directly.`
           }
         ];
@@ -2005,7 +2133,7 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
     const engines = {
       google: `https://www.google.com/search?q=${encodeURIComponent(targetQuery)}`,
       google_ru: `https://www.google.com/search?q=${encodeURIComponent(targetQuery)}&hl=ru&gl=ru`,
-      google_trends: `https://trends.google.com/trends/explore?date=today%2012-m&geo=RU&q=${encodeURIComponent(targetQuery)}`,
+      google_trends: `https://trends.google.com/trends/explore?date=${encodeURIComponent(String(args.timeframe || "today 12-m"))}&geo=RU&q=${encodeURIComponent(targetQuery)}`,
       bing: `https://www.bing.com/search?q=${encodeURIComponent(targetQuery)}`,
       amazon: `https://www.amazon.com/s?k=${encodeURIComponent(targetQuery)}`,
       etsy: `https://www.etsy.com/search?q=${encodeURIComponent(targetQuery)}`,
@@ -2014,15 +2142,27 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
       taobao: `https://s.taobao.com/search?q=${encodeURIComponent(targetQuery)}&_input_charset=utf-8`,
       jd: `https://search.jd.com/Search?keyword=${encodeURIComponent(targetQuery)}&enc=utf-8`,
       pinduoduo: `https://mobile.yangkeduo.com/search_result.html?search_key=${encodeURIComponent(targetQuery)}`,
+      vk_posts: `https://vk.com/search?c%5Bsection%5D=statuses&c%5Bq%5D=${encodeURIComponent(targetQuery)}`,
+      tgstat: `https://tgstat.ru/posts?q=${encodeURIComponent(targetQuery)}`,
+      dzen: `https://dzen.ru/search?q=${encodeURIComponent(targetQuery)}`,
+      yandex_news: `https://news.yandex.ru/yandsearch?text=${encodeURIComponent(targetQuery)}`,
     };
     const searchActionLabel = normalizedEngine === "google_trends"
       ? "Google Trends RU 趋势图取证"
-      : normalizedEngine === "google" || normalizedEngine === "google_ru"
-        ? "Google 搜索结果取证"
-        : normalizedEngine === "yandex"
-          ? "Yandex.ru 搜索结果取证"
-          : "浏览器搜索结果取证";
-    const shouldAutoCloseSearchTab = ["google", "google_ru", "google_trends", "bing", "yandex"].includes(normalizedEngine);
+      : normalizedEngine === "vk_posts"
+        ? "VKontakte 社媒舆情取证"
+        : normalizedEngine === "tgstat"
+          ? "Telegram 帖子种草取证"
+          : normalizedEngine === "dzen"
+            ? "Dzen 博客评测取证"
+            : normalizedEngine === "yandex_news"
+              ? "Yandex.News 新闻舆情取证"
+              : ["google", "google_ru"].includes(normalizedEngine)
+                ? "Google 搜索结果取证"
+                : normalizedEngine === "yandex"
+                  ? "Yandex.ru 搜索结果取证"
+                  : "浏览器搜索结果取证";
+    const shouldAutoCloseSearchTab = ["google", "google_ru", "google_trends", "bing", "yandex", "vk_posts", "tgstat", "dzen", "yandex_news"].includes(normalizedEngine);
     const attachSearchScreenshotArtifact = async (payload, tabId) => {
       if (!shouldAutoCloseSearchTab || payload.screenshotRef || payload.screenshotCaptured) return payload;
       try {
@@ -2040,13 +2180,19 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
           },
           ttlMs: 24 * 60 * 60 * 1000,
         });
-        return {
+        const withScreenshot = {
           ...payload,
           screenshotCaptured: true,
           screenshotRef: artifact.ref,
           screenshotCaptureMode: screenshot.captureMode || "captureVisibleTab_viewport",
           artifactStore: "indexeddb_blob_with_memory_fallback",
         };
+        // For Google Trends, re-evaluate evidence now that a screenshot is available.
+        // Charts are rendered dynamically; the screenshot is the primary visual evidence.
+        if (normalizedEngine === "google_trends") {
+          return withSearchEvidenceStatus(withScreenshot, normalizedEngine);
+        }
+        return withScreenshot;
       } catch (err) {
         emitSearchProgress("search_screenshot_failed", `${searchActionLabel} 截图保存失败：${err.message}`, { tabId, searchUrl: payload.searchUrl });
         return { ...payload, screenshotCaptured: false, screenshotError: err.message };
@@ -2135,6 +2281,8 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
           tabId: newTab.id,
           searchUrl,
           queryUsed: targetQuery,
+          requestedQuery: query,
+          queryLocalized: targetQuery !== query,
           pageData: ready.pageData || {},
           loadState: ready.readyReason,
           loadAttempts: ready.attempts,
@@ -2452,21 +2600,10 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
   },
 
   close_tab: async (args) => {
-    const { tabId, workflowId = "default", __sourceTabId = null, __workflowSkillId = "" } = args;
+    const { tabId, workflowId = "default", __sourceTabId = null } = args;
     if (!tabId) throw new Error("tabId is required");
     if (isProtectedTabId(tabId, [__sourceTabId])) {
       return { ok: false, protectedSourceTab: true, message: `Refused to close source tab ${tabId}.` };
-    }
-    const targetUrl = await getTabUrlQuietly(tabId);
-    if (String(__workflowSkillId || "").includes("ozon_platform_trends") && /(^|\.)ozon\.ru/i.test(targetUrl)) {
-      restoreSourceTabFocusBounded(__sourceTabId).catch(() => {});
-      return {
-        ok: false,
-        protectedOzonTrendTab: true,
-        message: `Refused to close Ozon page ${tabId} during platform trends workflow.`,
-        tabId,
-        url: targetUrl,
-      };
     }
     await closeOwnedTab(workflowId, parseInt(tabId));
     restoreSourceTabFocusBounded(__sourceTabId).catch(() => {});
