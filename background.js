@@ -12,6 +12,7 @@ import { upsertGrowthCaseFromResult } from './modules/growthCaseStore.js';
 import { getArtifactDataUrl } from './modules/artifactStore.js';
 import { getLocal, getLocalSafe, setLocal } from './modules/storageLocal.js';
 import { workflowEngine } from './modules/workflowEngine.js';
+import { openExtensionSidePanel } from './modules/sidePanelCompat.js';
 import {
   acquireWorkflowLease,
   appendWorkflowEvent,
@@ -40,7 +41,9 @@ setInterval(() => {
 
 // ── Open side panel when toolbar icon is clicked ──
 chrome.action.onClicked.addListener((tab) => {
-  chrome.sidePanel.open({ tabId: tab.id });
+  openExtensionSidePanel(chrome, tab).catch((error) => {
+    console.error("Could not open extension interface:", error);
+  });
 });
 
 // ── Helper Utilities ──
