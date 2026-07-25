@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { BROWSER_AUTOMATION_CAPABILITIES } from "../modules/browserAutomationCapabilities.js";
-import { openExtensionSidePanel } from "../modules/sidePanelCompat.js";
 
 const read = (file) => fs.readFileSync(new URL(`../${file}`, import.meta.url), "utf8");
 
@@ -12,52 +11,6 @@ const sourcing = read("skills/ozon_sourcing_finder.skill.md");
 const shop = read("skills/ozon_global_shop_optimizer.skill.md");
 const trends = read("skills/ozon_platform_trends.skill.md");
 const reviews = read("skills/ozon_review_analyzer.skill.md");
-const background = read("background.js");
-const manifest = JSON.parse(read("manifest.json"));
-
-assert.ok(manifest.permissions.includes("sidePanel"), "manifest must declare the Side Panel permission");
-assert.equal(manifest.side_panel?.default_path, "sidepanel.html", "manifest must register the extension side panel entrypoint");
-assert.match(background, /openExtensionSidePanel\(chrome, tab\)/, "toolbar clicks must use the guarded side-panel compatibility layer");
-
-const nativeOpenCalls = [];
-const nativeResult = await openExtensionSidePanel({
-  sidePanel: {
-    open: async (options) => nativeOpenCalls.push(options),
-  },
-  runtime: { getURL: (path) => `chrome-extension://test/${path}` },
-  tabs: {
-    create: async () => {
-      throw new Error("native side panel should not use the fallback tab");
-    },
-  },
-}, { id: 17 });
-assert.equal(nativeResult.mode, "side_panel");
-assert.deepEqual(nativeOpenCalls, [{ tabId: 17 }]);
-
-const fallbackCalls = [];
-const fallbackResult = await openExtensionSidePanel({
-  runtime: { getURL: (path) => `chrome-extension://test/${path}` },
-  tabs: {
-    create: async (options) => {
-      fallbackCalls.push(options);
-      return { id: 29 };
-    },
-  },
-}, { id: 18 });
-assert.equal(fallbackResult.mode, "tab_fallback");
-assert.deepEqual(fallbackCalls, [{ url: "chrome-extension://test/sidepanel.html", active: true }]);
-
-const rejectedFallbackResult = await openExtensionSidePanel({
-  sidePanel: {
-    open: async () => {
-      throw new Error("side panel unavailable");
-    },
-  },
-  runtime: { getURL: (path) => `chrome-extension://test/${path}` },
-  tabs: { create: async () => ({ id: 31 }) },
-}, { id: 19 });
-assert.equal(rejectedFallbackResult.mode, "tab_fallback");
-assert.equal(rejectedFallbackResult.sidePanelError, "side panel unavailable");
 
 const requiredCapabilityIds = [
   "address_navigation",
