@@ -4,7 +4,22 @@ Ozon Growth Agent 是面向 Ozon 卖家的开源 AI 增长工作流 Chrome 插�
 
 核心原则：AI 先围绕真实业务环节产出诊断、证据、任务和报告；运营人员再在关键节点确认、执行、复盘，而不是每次从一句空泛的“帮我分析店铺”开始。
 
-## 本次重大更新
+## v1.3.0 重大更新
+
+`v1.3.0` 聚焦平台趋势智能、外部信源、证据可用性和 LLM Provider 稳定性，适合需要在俄罗斯及独联体市场做 Ozon 选品/趋势侦察的小微卖家使用。
+
+- 平台趋势外部信源扩展：新增 Yandex Wordstat、Wildberries、Avito、Yandex Market、MegaMarket、CBR、Rosstat、AKIT、Yakov Partners 等公开信源入口，用于把“用户问题”先撒网成俄语候选词，再聚焦成可验证机会。
+- 问题到关键词漏斗：平台趋势报告必须输出 `query_funnel`，保留原始问题、意图维度、6-12 个俄语候选、3-5 个轻量验证词、2-4 个聚焦词和查询调整记录。
+- Google Trends 数据不足前置降级：已加载但没有足够数据的趋势页不会被当作有效趋势证据；插件会先执行退宽语义/同义词小循环，仍不足时写入 `blocking_gaps`。
+- 父级 proxy 限分：`parent_proxy` / `adjacent_proxy` 只能说明大方向或相邻需求，不能直接证明细分商品增长；这类代理词的 `future_signal` 最高只能为 1。
+- 证据可用性判定升级：页面打开不再等于业务证据可用。登录墙、验证码、壳页、无数据页会被标为“阻断 / 数据不足 / 待复核”，不会在 PDF 附录里误显示为“可用”。
+- 外部信源计划与宏观边界展示：趋势报告和 PDF 会显式展示 `external_source_plan` 与 `macro_context`。宏观/行业资料只能解释价格敏感、汇率/通胀、履约和品类背景，不能单独证明某个 SKU 或商品机会可卖。
+- 报告中心/PDF 证据附录升级：证据来源使用业务可读标签，例如“Yandex Wordstat 搜索需求”“Wildberries 平台交叉验证”“俄罗斯宏观背景”；搜索页 URL 会保留关键查询参数，便于复盘。
+- Gemini Provider 支持：新增 Google Gemini 供应商，直连 Gemini Interactions API，并支持内置 Google Search 来源回传；Google Search 不会冒充 Google Trends。
+- 自定义 API Endpoint 优先级：当用户填写自定义 API endpoint 时，插件优先使用该 endpoint；LLM Provider 只在 endpoint 为空时决定官方请求地址。
+- 报告清洗前移：报告中心和 PDF 会过滤内部技术黑话或工具名，尽量以通俗的商业/供应链分析术语呈现。
+
+## 历史重大更新
 
 本次版本不是一次 UI 微调，而是一次从“传统插件”向“增长工作流操作系统”迁移的产品级升级，核心变化如下：
 
@@ -133,6 +148,10 @@ npm run test:workflow
 npm run test:store-diagnosis
 npm run test:etsy-parity
 npm run test:sourcing
+npm run test:trend-query
+npm run test:research-scope
+npm run test:evidence-quality
+npm run test:gemini
 npm run test:browser-capabilities
 npm run test:evidence-bundle
 npm run test:storage-schema
@@ -146,6 +165,10 @@ npm run lint
 如果你需要验证这次重大更新涉及的关键能力，建议优先执行：
 
 - `npm run test:business`
+- `npm run test:trend-query`
+- `npm run test:research-scope`
+- `npm run test:evidence-quality`
+- `npm run test:gemini`
 - `npm run test:workflow-engine`
 - `npm run test:store-diagnosis`
 - `npm run test:browser-capabilities`
