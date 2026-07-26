@@ -8,11 +8,18 @@
 - 平台趋势必须通过公开 Ozon 页面、Ozon 搜索/热卖榜、Yandex Wordstat、Yandex 搜索、Google RU、Google Trends RU、Wildberries/Avito/Yandex Market 交叉验证、社媒/内容页和截图证据获取；不能把自营店铺 API 数据写成平台大盘数据。
 - 俄罗斯宏观/行业资料（例如 Bank of Russia/CBR、Rosstat、AKIT、Data Insight、Yakov and Partners）只能作为 `macro_context`，用于解释价格敏感、汇率/通胀、平台化、电商结构、履约与品类大方向；不能单独证明某个 SKU、关键词或商品机会可卖。
 - Search Grid 只能代表本轮可见样本，不能代表全平台完整商品数、完整价格分布或真实销量。
+- Ozon 专题/频道页（例如 `/highlight/`、中国商品专题页、季节活动页）只能先证明该频道当前可见曝光和平台运营选品口径。没有额外 Ozon 搜索页、竞品详情页或外部信源补证时，不得把频道页信号写成 Ozon 全站趋势、全平台销量增长或俄罗斯全市场需求增长。
 - 平台趋势分析必须叠加【中小微/个体卖家不卖原则】：高资金占用、超大超重易碎、EAC/TR CU 强制认证、高退货/尺码敏感、IP/品牌侵权、Ozon 禁限售、本地易购普通标品、大品牌价格战红海、短生命周期、需本地安装售后等方向，不得直接包装成"可执行机会"。命中不卖原则的方向只能放入 `rejected_directions` 做简短淘汰记录，不能进入主报告的 `data`、`recommended_opportunities` 或行动项。
 
 ## 强制工作流
 
-1. 调用 `read_current_page`，确认当前是否已有类目、商品、品牌或关键词范围。
+1. 调用 `read_current_page`，确认当前是否已有类目、商品、品牌、关键词或专题/频道范围。必须先生成 `trend_scope`：
+   - 首页/空白入口：`scope_type="homepage"` 或 `global_discovery`，可做全站公开趋势发现，但仍需补 Ozon/外部证据。
+   - 专题/频道页：`scope_type="channel_page"`，例如中国商品专题页、活动页、季节专题页；只能先输出频道页机会扫描。
+   - 类目页：`scope_type="category_page"`，只能围绕当前类目判断。
+   - 搜索页：`scope_type="search_results"`，只能围绕当前关键词判断。
+   - 商品/店铺页：分别写 `product_page` / `store_page`，不得冒充平台大盘。
+   `trend_scope` 必须写 `scope_name`、`entry_url`、`scope_boundary`、`allowed_conclusions`、`forbidden_conclusions`。
 2. 先建立 `query_funnel`，把用户问题拆成需求语义、商品形态、使用场景、文化/产地修饰、节日/年份窗口等维度；生成 6-12 个俄语候选词，覆盖以下词族：
    - 需求头词：买家会直接搜索的宽泛需求词或同义词，例如“护身符/幸运物/守护符”是不同俄语词族，不能过早合并成一个长尾词。
    - 品类词：文化主题或解决方案，例如风水、生肖、祈福、招财。
@@ -20,9 +27,15 @@
    - 场景/未来词：礼物、新年、生肖年、钱包、家居等购买场景；年份和产地只能作为修饰词，不能成为唯一入口。
 3. 撒网阶段不要对 6-12 个词全部做深度搜索。先用 Ozon、Yandex Wordstat/Yandex 搜索和 Wildberries/Avito/Yandex Market 的公开结果对 3-5 个代表词做轻量验证，再按以下可解释评分聚焦 2-4 个词：Ozon 可见商品/评价关注信号 0-3、俄罗斯跨站覆盖 0-2、有效趋势或近期事件信号 0-2（包含：周期时令0.5分，社媒舆情与种草度1分，新闻政策事件驱动0.5分）、小微卖家适配 0-3。总分只是本轮研究排序量表，不得写成平台搜索量或市场份额。未来信号必须声明 `as_of_date` 和未来 3/6/12 个月观察窗口；已经结束的生肖年、节日或季节峰值不能计入未来趋势分。
 4. 如果 `research_scope.auto_discovery_required=true`，不要要求用户先输入关键词。必须结合当前页面公开线索、Ozon 首页推荐、可见热词、排行、类目入口、首页商品卡和 Yandex Wordstat / Yandex 搜索 / Google RU / Wildberries 公开资料生成 6-10 个跨品类候选方向。候选池优先轻小件、低认证、低退货、可差异化、适合小批测试的商品方向，不要只选首页最显眼的大促红海品类。
-5. 在深度搜索前先执行不卖原则初筛。命中强制认证、超大超重、尺码高退货、侵权、禁限售、本地安装售后或明显价格战的方向写入 `rejected_directions` 后停止深挖；从剩余候选中选择至少 2 个可卖方向进入下一步。如果第一批全部淘汰，继续扩展候选池，不能用“全部不建议卖”结束正常可访问的趋势任务。
-6. 调用 `search_in_browser`，使用 `engine="ozon"` 获取真实 Ozon 搜索/类目/热卖结果，记录价格、评价、标题词、商品类别和可见店铺链接。
-7. 需要趋势、季节性或前瞻性判断时，调用 `search_in_browser` 获取站外证据：
+5. 如果 `research_scope.entry_page_type="ozon_channel"` 或 `research_scope.channel_context` 存在，必须执行频道页趋势流程：
+   - 输出 `trend_context_type="channel_trend"`，`trend_scope.scope_type="channel_page"`。
+   - 先从频道页可见商品中拆出 `channel_structure.visible_product_clusters`，至少 2 个商品簇，每个簇写 examples、trend_hypothesis、risk。
+   - 频道页报告的 `channel_boundary` 必须说明“频道页可见曝光不代表全站销量/全平台趋势”。
+   - 从频道页商品簇中筛出 2-4 个轻小件、低认证、可差异化方向继续验证；如果只拿到当前频道页证据，报告状态通常为 `partial`。
+   - 频道页不能跳过商品层级、价格阶梯和人群矩阵；否则报告会显得像商品摘录而不是趋势分析。
+6. 在深度搜索前先执行不卖原则初筛。命中强制认证、超大超重、尺码高退货、侵权、禁限售、本地安装售后或明显价格战的方向写入 `rejected_directions` 后停止深挖；从剩余候选中选择至少 2 个可卖方向进入下一步。如果第一批全部淘汰，继续扩展候选池，不能用“全部不建议卖”结束正常可访问的趋势任务。
+7. 调用 `search_in_browser`，使用 `engine="ozon"` 获取真实 Ozon 搜索/类目/热卖结果，记录价格、评价、标题词、商品类别和可见店铺链接。
+8. 需要趋势、季节性或前瞻性判断时，调用 `search_in_browser` 获取站外证据：
    - 搜索需求与关键词撒网：优先获取 `engine="yandex_wordstat"`；Wordstat 只能证明 Yandex 搜索需求和词族热度，不能代表 Ozon 真实销量。
    - 历史周期与季节趋势：获取 `engine="google_trends"`（可传入 `timeframe="today 5-y"` 获取 5 年 YoY 趋势）、`engine="yandex"` 或 `engine="google_ru"` 页面。
    - 交易平台交叉验证：获取 `engine="wildberries"`、`engine="yandex_market"`、必要时 `engine="avito"` 或 `engine="megamarket"`。Wildberries/Yandex Market 用于价格带、评价壁垒、规格和红海程度；Avito 用于本地二手、维修、替换和线下易购需求。它们不能替代 Ozon 站内证据。
@@ -31,16 +44,23 @@
    - 宏观和行业背景：仅在报告需要解释俄罗斯价格敏感、汇率/通胀、平台化、电商结构、履约或大类增长背景时，获取 `engine="cbr"`、`engine="rosstat"`、`engine="akit"`、`engine="data_insight"` 或 `engine="yakov_partners"`。宏观结论必须写入 `macro_context`，不得进入单品 `demand_signal=observed` 的直接证据链。
    - 自主扩展信源：当固定信源不足以解释文化型、礼品型、内容型、评论型或本地语境需求时，可以通过 `google_ru` / `yandex` 先发现新的俄语垂直来源，再用最接近的 engine（如 `otzovik`、`irecommend`、`ru_forum`、`vk_posts`、`tgstat`、`dzen`、`data_insight`）采集。自主发现来源必须写入 `adaptive_source_discovery`，发现来源不等于趋势已验证，必须有页面证据后才能写 `used`。
    上述页面均需保存截图或 DOM 文本作为事实证据。没有真实凭证时只能输出待验证假设。
-8. Google Trends 页面已加载但显示数据不足时，必须在任务执行中运行有上限的小循环，不能先写报告再等待 Critic：
+9. Google Trends 页面已加载但显示数据不足时，必须在任务执行中运行有上限的小循环，不能先写报告再等待 Critic：
    - 第 1 次不足：退宽一个语义层级，删除产地、年份、用途等组合修饰，使用 1-2 个词的俄语头词/品类词。
    - 第 2 次不足：切换到 Ozon/Yandex 已发现的另一个俄语同义词族或相邻需求表达。
    - 第 3 次仍不足：停止继续搜索，把 Google Trends 标记为 `blocked`，季节性/未来趋势降级为假设并写入 `blocking_gaps`；不得重复旧词或继续盲搜。
    - 任一改写词取得有效数据后，以成功查询为准，之前失败的查询只保留在 `query_funnel.refinement_log`，不能让旧失败污染有效证据。
    - 退宽后的查询必须记录 `scope_relation`：`exact` 表示与用户问题同范围，`parent_proxy` 表示只验证父级需求，`adjacent_proxy` 表示相邻需求。父级/相邻代理有数据时，不得写成原始细分品类已经增长；必须用 Ozon/Yandex 的细分证据建立范围桥接，并在 limitation 中说明。
-9. 对至少 2 个高排名商品或店铺打开公开详情页，分别读取页面文本并截图；Search Grid 不能替代商品详情页。记录商品/店铺 URL、可见排序、价格、促销、评价、SKU/类目和画廊观察，不能声称获得竞品后台数据。
-10. 需要物流结论时，单独搜索 Ozon FBS/FBO、跨境配送、俄罗斯本地配送或承运商信息，并在证据中记录查询日期；禁止凭模型常识输出固定工作日。
-11. 执行运营时间倒推规划：评估机会时，主动结合国内发货至俄罗斯上架的前置缓冲期（建议预留 6-8 周，即 40-50 天）。若目标季节或促销大促节点（如开学季、11.11 大促）已经爆发或临近，应明确揭示卖家由于备货时间不足导致错过旺季的风险，并建议布局下一波段（如从秋季预热直接倒推规划冬装或新年备货）。
-12. 输出平台机会，不要直接把它写成当前店铺已经应该采购或发布的商品。涉及上架、采购、儿童、电器、电池、食品接触、化妆品、EAC/TR CU 或 IP 时，下一步必须进入合规审查和独立验证。
+10. 对至少 2 个高排名商品或店铺打开公开详情页，分别读取页面文本并截图；Search Grid 不能替代商品详情页。记录商品/店铺 URL、可见排序、价格、促销、评价、SKU/类目和画廊观察，不能声称获得竞品后台数据。
+11. 需要物流结论时，单独搜索 Ozon FBS/FBO、跨境配送、俄罗斯本地配送或承运商信息，并在证据中记录查询日期；禁止凭模型常识输出固定工作日。
+12. 执行运营时间倒推规划：评估机会时，主动结合国内发货至俄罗斯上架的前置缓冲期（建议预留 6-8 周，即 40-50 天）。若目标季节或促销大促节点（如开学季、11.11 大促）已经爆发或临近，应明确揭示卖家由于备货时间不足导致错过旺季的风险，并建议布局下一波段（如从秋季预热直接倒推规划冬装或新年备货）。
+13. 输出平台机会，不要直接把它写成当前店铺已经应该采购或发布的商品。涉及上架、采购、儿童、电器、电池、食品接触、化妆品、EAC/TR CU 或 IP 时，下一步必须进入合规审查和独立验证。
+
+## 商品层级、价格阶梯与人群矩阵
+
+- 最终报告必须输出 `product_level_map`。每个推荐机会至少拆 2 个 `product_forms`，区分基础款、差异化款、组合款、场景款或高风险款。每个形态必须写 `form`、`buyer_segment`、`price_tier`、`trend_logic`、`seller_action`。
+- 最终报告必须输出 `price_ladder`，至少 2 层。不要只写一个商品价格；必须说明不同价格层的 `visible_price_range`、`buyer_mindset`、`competition_risk`、`seller_fit`。如果当前页面显示人民币、美元或其他币种，必须写明“待补 Ozon 卢布价格和毛利”，不能直接推导 RUB 利润。
+- 最终报告必须输出 `audience_price_matrix`，至少 2 类人群/场景。每项必须写 `audience`、`scenario`、`pain_point`、`price_tier`、`product_cut`、`evidence_level`、`next_validation`。
+- 对频道页入口，`product_level_map` 和 `audience_price_matrix` 应优先围绕频道页可见商品簇展开，例如 dača/阳台/露营、返校/办公/宿舍、礼品/家居等场景。没有评论或外部证据时，场景洞察只能写 `assumption` 或频道页可见信号，不得写成已验证全站趋势。
 
 ## 证据阶段完成条件
 
@@ -63,6 +83,8 @@
 ## 证据硬门槛
 
 - 每个 `data` 项都必须有 `sample_count`、`coverage`、`limitation`；价格只能描述可见公开样本，不能写“完整市场”“全平台价格分布”。
+- 最终报告必须有 `trend_scope`；频道/专题页必须有 `channel_structure`。频道页证据只能支持“频道页可见信号”，不能单独支持“全站趋势已验证”。
+- 最终报告必须有 `product_level_map`、`price_ladder`、`audience_price_matrix`，避免只按商品总量或单个页面价格做结论。
 - 每个 `data` 项都必须有完整 `evidence_ledger`。账本必须写 `source_type`、`source_ref`、`observed_value`、`used_for`、`confidence`、`limitation`。
 - 允许的外部需求与市场证据类型包括：`yandex_wordstat`、`wildberries_search`、`avito_search`、`yandex_market`、`marketplace_crosscheck`、`social_signal`、`ru_news`、`macro_context`、`industry_report`。其中 `social_signal`、`ru_news`、`macro_context` 和 `industry_report` 只能解释买家语言、内容语境、环境和品类大方向，不能单独支撑 `recommended_opportunities` 的可卖证明。
 - 最终报告必须显式给出 `qualitative_market_context`。定性市场资料可用于买家语言、使用场景、文化接受度、内容主题、异议模式和主图/标题表达，但不能单独证明某个 SKU 或商品机会可卖。
@@ -79,13 +101,14 @@
 ## 工业级交付状态
 
 - 最终报告必须显式给出 `report_status`：`completed`、`partial`、`blocked` 或 `assumption_only`。
-- 最终报告必须显式给出 `research_scope` 和 `trend_context_type`。`trend_context_type` 只能是 `store_trend_fit`、`platform_trend`、`category_opportunity`、`product_opportunity`、`competitor_learning`、`sourcing_validation` 或 `unknown`。
+- 最终报告必须显式给出 `research_scope`、`trend_scope` 和 `trend_context_type`。`trend_context_type` 只能是 `store_trend_fit`、`platform_trend`、`channel_trend`、`category_opportunity`、`product_opportunity`、`competitor_learning`、`sourcing_validation` 或 `unknown`。
 - 最终报告必须显式给出 `external_source_plan`，按 `platform_trade`、`search_demand`、`cross_marketplace`、`social_content`、`macro_context` 分层说明本轮使用/未使用哪些信源、用途和局限。
 - `external_source_plan.layers.*.status` 必须与本轮真实取证一致：只有调用对应公开页面/搜索/趋势/跨平台/宏观来源并留下可用页面证据时，才能写 `used`；如果页面访问、登录墙、地区限制、数据不足或趋势壳页导致未取得可用信息，必须写 `blocked` 并在 `blocking_gaps` 中说明具体信源、阻断原因和恢复动作；没有尝试的信源只能写 `not_used`。禁止把“计划要查/理论上应查”的信源写成已使用。
 - 最终报告必须显式给出 `macro_context`。如果未取到 CBR/Rosstat/行业报告，必须写 `status="assumption"` 或 `status="blocked"` 并说明不能单独支撑 SKU 推荐；如果取到宏观来源，必须写明它只影响价格带、备货窗口、履约和风险判断，不能直接证明单品可卖。
 - 不同入口必须输出不同分析边界：
   - `store_trend_fit`：从自营店铺或店铺体检案件出发，必须额外判断 `store_fit`，说明趋势是否适合当前店铺定位、价格带、商品矩阵和履约能力。
   - `platform_trend`：从 Ozon 首页或平台入口出发，只能输出公开需求窗口；没有店铺适配证据时不得直接给当前店铺采购/上架建议。
+  - `channel_trend`：从专题/频道页出发，必须输出频道结构、商品层级、价格阶梯、人群矩阵和“频道页不代表全站”的边界；没有额外搜索/详情/外部证据时不得写全站趋势。
   - `category_opportunity`：从搜索页/类目页出发，围绕当前关键词、价格带、评价门槛和竞品结构判断。
   - `product_opportunity`：从商品详情页出发，围绕单品机会、评论、合规和寻源路径判断。
   - `competitor_learning`：从竞品页出发，必须标注当前页是竞品参考，不能把它写成自营店铺。
@@ -108,7 +131,22 @@
   "output": {
     "report_status": "completed|partial|blocked|assumption_only",
     "research_scope": {},
-    "trend_context_type": "store_trend_fit|platform_trend|category_opportunity|product_opportunity|competitor_learning|sourcing_validation|unknown",
+    "trend_context_type": "store_trend_fit|platform_trend|channel_trend|category_opportunity|product_opportunity|competitor_learning|sourcing_validation|unknown",
+    "trend_scope": {
+      "scope_type": "homepage|global_discovery|channel_page|category_page|search_results|product_page|store_page|unknown",
+      "scope_name": "本轮入口名称，例如 Ozon 中国商品专题页",
+      "entry_url": "真实入口 URL",
+      "scope_boundary": "本入口可支持和不可外推的结论边界，频道页必须说明不代表全站",
+      "allowed_conclusions": ["本入口允许输出的结论"],
+      "forbidden_conclusions": ["本入口禁止外推的结论"]
+    },
+    "channel_structure": {
+      "visible_theme": "频道/专题页主题；非频道页可写 not_applicable",
+      "visible_product_clusters": [
+        {"cluster": "商品簇", "examples": ["频道页可见商品"], "trend_hypothesis": "频道内机会假设", "risk": "频道内风险和补证需求"}
+      ],
+      "channel_boundary": "频道页可见曝光不代表 Ozon 全站销量或全平台趋势"
+    },
     "platform_signal": {
       "status": "observed|assumption|blocked",
       "summary": "Ozon/Yandex Wordstat/Yandex/Google RU/Google Trends/Wildberries/Avito 公开需求信号",
@@ -175,6 +213,21 @@
         {"from_query": "", "to_query": "", "reason": "broaden|synonym_switch", "scope_relation": "exact|parent_proxy|adjacent_proxy", "result": "usable|not_enough_data"}
       ]
     },
+    "product_level_map": [
+      {
+        "opportunity_id": "T-1",
+        "base_direction": "推荐机会基础方向",
+        "product_forms": [
+          {"form": "基础款|差异化款|组合款|场景款|高风险款", "buyer_segment": "对应买家分层", "price_tier": "low|mid_low|mid|premium", "trend_logic": "为什么这个层级值得或不值得验证", "seller_action": "推荐动作或淘汰动作"}
+        ]
+      }
+    ],
+    "price_ladder": [
+      {"tier": "low|mid_low|mid|premium", "visible_price_range": "可见价格带或待补证说明", "buyer_mindset": "该价格层买家心智", "competition_risk": "low|medium|high|unknown", "seller_fit": "fit|partial_fit|not_fit|unknown"}
+    ],
+    "audience_price_matrix": [
+      {"audience": "人群", "scenario": "使用场景", "pain_point": "痛点", "price_tier": "对应价格层", "product_cut": "商品切口", "evidence_level": "observed|assumption|blocked", "next_validation": ["下一步补证"]}
+    ],
     "overview": "平台趋势概览，明确研究范围、目标市场和证据覆盖",
     "analysis": "Ozon 搜索、Yandex 搜索、Google RU、Google Trends RU、公开竞品页面和视觉证据的分步分析",
     "summary": "趋势结论、证据限制、下一步验证动作",

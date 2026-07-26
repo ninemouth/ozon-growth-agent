@@ -1220,6 +1220,11 @@ function reportTextForValidation(out = {}) {
     out.overview,
     out.analysis,
     out.summary,
+    JSON.stringify(out.trend_scope || {}),
+    JSON.stringify(out.channel_structure || {}),
+    JSON.stringify(out.product_level_map || []),
+    JSON.stringify(out.price_ladder || []),
+    JSON.stringify(out.audience_price_matrix || []),
     JSON.stringify(out.blocking_gaps || []),
     JSON.stringify(out.validated_opportunities || []),
     JSON.stringify(out.assumption_opportunities || []),
@@ -1229,6 +1234,165 @@ function reportTextForValidation(out = {}) {
     JSON.stringify(out.workflow_nodes || []),
     JSON.stringify(out.data || []),
   ].filter(Boolean).join("\n");
+}
+
+function isChannelTrendReport(out = {}, pageContext = {}) {
+  const scope = out.research_scope || {};
+  return String(scope.entry_page_type || "") === "ozon_channel" ||
+    String(out.trend_context_type || "") === "channel_trend" ||
+    String(out.trend_scope?.scope_type || "") === "channel_page" ||
+    /\/highlight\//i.test(String(scope.current_url || pageContext?.url || ""));
+}
+
+function hasUnsafeGlobalTrendClaim(reportText = "") {
+  return String(reportText || "").split(/[。；\n]/).some((sentence) => {
+    if (!/(全站|全平台|全市场|大盘|完整市场)/i.test(sentence)) return false;
+    if (/(不代表|不能|不得|不可|尚未|未能|待验证|局限|边界)/i.test(sentence)) return false;
+    return /(趋势|增长|销量|需求|高增长|爆品|已验证|显示|证明|表明|机会)/i.test(sentence);
+  });
+}
+
+function globalClaimTextForValidation(out = {}) {
+  return [
+    out.overview,
+    out.analysis,
+    out.summary,
+    JSON.stringify(out.platform_signal || {}),
+    JSON.stringify(out.channel_structure || {}),
+    JSON.stringify(out.product_level_map || []),
+    JSON.stringify(out.price_ladder || []),
+    JSON.stringify(out.audience_price_matrix || []),
+    JSON.stringify(out.data || []),
+  ].filter(Boolean).join("\n");
+}
+
+function validateTrendScopeContract(out = {}, _toolHistory = [], pageContext = {}) {
+  const errors = [];
+  const trendScope = out.trend_scope;
+  const allowedScopeTypes = ["global_home", "homepage", "global_discovery", "channel_page", "category_page", "search_results", "product_page", "store_page", "unknown"];
+  if (!trendScope || typeof trendScope !== "object") {
+    errors.push("Ozon 平台趋势报告缺少 trend_scope。必须区分本轮是全站/首页、专题频道页、类目页、搜索页、商品页还是店铺页趋势，不能默认按全站趋势输出。");
+    return errors;
+  }
+  if (!allowedScopeTypes.includes(String(trendScope.scope_type || ""))) {
+    errors.push(`trend_scope.scope_type 必须是 ${allowedScopeTypes.join(" / ")}。`);
+  }
+  ["scope_name", "entry_url", "scope_boundary"].forEach((field) => {
+    if (!trendScope[field]) errors.push(`trend_scope 缺少 ${field}，无法向用户解释趋势范围和证据边界。`);
+  });
+  if (!Array.isArray(trendScope.allowed_conclusions) || trendScope.allowed_conclusions.length === 0) {
+    errors.push("trend_scope.allowed_conclusions 必须列出本入口允许下的结论类型。");
+  }
+  if (!Array.isArray(trendScope.forbidden_conclusions) || trendScope.forbidden_conclusions.length === 0) {
+    errors.push("trend_scope.forbidden_conclusions 必须列出本入口禁止外推的结论类型。");
+  }
+  if (isChannelTrendReport(out, pageContext)) {
+    if (String(trendScope.scope_type || "") !== "channel_page") {
+      errors.push("当前入口是 Ozon 专题/频道页，trend_scope.scope_type 必须写 channel_page。");
+    }
+    if (!/专题|频道|channel|highlight|中国商品|Товары/i.test(String(trendScope.scope_name || trendScope.scope_boundary || ""))) {
+      errors.push("频道页趋势报告的 trend_scope 必须说明具体专题/频道名称，而不是泛写 Ozon 平台趋势。");
+    }
+    if (!/不代表|不能代表|不得代表|不可代表|全站|全平台|全市场/i.test(String(trendScope.scope_boundary || ""))) {
+      errors.push("频道页趋势报告的 trend_scope.scope_boundary 必须明确说明频道页可见样本不代表 Ozon 全站/全平台/全市场趋势。");
+    }
+    if (hasUnsafeGlobalTrendClaim(globalClaimTextForValidation(out))) {
+      errors.push("频道页趋势报告写了全站/全平台/大盘确定性结论；即使补充 Ozon 搜索或外部页面，也必须把结论限定为本轮可见样本和公开信号，不能写成完整全站销量或全市场趋势。");
+    }
+  }
+  return errors;
+}
+
+function validateChannelStructure(out = {}, pageContext = {}) {
+  const errors = [];
+  if (!isChannelTrendReport(out, pageContext)) return errors;
+  const structure = out.channel_structure;
+  if (!structure || typeof structure !== "object") {
+    errors.push("频道页趋势报告缺少 channel_structure。必须拆解专题页主题、可见商品簇、频道内机会和频道边界，避免报告只摘录单个商品。");
+    return errors;
+  }
+  if (!structure.visible_theme) errors.push("channel_structure 缺少 visible_theme，无法说明本频道/专题页的主题。");
+  if (!/不代表|不能代表|不得代表|不可代表|全站|全平台|全市场/i.test(String(structure.channel_boundary || ""))) {
+    errors.push("channel_structure.channel_boundary 必须说明频道页可见曝光不代表全站销量或全平台趋势。");
+  }
+  const clusters = Array.isArray(structure.visible_product_clusters) ? structure.visible_product_clusters : [];
+  if (String(out.report_status || "") !== "blocked" && clusters.length < 2) {
+    errors.push("channel_structure.visible_product_clusters 至少需要 2 个商品簇，用于说明频道页商品结构，而不是只分析单一商品。");
+  }
+  clusters.forEach((cluster, idx) => {
+    ["cluster", "trend_hypothesis", "risk"].forEach((field) => {
+      if (!cluster?.[field]) errors.push(`channel_structure.visible_product_clusters 第 ${idx + 1} 项缺少 ${field}。`);
+    });
+    if (!Array.isArray(cluster?.examples) || cluster.examples.length === 0) {
+      errors.push(`channel_structure.visible_product_clusters 第 ${idx + 1} 项 examples 必须列出频道页可见商品例子。`);
+    }
+  });
+  return errors;
+}
+
+function validateProductLevelMap(out = {}) {
+  const errors = [];
+  const dataItems = Array.isArray(out.data) ? out.data : [];
+  if (String(out.report_status || "") === "blocked" || dataItems.length === 0) return errors;
+  const maps = Array.isArray(out.product_level_map) ? out.product_level_map : [];
+  if (maps.length < Math.min(dataItems.length, 1)) {
+    errors.push("平台趋势报告缺少 product_level_map。每个推荐机会至少要拆商品形态层级，不能只给一个商品名。");
+    return errors;
+  }
+  maps.forEach((map, idx) => {
+    const forms = Array.isArray(map?.product_forms) ? map.product_forms : [];
+    if (!map?.base_direction) errors.push(`product_level_map 第 ${idx + 1} 项缺少 base_direction。`);
+    if (forms.length < 2) errors.push(`product_level_map 第 ${idx + 1} 项至少需要 2 个 product_forms，用于区分基础款、差异化款、组合款或场景款。`);
+    forms.forEach((form, formIdx) => {
+      ["form", "buyer_segment", "price_tier", "trend_logic", "seller_action"].forEach((field) => {
+        if (!form?.[field]) errors.push(`product_level_map 第 ${idx + 1} 项 product_forms 第 ${formIdx + 1} 项缺少 ${field}。`);
+      });
+    });
+  });
+  return errors;
+}
+
+function validatePriceLadder(out = {}) {
+  const errors = [];
+  const dataItems = Array.isArray(out.data) ? out.data : [];
+  if (String(out.report_status || "") === "blocked" || dataItems.length === 0) return errors;
+  const ladders = Array.isArray(out.price_ladder) ? out.price_ladder : [];
+  if (ladders.length < 2) {
+    errors.push("平台趋势报告缺少 price_ladder 或价格阶梯少于 2 层。必须按低价/中低价/中价/高价等层级解释买家心智和竞争风险。");
+    return errors;
+  }
+  ladders.forEach((tier, idx) => {
+    ["tier", "buyer_mindset", "competition_risk", "seller_fit"].forEach((field) => {
+      if (!tier?.[field]) errors.push(`price_ladder 第 ${idx + 1} 层缺少 ${field}。`);
+    });
+    if (!tier?.visible_price_range && !tier?.price_range) {
+      errors.push(`price_ladder 第 ${idx + 1} 层缺少 visible_price_range/price_range，无法解释当前可见价格证据或待补证。`);
+    }
+  });
+  return errors;
+}
+
+function validateAudiencePriceMatrix(out = {}) {
+  const errors = [];
+  const dataItems = Array.isArray(out.data) ? out.data : [];
+  if (String(out.report_status || "") === "blocked" || dataItems.length === 0) return errors;
+  const rows = Array.isArray(out.audience_price_matrix) ? out.audience_price_matrix : [];
+  if (rows.length < 2) {
+    errors.push("平台趋势报告缺少 audience_price_matrix 或少于 2 类人群/场景。必须从人群、场景和价格层拆解趋势，而不是只看商品总量。");
+    return errors;
+  }
+  rows.forEach((row, idx) => {
+    ["audience", "scenario", "pain_point", "price_tier", "product_cut", "evidence_level"].forEach((field) => {
+      if (!row?.[field]) errors.push(`audience_price_matrix 第 ${idx + 1} 项缺少 ${field}。`);
+    });
+    if (!["observed", "assumption", "blocked"].includes(String(row?.evidence_level || ""))) {
+      errors.push(`audience_price_matrix 第 ${idx + 1} 项 evidence_level 必须是 observed / assumption / blocked。`);
+    }
+    if (!Array.isArray(row?.next_validation) || row.next_validation.length === 0) {
+      errors.push(`audience_price_matrix 第 ${idx + 1} 项 next_validation 必须列出下一步补证动作。`);
+    }
+  });
+  return errors;
 }
 
 function hasInvalidGoogleTrendsEvidence(toolHistory = []) {
@@ -1323,9 +1487,9 @@ export function validateOzonPlatformTrendReport(out = {}, toolHistory = [], page
   if (!Array.isArray(out.workflow_nodes) || out.workflow_nodes.length === 0) {
     errors.push("Ozon 平台趋势报告缺少 workflow_nodes。平台趋势结论必须能进入首页增长工作流画布继续推进。");
   }
-  const allowedTrendContexts = ["store_trend_fit", "platform_trend", "category_opportunity", "product_opportunity", "competitor_learning", "sourcing_validation", "unknown"];
+  const allowedTrendContexts = ["store_trend_fit", "platform_trend", "channel_trend", "category_opportunity", "product_opportunity", "competitor_learning", "sourcing_validation", "unknown"];
   if (!allowedTrendContexts.includes(String(out.trend_context_type || ""))) {
-    errors.push("Ozon 平台趋势报告缺少有效 trend_context_type，必须根据当前页面输出 store_trend_fit / platform_trend / category_opportunity / product_opportunity / competitor_learning / sourcing_validation / unknown。");
+    errors.push("Ozon 平台趋势报告缺少有效 trend_context_type，必须根据当前页面输出 store_trend_fit / platform_trend / channel_trend / category_opportunity / product_opportunity / competitor_learning / sourcing_validation / unknown。");
   }
   if (!out.research_scope || typeof out.research_scope !== "object") {
     errors.push("Ozon 平台趋势报告缺少 research_scope，必须声明页面角色、研究范围、置信度和结论边界。");
@@ -1333,6 +1497,8 @@ export function validateOzonPlatformTrendReport(out = {}, toolHistory = [], page
   if (!out.platform_signal || typeof out.platform_signal !== "object") {
     errors.push("Ozon 平台趋势报告缺少 platform_signal，必须区分公开平台需求信号与当前店铺适配。");
   }
+  errors.push(...validateTrendScopeContract(out, toolHistory, pageContext));
+  errors.push(...validateChannelStructure(out, pageContext));
   if (!out.external_source_plan || typeof out.external_source_plan !== "object") {
     errors.push("Ozon 平台趋势报告缺少 external_source_plan，必须声明本轮如何使用 Ozon、Yandex Wordstat、Wildberries/Avito/Yandex Market、社媒/内容和宏观行业信源。");
   } else {
@@ -1474,6 +1640,9 @@ export function validateOzonPlatformTrendReport(out = {}, toolHistory = [], page
   }
 
   const dataItems = Array.isArray(out.data) ? out.data : [];
+  errors.push(...validateProductLevelMap(out));
+  errors.push(...validatePriceLadder(out));
+  errors.push(...validateAudiencePriceMatrix(out));
   const dataOpportunityIds = new Set(dataItems.map((item) => String(item?.opportunity_id || "")).filter(Boolean));
   recommendedIds.forEach((id) => {
     if (!dataOpportunityIds.has(id)) {
@@ -1529,7 +1698,15 @@ export function validateOzonPlatformTrendReport(out = {}, toolHistory = [], page
     if (String(item?.demand_signal || "") === "observed" && !hasDirectPlatformDemandEvidence(ledgerEntries)) {
       errors.push(`平台趋势 data 第 ${idx + 1} 项 (${title}) 的 demand_signal=observed 只能由 Ozon/搜索需求/跨平台/社媒/页面证据支撑；宏观或行业资料只能作为背景，不能单独证明商品机会可卖。`);
     }
-    if (String(item?.demand_signal || "") === "observed" && !hasCommerceOrSearchDemandEvidence(ledgerEntries)) {
+    const isChannelVisibleObserved = isChannelTrendReport(out, pageContext) &&
+      hasAnyLedgerType(ledgerEntries, ["page_dom", "screenshot_visual"]) &&
+      /频道|专题|可见|曝光|不代表|全站|全平台/i.test([
+        item?.evidence,
+        item?.coverage,
+        item?.limitation,
+        item?.competitor_signal,
+      ].filter(Boolean).join(" "));
+    if (String(item?.demand_signal || "") === "observed" && !hasCommerceOrSearchDemandEvidence(ledgerEntries) && !isChannelVisibleObserved) {
       errors.push(`平台趋势 data 第 ${idx + 1} 项 (${title}) 的 demand_signal=observed 不能只靠定性市场资料、社媒、评论、新闻、宏观或行业背景支撑；必须补 Ozon、搜索需求或跨平台交易证据，或降级为 assumption/blocked。`);
     }
     if (/[+-]?\d+\s*%|退货率|复购率|取消订单率|差评率|客服咨询量|14\s*-\s*25|3\s*-\s*7|100\+|1000\+|200€|€200/i.test(itemText) &&
@@ -2327,6 +2504,8 @@ ${highRandomness ? `\n\n## ⚠️ [Anti-Cache] 强制发散与破局指令 (Nonc
 ${((skillId || "").includes("domestic_sourcing_finder") || (skillId || "").includes("ozon_sourcing_finder")) ? `\n\n## 国内供应链寻源运行硬约束\n- 如果目标是非标外观/造型/模具商品且存在 targetImageUrl，优先调用 image_search_1688 或 image_search_taobao。若已配置生图模型、且平台自动框选主体不完整，可先调用 prepare_clean_product_image，并把返回的 image_search_argument.imageUrl 用作图片搜索输入。\n- 非标品一旦启动图片搜索或干净搜图图准备流程，后续 Critic 打回也严禁调用 input_text_and_search 文本框搜索；必须继续用 productCards 候选主图、截图和视觉相似度证据筛选。\n- agentic_web_search 最多调用 1 次，且只用于物流、费率、政策或认证核算；严禁用它寻找 1688/淘宝货源或替代站内图片搜索。\n- 只要输出 financial_ledger 或 margin_rate，必须先调用 get_market_rates 获取 RUB/CNY 汇率快照，并调用 get_logistics_cost_profile 获取运费模型快照；把返回对象分别写入 financial_ledger.rate_snapshot 和 financial_ledger.logistics_profile_snapshot。若工具失败或用户未确认参数，利润率必须降级为待确认，不能写确定性高利润。` : ""}
 
 ${isOzonPlatformTrendsSkill(skillId) ? `\n\n## 平台趋势自动发现与可卖候选规则\n- 如果 research_scope.auto_discovery_required=true，说明用户从 Ozon 首页、空白页或平台入口发起趋势研究但尚不确定关键词；这不是缺陷，不能要求用户先补关键词，也不能直接输出空报告。\n- 你必须先建立 6-10 个不同品类的候选研究范围：读取当前页面可见公开线索、Ozon 首页/公开入口的推荐、热词、排行、类目入口或可见商品卡；再用 Yandex Wordstat、Yandex 搜索、Google RU、Google Trends RU、Wildberries/Avito/Yandex Market 的公开资料交叉验证。候选池应优先轻小件、低认证、低退货、可差异化、适合小批测试的商品方向。\n- 先应用中小微卖家不卖原则做初筛。命中强制认证、超大超重、尺码高退货、侵权、平台禁限售、本地安装售后或明显价格战的方向，只能进入 rejected_directions 简短记录，禁止占用 data、recommended_opportunities 或主结论篇幅。\n- 初筛后至少选出 2 个通过不卖原则的可卖候选继续做 Ozon 与站外证据验证。partial/completed 报告至少要交付 1 个 recommendation_status=recommended 的候选；如果第一批全部淘汰，必须继续扩展候选池，不能用“全部不建议卖”结束正常可访问的趋势任务。\n- 每个候选方向必须说明 seed_source（例如当前页面公开线索、Ozon 首页推荐、Ozon 热词/排行、Yandex Wordstat 词族、Wildberries 同类商品、Google Trends RU related queries）、为什么适合俄罗斯/独联体市场、下一步要用哪个 Ozon 搜索词验证。\n- 自动发现阶段只能输出平台机会窗口，不能写成当前店铺已适合采购或上架。\n- final.output 必须包含 external_source_plan 和 macro_context。宏观/行业背景只能解释价格敏感、汇率通胀、平台化、履约和品类大方向，不能单独证明某个 SKU 或商品机会可卖。` : ""}
+
+${isOzonPlatformTrendsSkill(skillId) ? `\n\n## 入口上下文趋势范围规则\n- final.output 必须包含 trend_scope，明确本轮是 homepage/global_discovery、channel_page、category_page、search_results、product_page 还是 store_page。范围边界必须写清楚 allowed_conclusions 和 forbidden_conclusions。\n- 如果 research_scope.entry_page_type=ozon_channel 或 research_scope.channel_context 存在，trend_context_type 必须写 channel_trend，trend_scope.scope_type 必须写 channel_page。频道/专题页只能证明该频道当前可见曝光和运营选品口径，不能直接写成 Ozon 全站趋势、全平台销量增长或俄罗斯全市场需求增长。\n- 频道/专题页报告必须包含 channel_structure，至少拆出 2 个 visible_product_clusters，并说明 visible_theme、examples、trend_hypothesis、risk 和 channel_boundary。\n- 所有平台趋势报告都必须包含 product_level_map、price_ladder 和 audience_price_matrix。每个推荐机会至少拆 2 个商品形态层级；价格阶梯至少 2 层；人群/场景矩阵至少 2 类人群或场景。\n- product_level_map 用于把商品从“单一商品名”拆成基础款、差异化款、组合款、场景款或高风险款；price_ladder 用于解释不同价格层买家心智、竞争风险和卖家适配；audience_price_matrix 用于解释人群、场景、痛点、价格层和商品切口。\n- 只有单个频道页证据时，report_status 通常应为 partial，data[].demand_signal 可以基于 page_dom/screenshot_visual 写 observed 的“频道页可见信号”，但不能写成全站平台大盘 observed；必须在 limitation、trend_scope 和 channel_structure 中说明边界。` : ""}
 
 ${isOzonPlatformTrendsSkill(skillId) ? `\n\n## 用户问题到关键词的执行漏斗\n- 在第一次市场搜索前，先在内部建立 query_funnel：把用户原问题拆成需求头词、品类词、具体商品词、场景/节日词、文化/产地修饰词，生成 6-12 个俄语候选。\n- 只对 3-5 个代表词做 Ozon/Yandex Wordstat/Yandex/Wildberries 轻量撒网，使用可见商品/评价关注信号、跨站覆盖、有效未来信号、小微卖家适配四项量表聚焦 2-4 个词。评分是本轮排序量表，不是平台搜索量。\n- query_funnel 必须声明 as_of_date 和未来 3/6/12 个月 forecast_horizon；已经结束的节日、生肖或季节窗口不能计入未来趋势分。\n- Google Trends 已加载但数据不足时，必须先退宽语义，再切同义词族，最多 3 个不同查询。运行时会拒绝重复词并在 final 前强制完成小循环。\n- 如果改写词成功，旧失败词只进入 refinement_log，不得污染成功证据；3 个词均不足时停止搜索，在成稿前降级，不能等待 Critic 才发现。\n- 退宽词必须标记 exact / parent_proxy / adjacent_proxy；父级或相邻代理有数据不能直接证明原始细分品类增长。\n- final.output 必须包含完整 query_funnel，包括 user_intent、as_of_date、forecast_horizon、intent_dimensions、discovery_queries、scored_queries、focus_queries、refinement_log。` : ""}
 

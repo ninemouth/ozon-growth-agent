@@ -93,6 +93,22 @@ assert.equal(searchScope.entry_page_type, "ozon_search");
 assert.equal(searchScope.analysis_scope, "platform_trend");
 assert.ok(searchScope.seed_keywords.length > 0);
 
+const channelScope = buildResearchScope({
+  pageContext: {
+    url: "https://www.ozon.ru/highlight/tovary-iz-kitaya-935133/",
+    title: "Товары из Китая - купить Китайские товары в интернет магазине OZON",
+  },
+  userInstruction: "分析这个中国商品专题页趋势",
+  matchedSkills: ["skills/ozon_platform_trends.skill.md"],
+});
+assert.equal(channelScope.entry_page_type, "ozon_channel");
+assert.equal(channelScope.analysis_scope, "platform_trend");
+assert.equal(channelScope.source_page_role, "channel_research");
+assert.equal(channelScope.trend_context_type, "channel_trend");
+assert.equal(channelScope.channel_context.scope_type, "channel_page");
+assert.match(channelScope.channel_context.channel_boundary, /不代表 Ozon 全站销量/);
+assert.match(channelScope.forbidden_conclusions.join(" "), /全站趋势|全平台销量/);
+
 const productScope = buildResearchScope({
   pageContext: { url: "https://www.ozon.ru/product/123456/", title: "Product" },
   userInstruction: "分析这个商品机会",
@@ -166,6 +182,19 @@ const validPlatformTrendReport = {
     next_action: "打开 Ozon 详情页补采评论和规格。",
   }],
   trend_context_type: "platform_trend",
+  trend_scope: {
+    scope_type: "global_discovery",
+    scope_name: "Ozon 平台公开趋势发现",
+    entry_url: "https://www.ozon.ru/",
+    scope_boundary: "本轮仅代表公开页面、Ozon 搜索和外部信源可见样本，不代表完整市场或全平台销量。",
+    allowed_conclusions: ["公开需求窗口", "可卖候选初筛", "下一步补证任务"],
+    forbidden_conclusions: ["当前店铺立即采购上架", "完整市场份额", "全平台销量"],
+  },
+  channel_structure: {
+    visible_theme: "not_applicable",
+    visible_product_clusters: [],
+    channel_boundary: "非频道页入口；本轮不使用频道页可见曝光代表全站销量。",
+  },
   research_scope: {
     entry_page_type: "unknown",
     analysis_scope: "platform_trend",
@@ -223,6 +252,22 @@ const validPlatformTrendReport = {
     focus_queries: ["талисман", "оберег"],
     refinement_log: [],
   },
+  product_level_map: [{
+    opportunity_id: "T-1",
+    base_direction: "祈福护身小饰品",
+    product_forms: [
+      { form: "基础护身挂件", buyer_segment: "低价礼品和自用护身用户", price_tier: "low", trend_logic: "轻小件、低门槛，但需避免同质化红海", seller_action: "仅作为搜索词和主图方向补证" },
+      { form: "礼品化小套装", buyer_segment: "礼物/节日/家居祝福用户", price_tier: "mid_low", trend_logic: "通过包装、寓意说明和组合提高差异化", seller_action: "优先补 Ozon 详情页和评论证据" },
+    ],
+  }],
+  price_ladder: [
+    { tier: "low", visible_price_range: "待补 Ozon 卢布价格；当前只做词族轻量验证", buyer_mindset: "便宜、随手买、试试看", competition_risk: "high", seller_fit: "partial_fit" },
+    { tier: "mid_low", visible_price_range: "待补 Ozon 卢布价格和组合装竞品", buyer_mindset: "更完整的礼品感、寓意说明和包装", competition_risk: "medium", seller_fit: "fit" },
+  ],
+  audience_price_matrix: [
+    { audience: "礼品用户", scenario: "节日或朋友祝福", pain_point: "希望寓意清楚、包装不像廉价小件", price_tier: "mid_low", product_cut: "礼品化小套装", evidence_level: "assumption", next_validation: ["补 Ozon 详情页", "补评论语境"] },
+    { audience: "自用护身用户", scenario: "钱包、钥匙、车内小挂件", pain_point: "希望轻小、便携、解释清楚", price_tier: "low", product_cut: "基础护身挂件", evidence_level: "observed", next_validation: ["补 Ozon 搜索页", "补 Yandex Wordstat"] },
+  ],
   recommended_opportunities: ["T-1"],
   validated_opportunities: ["T-1"],
   assumption_opportunities: [],
@@ -259,6 +304,95 @@ assert.deepEqual(
   validateOzonPlatformTrendReport(validPlatformTrendReport, platformTrendToolHistory, {}),
   [],
   "platform trend reports should allow macro_context status=not_used when the boundary is explicit and direct demand evidence exists"
+);
+
+const validChannelTrendReport = structuredClone(validPlatformTrendReport);
+validChannelTrendReport.trend_context_type = "channel_trend";
+validChannelTrendReport.research_scope = channelScope;
+validChannelTrendReport.trend_scope = {
+  scope_type: "channel_page",
+  scope_name: "Ozon 中国商品专题页",
+  entry_url: "https://www.ozon.ru/highlight/tovary-iz-kitaya-935133/",
+  scope_boundary: "仅代表当前中国商品专题页可见曝光和平台运营选品口径，不代表 Ozon 全站销量、全平台趋势或俄罗斯全市场需求增长。",
+  allowed_conclusions: ["频道页商品结构", "频道页可见关注信号", "频道内机会初筛"],
+  forbidden_conclusions: ["Ozon 全站趋势已验证", "全平台销量增长", "当前店铺应立即采购上架"],
+};
+validChannelTrendReport.channel_structure = {
+  visible_theme: "中国商品专题页",
+  visible_product_clusters: [
+    { cluster: "户外/夏季小工具", examples: ["防蚊螺旋支架", "泡沫喷雾器"], trend_hypothesis: "频道内可见夏季户外与家庭维护场景", risk: "季节窗口和合规边界待验证" },
+    { cluster: "桌面/文具/小物收纳", examples: ["透明铅笔盒", "小物收纳盒"], trend_hypothesis: "频道内可见返校、办公和宿舍收纳场景", risk: "低价红海和包装破损待验证" },
+  ],
+  channel_boundary: "频道页可见曝光不代表 Ozon 全站销量或全平台趋势。",
+};
+validChannelTrendReport.external_source_plan = {
+  layers: {
+    platform_trade: { sources: ["ozon"], status: "used", used_for: "当前 Ozon 频道页可见商品结构", limitation: "不代表全站销量" },
+    search_demand: { sources: ["yandex_wordstat"], status: "not_used", used_for: "待补搜索需求", limitation: "本轮未采集" },
+    cross_marketplace: { sources: ["wildberries"], status: "not_used", used_for: "待补跨平台价格和规格", limitation: "本轮未采集" },
+    social_content: { sources: [], status: "not_used", used_for: "本轮未采集" },
+    macro_context: { sources: [], status: "not_used", used_for: "本轮不使用宏观背景直接支撑 SKU 推荐" },
+  },
+};
+validChannelTrendReport.product_level_map = [{
+  opportunity_id: "T-1",
+  base_direction: "防蚊螺旋支架",
+  product_forms: [
+    { form: "基础单支架", buyer_segment: "低价刚需用户", price_tier: "low", trend_logic: "频道页可见低价工具信号，但同质化风险高", seller_action: "不单独优先，作为价格底线参考" },
+    { form: "带盖防风接灰款", buyer_segment: "дача/阳台/露营用户", price_tier: "mid_low", trend_logic: "解决灰烬、风吹灭和桌面污染痛点", seller_action: "优先补 Ozon 搜索和低星评论" },
+  ],
+}];
+validChannelTrendReport.price_ladder = [
+  { tier: "low", visible_price_range: "频道页可见低价样本，币种待补 Ozon 卢布页", buyer_mindset: "便宜、随手买、解决眼前问题", competition_risk: "high", seller_fit: "partial_fit" },
+  { tier: "mid_low", visible_price_range: "待补 Ozon 卢布价格和组合装竞品", buyer_mindset: "更安全、更耐用、更少灰烬污染", competition_risk: "medium", seller_fit: "fit" },
+];
+validChannelTrendReport.audience_price_matrix = [
+  { audience: "дача/户外用户", scenario: "夏季别墅、阳台、烧烤、露营防蚊", pain_point: "灰烬乱飞、风吹灭、烫伤和桌面污染", price_tier: "mid_low", product_cut: "带盖防风接灰款", evidence_level: "observed", next_validation: ["补 Ozon 搜索页", "补低星评论"] },
+  { audience: "办公/学生用户", scenario: "返校、办公桌、宿舍抽屉整理", pain_point: "小物难找、透明件易划伤、尺寸虚标", price_tier: "mid_low", product_cut: "透明可叠放带盖收纳盒", evidence_level: "assumption", next_validation: ["补 Ozon 搜索页", "补尺寸评论"] },
+];
+validChannelTrendReport.data[0] = {
+  ...validChannelTrendReport.data[0],
+  opportunity_id: "T-1",
+  keyword_or_category: "防蚊螺旋支架 / Подставка для спирали от комаров",
+  buyer_scenario: "频道页可见夏季户外、阳台、дача 和露营防蚊场景。",
+  price_band: "频道页可见低价样本，币种待补 Ozon 卢布搜索页。",
+  demand_signal: "observed",
+  competitor_signal: "仅代表中国商品专题页可见关注信号，不代表全站销量。",
+  evidence: "当前 Ozon 中国商品专题页可见防蚊螺旋支架商品和评价背书。",
+  coverage: "频道页可见样本；不代表全站。",
+  limitation: "频道页单页证据只能证明频道页可见曝光，不能证明全平台销量或趋势增长。",
+  evidence_ledger: [{
+    source_type: "page_dom",
+    source_ref: "Ozon 中国商品专题页",
+    observed_value: "页面可见防蚊螺旋支架商品和评价背书。",
+    used_for: "频道页可见关注信号初筛",
+    confidence: "medium",
+    limitation: "不代表 Ozon 全站销量或俄罗斯全市场趋势。",
+  }],
+};
+validChannelTrendReport.recommended_opportunities = ["T-1"];
+validChannelTrendReport.validated_opportunities = ["T-1"];
+validChannelTrendReport.assumption_opportunities = [];
+assert.deepEqual(
+  validateOzonPlatformTrendReport(validChannelTrendReport, [], {
+    url: "https://www.ozon.ru/highlight/tovary-iz-kitaya-935133/",
+    title: "Товары из Китая",
+    text: "Подставка спиралей от комаров Прозрачная коробка для карандашей",
+  }),
+  [],
+  "channel page trend reports should pass with trend scope, channel structure, product tiers, price ladder and audience matrix"
+);
+
+const unsafeChannelTrendReport = structuredClone(validChannelTrendReport);
+unsafeChannelTrendReport.summary = "中国商品专题页已经证明 Ozon 全站趋势增长，适合直接作为全平台爆品机会。";
+assert.match(
+  validateOzonPlatformTrendReport(unsafeChannelTrendReport, [], {
+    url: "https://www.ozon.ru/highlight/tovary-iz-kitaya-935133/",
+    title: "Товары из Китая",
+    text: "Подставка спиралей от комаров",
+  }).join("\n"),
+  /全站|全平台|大盘/,
+  "channel page reports should not extrapolate visible channel samples into global platform trends"
 );
 
 const macroObservedWithoutEvidenceReport = structuredClone(validPlatformTrendReport);

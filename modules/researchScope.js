@@ -49,6 +49,20 @@ function extractSellerIdentity(urlObj) {
   return normalizeText(match?.[1] || "").toLowerCase();
 }
 
+function extractChannelIdentity(urlObj, pageContext = {}) {
+  if (!urlObj) return "";
+  const path = decodeURIComponent(String(urlObj.pathname || ""));
+  const highlightMatch = path.match(/\/highlight\/([^\/?#]+)/i);
+  const raw = normalizeText(
+    pageContext.channelName ||
+    pageContext.highlightName ||
+    pageContext.title ||
+    highlightMatch?.[1] ||
+    ""
+  );
+  return raw.replace(/\s+-\s+купить[\s\S]*$/i, "").replace(/[-_]+/g, " ").trim();
+}
+
 function matchBoundShopBySellerUrl(urlObj, boundShops = []) {
   const currentIdentity = extractSellerIdentity(urlObj);
   if (!currentIdentity) return null;
@@ -63,8 +77,9 @@ function inferOzonEntryPageType(urlObj, pageContext = {}) {
   const path = urlObj.pathname.toLowerCase();
   const title = `${pageContext.title || ""} ${pageContext.pageType || ""}`.toLowerCase();
   if (path === "/" || path === "") return "ozon_home";
-  if (/\/(search|category|highlight|seller-products)/i.test(path) || extractSearchParam(urlObj)) return "ozon_search";
+  if (/\/highlight\//i.test(path) || /专题|频道|highlight|витрина|подборк|товары из китая/i.test(title)) return "ozon_channel";
   if (/\/category\//i.test(path)) return "ozon_category";
+  if (/\/(search|seller-products)/i.test(path) || extractSearchParam(urlObj)) return "ozon_search";
   if (/\/product\//i.test(path)) return "competitor_product";
   if (/\/(seller|shop)\//i.test(path) || /магазин|seller|shop|витрина/i.test(title)) return "competitor_store";
   return "ozon_category";
@@ -86,6 +101,7 @@ function analysisScopeForEntry(entryPageType = "", instructionScope = "") {
   if (instructionScope) return instructionScope;
   if (entryPageType === "owned_store" || entryPageType === "competitor_store" || entryPageType === "external_store") return "store_trend_fit";
   if (entryPageType === "owned_product" || entryPageType === "competitor_product") return "product_opportunity";
+  if (entryPageType === "ozon_channel") return instructionScope === "platform_trend" ? "platform_trend" : "category_opportunity";
   if (entryPageType === "ozon_search" || entryPageType === "ozon_category") return "category_opportunity";
   if (entryPageType === "ozon_home") return "platform_trend";
   if (entryPageType === "supplier_page") return "sourcing_validation";
@@ -98,6 +114,7 @@ function roleForEntry(entryPageType = "", _analysisScope = "") {
   if (entryPageType === "external_store") return "store_subject_external";
   if (entryPageType === "competitor_store" || entryPageType === "competitor_product") return "competitor_reference";
   if (entryPageType === "ozon_home") return "platform_discovery";
+  if (entryPageType === "ozon_channel") return "channel_research";
   if (entryPageType === "ozon_search" || entryPageType === "ozon_category") return "category_research";
   if (entryPageType === "supplier_page") return "sourcing_reference";
   return "unknown";
@@ -105,7 +122,7 @@ function roleForEntry(entryPageType = "", _analysisScope = "") {
 
 function trendContextType(analysisScope = "", entryPageType = "") {
   if (analysisScope === "store_trend_fit") return "store_trend_fit";
-  if (analysisScope === "platform_trend") return entryPageType === "ozon_home" ? "platform_trend" : "platform_trend";
+  if (analysisScope === "platform_trend") return entryPageType === "ozon_channel" ? "channel_trend" : "platform_trend";
   if (analysisScope === "category_opportunity") return "category_opportunity";
   if (analysisScope === "product_opportunity") return "product_opportunity";
   if (analysisScope === "competitor_learning") return "competitor_learning";
@@ -131,6 +148,11 @@ function buildConclusionPolicy({ entryPageType, analysisScope, sourcePageRole, s
   if (analysisScope === "category_opportunity") {
     allowed.push("围绕当前搜索词或类目输出价格带、评价门槛、竞品结构和下一步验证");
     forbidden.push("把搜索页可见样本写成全平台完整销量或完整价格分布");
+  }
+  if (entryPageType === "ozon_channel") {
+    allowed.push("把当前 Ozon 专题/频道页作为频道内机会扫描入口，分析频道主题、可见商品簇、频道内价格和评价共性");
+    forbidden.push("仅凭专题/频道页可见样本声称 Ozon 全站趋势、全平台销量增长或俄罗斯全市场需求增长");
+    forbidden.push("没有补充 Ozon 搜索页、竞品详情页或外部信源时，把频道页信号写成全站平台大盘结论");
   }
   if (analysisScope === "product_opportunity") {
     allowed.push("围绕当前商品输出单品机会、竞品、评论、合规或寻源路径");
@@ -193,6 +215,7 @@ export function buildResearchScope({
     ...(Array.isArray(pageContext.productCards) ? pageContext.productCards.slice(0, 3).map((card) => card.title || card.name || "") : []),
   ].map(normalizeText).filter(Boolean))).slice(0, 8);
   const seedCategory = normalizeText(clarification.seedCategory || pageContext.category || pageContext.pageType || "");
+  const channelName = entryPageType === "ozon_channel" ? extractChannelIdentity(urlObj, pageContext) : "";
   const analysisScope = analysisScopeForEntry(entryPageType, instructionScope);
   const canAutoDiscoverPlatformTrend = ["ozon_home", "unknown"].includes(entryPageType);
   const autoDiscoveryRequired = analysisScope === "platform_trend" && canAutoDiscoverPlatformTrend && seedKeywords.length === 0 && !seedCategory;
@@ -228,11 +251,18 @@ export function buildResearchScope({
     seed_store_positioning: normalizeText(pageContext.shopName || pageContext.title || ""),
     analysis_scope: analysisScope,
     trend_context_type: trendContextType(analysisScope, entryPageType),
+    channel_context: entryPageType === "ozon_channel" ? {
+      scope_type: "channel_page",
+      channel_name: channelName || "Ozon 专题/频道页",
+      channel_url: url,
+      channel_boundary: "仅代表当前专题/频道页可见曝光和平台运营选品口径，不代表 Ozon 全站销量、全平台趋势或俄罗斯全市场需求增长。",
+      required_deepening: ["频道商品簇", "商品层级", "价格阶梯", "人群/场景矩阵", "Ozon 搜索页补证", "竞品详情页补证"],
+    } : null,
     scope_confidence: scopeConfidence,
     needs_user_clarification: weakContext,
     auto_discovery_required: autoDiscoveryRequired,
     discovery_sources: autoDiscoveryRequired
-      ? ["current_page_public_clues", "ozon_home_recommendations", "ozon_hot_words_or_rankings", "ozon_category_entrypoints", "yandex_ru_public_trends", "google_ru_public_search", "google_trends_ru"]
+      ? ["current_page_public_clues", "ozon_home_recommendations", "ozon_hot_words_or_rankings", "ozon_category_entrypoints", "yandex_public_search", "google_ru_public_search", "google_trends_ru"]
       : [],
     clarification_input: clarification,
     current_url: url,

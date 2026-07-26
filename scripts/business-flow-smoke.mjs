@@ -377,6 +377,7 @@ assert.match(platformTrendsSkill, /follow_up_tasks/, "platform trends skill shou
 assert.match(platformTrendsSkill, /workflow_nodes/, "platform trends skill should generate canvas workflow nodes");
 assert.match(platformTrendsSkill, /external_source_plan[\s\S]*platform_trade[\s\S]*search_demand[\s\S]*macro_context/, "platform trends skill should require a layered external source plan");
 assert.match(platformTrendsSkill, /adaptive_source_discovery[\s\S]*qualitative_market_context[\s\S]*定性市场资料/, "platform trends skill should require adaptive source discovery and qualitative market context");
+assert.match(platformTrendsSkill, /trend_scope[\s\S]*channel_structure[\s\S]*product_level_map[\s\S]*price_ladder[\s\S]*audience_price_matrix/, "platform trends skill should require scope-aware channel, product, price and audience layers");
 assert.match(platformTrendsSkill, /status[\s\S]*真实取证一致[\s\S]*禁止把“计划要查\/理论上应查”的信源写成已使用/, "platform trends skill should require external source status to match captured evidence");
 assert.match(platformTrendsSkill, /宏观背景只能解释[\s\S]*不能单独证明某个 SKU 或商品机会可卖/, "platform trends skill should keep macro context out of direct sellability evidence");
 assert.match(toolRegistrySource, /yandex_wordstat[\s\S]*wildberries[\s\S]*avito[\s\S]*yandex_market[\s\S]*otzovik[\s\S]*irecommend[\s\S]*ru_forum[\s\S]*cbr[\s\S]*rosstat[\s\S]*akit[\s\S]*data_insight[\s\S]*yakov_partners/, "search tool should expose Russian demand, qualitative, marketplace, macro and industry engines");
@@ -485,6 +486,37 @@ storage.savedResults.unshift({
         affects: ["价格敏感"],
         claim_boundary: "宏观背景不能单独证明某个 SKU 或商品机会可卖。",
       },
+      trend_scope: {
+        scope_type: "channel_page",
+        scope_name: "Ozon 中国商品专题页",
+        entry_url: "https://www.ozon.ru/highlight/tovary-iz-kitaya-935133/",
+        scope_boundary: "仅代表当前专题页可见曝光，不代表 Ozon 全站销量或全平台趋势。",
+        allowed_conclusions: ["频道页商品结构", "频道页可见关注信号"],
+        forbidden_conclusions: ["Ozon 全站趋势已验证", "当前店铺立即采购"],
+      },
+      channel_structure: {
+        visible_theme: "中国商品专题页",
+        visible_product_clusters: [
+          { cluster: "户外小工具", examples: ["防蚊螺旋支架"], trend_hypothesis: "频道页可见夏季户外需求", risk: "季节窗口待补证" },
+          { cluster: "桌面收纳", examples: ["透明铅笔盒"], trend_hypothesis: "频道页可见返校/办公整理需求", risk: "低价红海待补证" },
+        ],
+        channel_boundary: "频道页可见曝光不代表 Ozon 全站销量或全平台趋势。",
+      },
+      product_level_map: [{
+        base_direction: "防蚊螺旋支架",
+        product_forms: [
+          { form: "基础单支架", buyer_segment: "低价刚需用户", price_tier: "low", trend_logic: "低价工具信号但同质化强", seller_action: "作为价格底线参考" },
+          { form: "带盖防风接灰款", buyer_segment: "дача/阳台用户", price_tier: "mid_low", trend_logic: "解决灰烬和风吹灭痛点", seller_action: "优先补评论和搜索证据" },
+        ],
+      }],
+      price_ladder: [
+        { tier: "low", visible_price_range: "频道页低价样本，币种待补 Ozon 卢布页", buyer_mindset: "便宜随手买", competition_risk: "high", seller_fit: "partial_fit" },
+        { tier: "mid_low", visible_price_range: "待补组合装竞品", buyer_mindset: "更安全耐用", competition_risk: "medium", seller_fit: "fit" },
+      ],
+      audience_price_matrix: [
+        { audience: "дача/户外用户", scenario: "夏季别墅、阳台、露营防蚊", pain_point: "灰烬乱飞和风吹灭", price_tier: "mid_low", product_cut: "带盖防风接灰款", evidence_level: "observed", next_validation: ["补 Ozon 搜索页", "补低星评论"] },
+        { audience: "办公/学生用户", scenario: "返校和办公桌整理", pain_point: "小物难找、尺寸不清", price_tier: "mid_low", product_cut: "透明带盖收纳盒", evidence_level: "assumption", next_validation: ["补尺寸评论"] },
+      ],
       data: [
         {
           plan_id: "SRC-001",
@@ -506,6 +538,7 @@ const wrappedReportText = window.document.getElementById("report-viewer-content"
 assert.match(wrappedReportText, /Ozon 松鼠喂食器跨境供应链审计/, "wrapped final reports should render as business report content");
 assert.match(wrappedReportText, /外部信源启用与采集对账[\s\S]*Ozon 平台[\s\S]*采集记录: 1[\s\S]*Yandex Wordstat[\s\S]*阻断/, "report center should reconcile declared external sources against captured evidence");
 assert.match(wrappedReportText, /自主扩展信源发现[\s\S]*Otzovik[\s\S]*评论痛点和买家语言[\s\S]*定性市场洞察[\s\S]*不能单独证明某个 SKU 或商品机会可卖/, "report center should render adaptive source discovery and qualitative market context");
+assert.match(wrappedReportText, /趋势范围声明[\s\S]*Ozon 中国商品专题页[\s\S]*频道\/专题页商品结构[\s\S]*户外小工具[\s\S]*商品层级与可卖切口[\s\S]*带盖防风接灰款[\s\S]*价格阶梯与买家心智[\s\S]*人群\/场景\/价格矩阵/, "report center should render scope-aware channel, product, price and audience trend layers");
 assert.match(wrappedReportText, /强阻断[\s\S]*未取得真实详情页不得采购[\s\S]*必补验证[\s\S]*低星评论/, "report center should expand structured risk guardrails into readable business text");
 assert.doesNotMatch(wrappedReportText, /"type":\s*"final"/, "wrapped final reports should not render raw JSON by default");
 assert.doesNotMatch(wrappedReportText, /read_current_page|search_in_browser|DOM|调用指令|\[object Object\]/i, "report center should sanitize internal tool jargon and object rendering defects in visible report text");
@@ -520,6 +553,7 @@ assert.match(storage.printHtml, /@page\s*\{\s*size:\s*A4 portrait;/, "report cen
 assert.match(storage.printHtml, /正在生成原生数字版 PDF/, "report center PDF should use the native print-to-PDF bridge");
 assert.match(storage.printHtml, /Ozon 松鼠喂食器跨境供应链审计/, "report center PDF should preserve Chinese report content");
 assert.match(storage.printHtml, /外部信源分层计划[\s\S]*搜索需求信号[\s\S]*阻断[\s\S]*宏观与行业背景边界[\s\S]*不能单独证明某个 SKU 或商品机会可卖/, "report center PDF should render external source plan and macro context boundaries");
+assert.match(storage.printHtml, /趋势范围声明[\s\S]*频道\/专题页商品结构[\s\S]*商品层级与可卖切口[\s\S]*价格阶梯与买家心智[\s\S]*人群\/场景\/价格矩阵/, "report center PDF should render trend scope, channel structure, price ladder and audience matrix");
 assert.match(storage.printHtml, /外部信源启用与采集对账[\s\S]*报告声明[\s\S]*实际采集[\s\S]*Ozon 平台[\s\S]*采集记录: 1[\s\S]*Wildberries[\s\S]*未采集/, "report center PDF should reconcile enabled external sources with captured page evidence");
 assert.match(storage.printHtml, /自主扩展信源发现[\s\S]*Otzovik[\s\S]*定性市场洞察[\s\S]*文化适配/, "report center PDF should render adaptive source discovery and qualitative market context");
 assert.match(storage.printHtml, /wordstat\.yandex\.com\/\?words=test[\s\S]*阻断/, "PDF evidence appendix should keep search query params and show login-wall evidence as blocked");

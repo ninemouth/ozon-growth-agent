@@ -1862,6 +1862,41 @@ function businessFieldLabel(key = "") {
     cultural_fit: "文化适配",
     objection_patterns: "异议模式",
     claim_boundary: "结论边界",
+    trend_scope: "趋势范围",
+    scope_type: "范围类型",
+    scope_name: "范围名称",
+    scope_boundary: "范围边界",
+    allowed_conclusions: "允许结论",
+    forbidden_conclusions: "禁止外推",
+    channel_structure: "频道结构",
+    visible_theme: "可见主题",
+    visible_product_clusters: "商品簇",
+    channel_boundary: "频道边界",
+    cluster: "商品簇",
+    examples: "例子",
+    trend_hypothesis: "趋势假设",
+    product_level_map: "商品层级",
+    base_direction: "基础方向",
+    product_forms: "商品形态",
+    form: "形态",
+    buyer_segment: "买家分层",
+    trend_logic: "趋势逻辑",
+    seller_action: "卖家动作",
+    price_ladder: "价格阶梯",
+    tier: "价格层",
+    visible_price_range: "可见价格带",
+    price_range: "价格带",
+    buyer_mindset: "买家心智",
+    competition_risk: "竞争风险",
+    seller_fit: "卖家适配",
+    audience_price_matrix: "人群/价格矩阵",
+    audience: "人群",
+    scenario: "场景",
+    pain_point: "痛点",
+    price_tier: "价格层",
+    product_cut: "商品切口",
+    evidence_level: "证据等级",
+    next_validation: "下一步验证",
   };
   return map[String(key || "")] || String(key || "").replace(/_/g, " ");
 }
@@ -1907,6 +1942,74 @@ function renderExternalSourcePlanMarkdown(plan = null) {
     const usedFor = sanitizeBusinessReportMarkdown(valueToBusinessText(layer.used_for || layer.purpose || "未说明用途"));
     const limitation = sanitizeBusinessReportMarkdown(valueToBusinessText(layer.limitation || layer.limitations || "需结合证据账本判断强弱"));
     lines.push(`- ${label}: ${status} · 来源: ${sources} · 用途: ${usedFor} · 局限: ${limitation}`);
+  });
+  return lines;
+}
+
+function renderTrendScopeMarkdown(scope = null) {
+  if (!scope || typeof scope !== "object") return [];
+  const lines = ["### 趋势范围声明"];
+  if (scope.scope_type) lines.push(`- 入口类型: ${businessEnumLabel(scope.scope_type)}`);
+  if (scope.scope_name) lines.push(`- 范围名称: ${sanitizeBusinessReportMarkdown(valueToBusinessText(scope.scope_name))}`);
+  if (scope.entry_url) lines.push(`- 入口页面: ${sanitizeBusinessReportMarkdown(compactEvidenceUrl(scope.entry_url))}`);
+  if (scope.scope_boundary) lines.push(`- 结论边界: ${sanitizeBusinessReportMarkdown(valueToBusinessText(scope.scope_boundary))}`);
+  if (Array.isArray(scope.allowed_conclusions) && scope.allowed_conclusions.length) {
+    lines.push(`- 允许结论: ${sanitizeBusinessReportMarkdown(scope.allowed_conclusions.map(valueToBusinessText).join("；"))}`);
+  }
+  if (Array.isArray(scope.forbidden_conclusions) && scope.forbidden_conclusions.length) {
+    lines.push(`- 禁止外推: ${sanitizeBusinessReportMarkdown(scope.forbidden_conclusions.map(valueToBusinessText).join("；"))}`);
+  }
+  return lines;
+}
+
+function renderChannelStructureMarkdown(structure = null) {
+  if (!structure || typeof structure !== "object") return [];
+  const lines = ["### 频道/专题页商品结构"];
+  if (structure.visible_theme) lines.push(`- 频道主题: ${sanitizeBusinessReportMarkdown(valueToBusinessText(structure.visible_theme))}`);
+  if (structure.channel_boundary) lines.push(`- 频道边界: ${sanitizeBusinessReportMarkdown(valueToBusinessText(structure.channel_boundary))}`);
+  const clusters = Array.isArray(structure.visible_product_clusters) ? structure.visible_product_clusters : [];
+  clusters.slice(0, 8).forEach((cluster, idx) => {
+    const examples = Array.isArray(cluster.examples) ? cluster.examples.join("；") : valueToBusinessText(cluster.examples);
+    lines.push(`- 商品簇 ${idx + 1}: ${sanitizeBusinessReportMarkdown(valueToBusinessText(cluster.cluster || "未命名商品簇"))} · 例子: ${sanitizeBusinessReportMarkdown(examples || "-")} · 假设: ${sanitizeBusinessReportMarkdown(valueToBusinessText(cluster.trend_hypothesis || "待验证"))} · 风险: ${sanitizeBusinessReportMarkdown(valueToBusinessText(cluster.risk || "待验证"))}`);
+  });
+  return lines;
+}
+
+function renderProductLevelMapMarkdown(map = null) {
+  if (!Array.isArray(map) || !map.length) return [];
+  const lines = ["### 商品层级与可卖切口"];
+  map.slice(0, 6).forEach((item, idx) => {
+    lines.push(`#### 商品层级 ${idx + 1}. ${sanitizeBusinessReportMarkdown(valueToBusinessText(item.base_direction || item.opportunity_id || "未命名方向"))}`);
+    const forms = Array.isArray(item.product_forms) ? item.product_forms : [];
+    forms.slice(0, 5).forEach((form) => {
+      lines.push(`- ${sanitizeBusinessReportMarkdown(valueToBusinessText(form.form || "未命名形态"))}: 人群 ${sanitizeBusinessReportMarkdown(valueToBusinessText(form.buyer_segment || "-"))} · 价格层 ${sanitizeBusinessReportMarkdown(valueToBusinessText(form.price_tier || "-"))} · 逻辑 ${sanitizeBusinessReportMarkdown(valueToBusinessText(form.trend_logic || "待验证"))} · 动作 ${sanitizeBusinessReportMarkdown(valueToBusinessText(form.seller_action || "待验证"))}`);
+    });
+  });
+  return lines;
+}
+
+function renderPriceLadderMarkdown(ladder = null) {
+  if (!Array.isArray(ladder) || !ladder.length) return [];
+  const lines = [
+    "### 价格阶梯与买家心智",
+    "| 价格层 | 可见价格带 | 买家心智 | 竞争风险 | 卖家适配 |",
+    "| --- | --- | --- | --- | --- |",
+  ];
+  ladder.slice(0, 8).forEach((tier) => {
+    lines.push(`| ${sanitizeBusinessReportMarkdown(valueToBusinessText(tier.tier || "-"))} | ${sanitizeBusinessReportMarkdown(valueToBusinessText(tier.visible_price_range || tier.price_range || "待补证"))} | ${sanitizeBusinessReportMarkdown(valueToBusinessText(tier.buyer_mindset || "-"))} | ${sanitizeBusinessReportMarkdown(valueToBusinessText(tier.competition_risk || "-"))} | ${sanitizeBusinessReportMarkdown(valueToBusinessText(tier.seller_fit || "-"))} |`);
+  });
+  return lines;
+}
+
+function renderAudiencePriceMatrixMarkdown(matrix = null) {
+  if (!Array.isArray(matrix) || !matrix.length) return [];
+  const lines = [
+    "### 人群/场景/价格矩阵",
+    "| 人群 | 场景 | 痛点 | 价格层 | 商品切口 | 证据等级 | 下一步验证 |",
+    "| --- | --- | --- | --- | --- | --- | --- |",
+  ];
+  matrix.slice(0, 10).forEach((row) => {
+    lines.push(`| ${sanitizeBusinessReportMarkdown(valueToBusinessText(row.audience || "-"))} | ${sanitizeBusinessReportMarkdown(valueToBusinessText(row.scenario || "-"))} | ${sanitizeBusinessReportMarkdown(valueToBusinessText(row.pain_point || "-"))} | ${sanitizeBusinessReportMarkdown(valueToBusinessText(row.price_tier || "-"))} | ${sanitizeBusinessReportMarkdown(valueToBusinessText(row.product_cut || "-"))} | ${businessEnumLabel(row.evidence_level || "-")} | ${sanitizeBusinessReportMarkdown(valueToBusinessText(row.next_validation || "-"))} |`);
   });
   return lines;
 }
@@ -1993,6 +2096,11 @@ function resultToReportMarkdown(result = {}) {
   if (data.overview) lines.push(`### ${plainReportHeading(data.overview, "分析概述")}`);
   if (data.analysis) lines.push(`**决策诊断与数据推演**:\n${sanitizeBusinessReportMarkdown(data.analysis)}`);
   if (data.summary) lines.push(`**下一步建议**:\n${sanitizeBusinessReportMarkdown(data.summary)}`);
+  lines.push(...renderTrendScopeMarkdown(data.trend_scope));
+  lines.push(...renderChannelStructureMarkdown(data.channel_structure));
+  lines.push(...renderProductLevelMapMarkdown(data.product_level_map));
+  lines.push(...renderPriceLadderMarkdown(data.price_ladder));
+  lines.push(...renderAudiencePriceMatrixMarkdown(data.audience_price_matrix));
   lines.push(...renderExternalSourcePlanMarkdown(data.external_source_plan));
   lines.push(...renderAdaptiveSourceDiscoveryMarkdown(data.adaptive_source_discovery));
   lines.push(...renderQualitativeMarketContextMarkdown(data.qualitative_market_context));
