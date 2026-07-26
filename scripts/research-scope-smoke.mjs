@@ -178,8 +178,25 @@ const validPlatformTrendReport = {
       search_demand: { sources: ["yandex_wordstat"], status: "used", used_for: "词族需求撒网" },
       cross_marketplace: { sources: ["wildberries"], status: "used", used_for: "跨平台价格和规格对照" },
       social_content: { sources: [], status: "not_used", used_for: "本轮未使用" },
+      adaptive_qualitative: { sources: [], status: "not_used", used_for: "本轮固定信源已足够轻量验证" },
       macro_context: { sources: [], status: "not_used", used_for: "本轮不使用宏观背景直接支撑 SKU 推荐" },
     },
+  },
+  adaptive_source_discovery: {
+    enabled: false,
+    trigger_reason: "本轮 Ozon、Yandex Wordstat 与 Wildberries 已覆盖轻量验证，暂不启用规则外补充信源。",
+    candidate_sources: [],
+    selection_boundary: "发现来源不等于趋势已验证，必须进入页面取证和 evidence_ledger；定性资料不能单独证明 SKU 可卖。",
+  },
+  qualitative_market_context: {
+    status: "not_used",
+    buyer_language: [],
+    usage_scenarios: [],
+    content_themes: [],
+    cultural_fit: { fit: "unknown", reason: "本轮未做社媒/评论/论坛定性取证。", risks: [] },
+    objection_patterns: [],
+    evidence_ledger: [],
+    claim_boundary: "定性市场资料只能解释买家语言、使用场景、文化接受度和内容表达，不能单独证明某个 SKU 或商品机会可卖。",
   },
   macro_context: {
     status: "not_used",
@@ -261,5 +278,92 @@ parentProxyOverScoreReport.query_funnel.scored_queries[0].scope_relation = "pare
 parentProxyOverScoreReport.query_funnel.scored_queries[0].future_signal = 2;
 const parentProxyErrors = validateOzonPlatformTrendReport(parentProxyOverScoreReport, platformTrendToolHistory, {});
 assert.match(parentProxyErrors.join("\n"), /parent_proxy[\s\S]*future_signal 最高只能为 1/);
+
+const fakeUsedSourceReport = structuredClone(validPlatformTrendReport);
+fakeUsedSourceReport.external_source_plan.layers.search_demand.sources = ["yandex_wordstat", "google_trends"];
+fakeUsedSourceReport.external_source_plan.layers.search_demand.status = "used";
+const fakeUsedSourceErrors = validateOzonPlatformTrendReport(fakeUsedSourceReport, platformTrendToolHistory, {});
+assert.match(
+  fakeUsedSourceErrors.join("\n"),
+  /external_source_plan 声明 Google Trends RU 为已使用[\s\S]*没有对应的可用页面\/搜索证据/,
+  "platform trend validator should reject external_source_plan used claims without captured evidence"
+);
+
+const blockedWithoutAttemptReport = structuredClone(validPlatformTrendReport);
+blockedWithoutAttemptReport.external_source_plan.layers.search_demand.sources = ["google_trends"];
+blockedWithoutAttemptReport.external_source_plan.layers.search_demand.status = "blocked";
+const blockedWithoutAttemptErrors = validateOzonPlatformTrendReport(blockedWithoutAttemptReport, platformTrendToolHistory, {});
+assert.match(
+  blockedWithoutAttemptErrors.join("\n"),
+  /Google Trends RU 被阻断[\s\S]*没有对应访问尝试[\s\S]*blocking_gaps/,
+  "blocked external sources should require either a captured attempt or a structured blocking gap"
+);
+
+const undeclaredEvidenceErrors = validateOzonPlatformTrendReport(
+  validPlatformTrendReport,
+  [...platformTrendToolHistory, { tool: "search_in_browser", arguments: { engine: "avito", query: "талисман" }, result: { ok: true, url: "https://www.avito.ru/rossiya?q=талисман" } }],
+  {}
+);
+assert.match(
+  undeclaredEvidenceErrors.join("\n"),
+  /已采集 Avito 证据[\s\S]*external_source_plan 未声明/,
+  "captured external evidence should be declared in external_source_plan for report reconciliation"
+);
+
+const qualitativeOnlyReport = structuredClone(validPlatformTrendReport);
+qualitativeOnlyReport.external_source_plan.layers.social_content = { sources: ["otzovik"], status: "used", used_for: "评论口碑与买家语言" };
+qualitativeOnlyReport.external_source_plan.layers.adaptive_qualitative = { sources: ["ru_forum"], status: "used", used_for: "俄语论坛定性讨论" };
+qualitativeOnlyReport.adaptive_source_discovery = {
+  enabled: true,
+  trigger_reason: "祈福护身类产品需要理解俄罗斯买家的文化接受度和评论语言。",
+  candidate_sources: [{
+    source_id: "otzovik",
+    source_name: "Otzovik",
+    source_type: "review_site",
+    query: "талисман отзывы",
+    intended_use: "买家语言和评论异议",
+    status: "used",
+    evidence_ref: "Otzovik 搜索：талисман отзывы",
+  }],
+  selection_boundary: "发现来源不等于趋势已验证，必须进入页面取证和 evidence_ledger；定性资料不能单独证明 SKU 可卖。",
+};
+qualitativeOnlyReport.qualitative_market_context = {
+  status: "observed",
+  buyer_language: ["买家用 оберег/талисман 描述护身和礼品场景"],
+  usage_scenarios: ["个人护身", "礼品祝福"],
+  content_themes: ["幸运", "东方文化"],
+  cultural_fit: { fit: "medium", reason: "需要避免宗教承诺和夸大功效。", risks: ["迷信化表达"] },
+  objection_patterns: ["材质廉价", "功效承诺过强"],
+  evidence_ledger: [{
+    source_type: "social_signal",
+    source_ref: "Otzovik 搜索：талисман отзывы",
+    observed_value: "评论语言用于识别礼品和护身语境",
+    used_for: "定性市场语言",
+    confidence: "medium",
+    limitation: "不能代表 Ozon 销量",
+  }],
+  claim_boundary: "定性市场资料只能解释买家语言、使用场景、文化接受度和内容表达，不能单独证明某个 SKU 或商品机会可卖。",
+};
+qualitativeOnlyReport.data[0].evidence_ledger = [{
+  source_type: "social_signal",
+  source_ref: "Otzovik 搜索：талисман отзывы",
+  observed_value: "评论语言显示礼品/护身语境",
+  used_for: "定性市场语言",
+  confidence: "medium",
+  limitation: "不能证明 Ozon 需求",
+}];
+const qualitativeOnlyErrors = validateOzonPlatformTrendReport(
+  qualitativeOnlyReport,
+  [
+    { tool: "search_in_browser", arguments: { engine: "otzovik", query: "талисман отзывы" }, result: { ok: true, url: "https://otzovik.com/search/?text=талисман" } },
+    { tool: "search_in_browser", arguments: { engine: "ru_forum", query: "талисман форум" }, result: { ok: true, url: "https://yandex.ru/search/?text=талисман форум отзывы" } },
+  ],
+  {}
+);
+assert.match(
+  qualitativeOnlyErrors.join("\n"),
+  /不能只靠定性市场资料[\s\S]*必须补 Ozon、搜索需求或跨平台交易证据/,
+  "qualitative market evidence should not be enough to mark an opportunity demand_signal=observed"
+);
 
 console.log("research-scope-smoke: ok");

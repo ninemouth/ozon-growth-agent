@@ -1823,6 +1823,7 @@ function businessEnumLabel(value = "") {
     adjacent_proxy: "相邻代理",
     used: "已使用",
     not_used: "未使用",
+    not_declared: "未声明",
     blocked: "阻断",
     assumption: "待验证假设",
     observed: "已观察",
@@ -1832,9 +1833,55 @@ function businessEnumLabel(value = "") {
   return map[String(value || "")] || value;
 }
 
-function formatSourceList(value) {
-  if (Array.isArray(value)) return value.filter(Boolean).join("、") || "-";
-  return value ? String(value) : "-";
+function businessFieldLabel(key = "") {
+  const map = {
+    hard_blocks: "强阻断",
+    soft_risks: "主要风险",
+    required_validation: "必补验证",
+    validation_required: "必补验证",
+    mitigation: "缓解动作",
+    reject_if: "淘汰条件",
+    shipping_check: "物流检查",
+    compliance_check: "合规检查",
+    evidence_gap: "证据缺口",
+    next_check: "下一步检查",
+    reason: "原因",
+    status: "状态",
+    source: "来源",
+    sources: "来源",
+    limitation: "局限",
+    used_for: "用途",
+    source_id: "信源",
+    source_name: "信源名称",
+    source_type: "信源类型",
+    intended_use: "预期用途",
+    evidence_ref: "证据引用",
+    buyer_language: "买家语言",
+    usage_scenarios: "使用场景",
+    content_themes: "内容主题",
+    cultural_fit: "文化适配",
+    objection_patterns: "异议模式",
+    claim_boundary: "结论边界",
+  };
+  return map[String(key || "")] || String(key || "").replace(/_/g, " ");
+}
+
+function valueToBusinessText(value) {
+  if (value === undefined || value === null || value === "") return "";
+  if (Array.isArray(value)) {
+    return value.map((item) => valueToBusinessText(item)).filter(Boolean).join("；");
+  }
+  if (typeof value === "object") {
+    return Object.entries(value)
+      .map(([key, val]) => {
+        const text = valueToBusinessText(val);
+        return text ? `${businessFieldLabel(key)}: ${text}` : "";
+      })
+      .filter(Boolean)
+      .join("；");
+  }
+  if (typeof value === "boolean") return value ? "是" : "否";
+  return String(value);
 }
 
 function renderExternalSourcePlanMarkdown(plan = null) {
@@ -1845,6 +1892,7 @@ function renderExternalSourcePlanMarkdown(plan = null) {
     search_demand: "搜索需求信号",
     cross_marketplace: "跨平台交易验证",
     social_content: "社媒/内容信号",
+    adaptive_qualitative: "自主扩展/定性信源",
     macro_context: "宏观/行业背景",
   };
   const lines = ["### 外部信源分层计划"];
@@ -1855,9 +1903,9 @@ function renderExternalSourcePlanMarkdown(plan = null) {
       return;
     }
     const status = businessEnumLabel(layer.status || "not_used");
-    const sources = sanitizeBusinessReportMarkdown(formatSourceList(layer.sources || layer.source || []));
-    const usedFor = sanitizeBusinessReportMarkdown(layer.used_for || layer.purpose || "未说明用途");
-    const limitation = sanitizeBusinessReportMarkdown(layer.limitation || layer.limitations || "需结合证据账本判断强弱");
+    const sources = sanitizeBusinessReportMarkdown(valueToBusinessText(layer.sources || layer.source || []));
+    const usedFor = sanitizeBusinessReportMarkdown(valueToBusinessText(layer.used_for || layer.purpose || "未说明用途"));
+    const limitation = sanitizeBusinessReportMarkdown(valueToBusinessText(layer.limitation || layer.limitations || "需结合证据账本判断强弱"));
     lines.push(`- ${label}: ${status} · 来源: ${sources} · 用途: ${usedFor} · 局限: ${limitation}`);
   });
   return lines;
@@ -1884,6 +1932,61 @@ function renderMacroContextMarkdown(macro = null) {
   return lines;
 }
 
+function renderAdaptiveSourceDiscoveryMarkdown(discovery = null) {
+  if (!discovery || typeof discovery !== "object") return [];
+  const lines = ["### 自主扩展信源发现"];
+  lines.push(`- 启用状态: ${discovery.enabled === true ? "已启用" : discovery.enabled === false ? "未启用" : "未声明"}`);
+  if (discovery.trigger_reason) lines.push(`- 触发原因: ${sanitizeBusinessReportMarkdown(valueToBusinessText(discovery.trigger_reason))}`);
+  if (discovery.selection_boundary) lines.push(`- 边界: ${sanitizeBusinessReportMarkdown(valueToBusinessText(discovery.selection_boundary))}`);
+  const candidates = Array.isArray(discovery.candidate_sources) ? discovery.candidate_sources : [];
+  if (candidates.length) {
+    candidates.slice(0, 8).forEach((item, idx) => {
+      const title = item.source_name || item.source_id || `补充信源 ${idx + 1}`;
+      const status = businessEnumLabel(item.status || "not_used");
+      const details = [
+        item.source_type ? `类型: ${valueToBusinessText(item.source_type)}` : "",
+        item.query ? `查询: ${valueToBusinessText(item.query)}` : "",
+        item.intended_use ? `用途: ${valueToBusinessText(item.intended_use)}` : "",
+        item.evidence_ref ? `证据: ${valueToBusinessText(item.evidence_ref)}` : "",
+      ].filter(Boolean).join(" · ");
+      lines.push(`- ${sanitizeBusinessReportMarkdown(title)}: ${status}${details ? ` · ${sanitizeBusinessReportMarkdown(details)}` : ""}`);
+    });
+  }
+  return lines;
+}
+
+function renderQualitativeMarketContextMarkdown(context = null) {
+  if (!context || typeof context !== "object") return [];
+  const lines = ["### 定性市场洞察"];
+  if (context.status) lines.push(`- 状态: ${businessEnumLabel(context.status)}`);
+  if (Array.isArray(context.buyer_language) && context.buyer_language.length) {
+    lines.push(`- 买家语言: ${sanitizeBusinessReportMarkdown(context.buyer_language.map(valueToBusinessText).join("；"))}`);
+  }
+  if (Array.isArray(context.usage_scenarios) && context.usage_scenarios.length) {
+    lines.push(`- 使用场景: ${sanitizeBusinessReportMarkdown(context.usage_scenarios.map(valueToBusinessText).join("；"))}`);
+  }
+  if (Array.isArray(context.content_themes) && context.content_themes.length) {
+    lines.push(`- 内容主题: ${sanitizeBusinessReportMarkdown(context.content_themes.map(valueToBusinessText).join("；"))}`);
+  }
+  if (context.cultural_fit && typeof context.cultural_fit === "object") {
+    lines.push(`- 文化适配: ${sanitizeBusinessReportMarkdown(valueToBusinessText(context.cultural_fit))}`);
+  }
+  if (Array.isArray(context.objection_patterns) && context.objection_patterns.length) {
+    lines.push(`- 异议模式: ${sanitizeBusinessReportMarkdown(context.objection_patterns.map(valueToBusinessText).join("；"))}`);
+  }
+  if (context.claim_boundary) {
+    lines.push(`- 结论边界: ${sanitizeBusinessReportMarkdown(valueToBusinessText(context.claim_boundary))}`);
+  } else {
+    lines.push("- 结论边界: 定性市场资料只能解释买家语言、使用场景、文化接受度和内容表达，不能单独证明某个 SKU 或商品机会可卖。");
+  }
+  if (Array.isArray(context.evidence_ledger) && context.evidence_ledger.length) {
+    context.evidence_ledger.slice(0, 4).forEach((entry) => {
+      lines.push(`- 定性证据: ${sanitizeBusinessReportMarkdown(valueToBusinessText(entry.source_ref || "-"))} · ${sanitizeBusinessReportMarkdown(valueToBusinessText(entry.observed_value || ""))}`);
+    });
+  }
+  return lines;
+}
+
 function resultToReportMarkdown(result = {}) {
   const data = normalizeFinalOutput(result);
   const lines = [];
@@ -1891,6 +1994,8 @@ function resultToReportMarkdown(result = {}) {
   if (data.analysis) lines.push(`**决策诊断与数据推演**:\n${sanitizeBusinessReportMarkdown(data.analysis)}`);
   if (data.summary) lines.push(`**下一步建议**:\n${sanitizeBusinessReportMarkdown(data.summary)}`);
   lines.push(...renderExternalSourcePlanMarkdown(data.external_source_plan));
+  lines.push(...renderAdaptiveSourceDiscoveryMarkdown(data.adaptive_source_discovery));
+  lines.push(...renderQualitativeMarketContextMarkdown(data.qualitative_market_context));
   lines.push(...renderMacroContextMarkdown(data.macro_context));
   const queryFunnel = data.query_funnel;
   if (queryFunnel && typeof queryFunnel === "object") {
@@ -1934,7 +2039,8 @@ function resultToReportMarkdown(result = {}) {
       ];
       lines.push(`#### ${index + 1}. ${title}`);
       fields.forEach(([label, value]) => {
-        if (value) lines.push(`- ${label}: ${sanitizeBusinessReportMarkdown(String(value))}`);
+        const text = valueToBusinessText(value);
+        if (text) lines.push(`- ${label}: ${sanitizeBusinessReportMarkdown(text)}`);
       });
     });
   }
@@ -3318,6 +3424,265 @@ function evidenceResultSummary(item = {}) {
   return "";
 }
 
+const EXTERNAL_SOURCE_LABELS = {
+  ozon: "Ozon 平台",
+  yandex_wordstat: "Yandex Wordstat",
+  yandex: "Yandex.ru",
+  google_ru: "Google RU",
+  google: "Google",
+  google_trends: "Google Trends RU",
+  wildberries: "Wildberries",
+  avito: "Avito",
+  yandex_market: "Yandex Market",
+  megamarket: "MegaMarket",
+  vk_posts: "VK 内容",
+  tgstat: "Telegram/TGStat",
+  dzen: "Dzen 内容",
+  otzovik: "Otzovik 评论",
+  irecommend: "iRecommend 评论",
+  ru_forum: "俄语论坛/讨论页",
+  cbr: "Bank of Russia / CBR",
+  rosstat: "Rosstat",
+  akit: "AKIT 电商行业",
+  data_insight: "Data Insight",
+  yakov_partners: "Yakov and Partners",
+  macro_context: "宏观背景集合",
+  industry_report: "行业报告集合",
+};
+
+const EXTERNAL_SOURCE_LAYERS = {
+  ozon: "platform_trade",
+  yandex_wordstat: "search_demand",
+  yandex: "search_demand",
+  google_ru: "search_demand",
+  google: "search_demand",
+  google_trends: "search_demand",
+  wildberries: "cross_marketplace",
+  avito: "cross_marketplace",
+  yandex_market: "cross_marketplace",
+  megamarket: "cross_marketplace",
+  vk_posts: "social_content",
+  tgstat: "social_content",
+  dzen: "social_content",
+  otzovik: "social_content",
+  irecommend: "social_content",
+  ru_forum: "adaptive_qualitative",
+  custom_ru_source: "adaptive_qualitative",
+  cbr: "macro_context",
+  rosstat: "macro_context",
+  akit: "macro_context",
+  data_insight: "macro_context",
+  yakov_partners: "macro_context",
+  macro_context: "macro_context",
+  industry_report: "macro_context",
+};
+
+function canonicalExternalSourceId(value = "") {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return "";
+  if (/wordstat\.yandex|yandex_wordstat|wordstat/.test(raw)) return "yandex_wordstat";
+  if (/trends\.google|google_trends|google trends/.test(raw)) return "google_trends";
+  if (/market\.yandex|yandex_market/.test(raw)) return "yandex_market";
+  if (/wildberries|wb\.ru/.test(raw)) return "wildberries";
+  if (/avito/.test(raw)) return "avito";
+  if (/megamarket/.test(raw)) return "megamarket";
+  if (/google\.ru|google_ru/.test(raw)) return "google_ru";
+  if (/google/.test(raw)) return "google";
+  if (/yandex/.test(raw)) return "yandex";
+  if (/ozon/.test(raw)) return "ozon";
+  if (/vk\.com|vk_posts|vkontakte/.test(raw)) return "vk_posts";
+  if (/tgstat|telegram/.test(raw)) return "tgstat";
+  if (/dzen/.test(raw)) return "dzen";
+  if (/otzovik/.test(raw)) return "otzovik";
+  if (/irecommend/.test(raw)) return "irecommend";
+  if (/ru_forum|форум|forum|discussion|обсуждение/.test(raw)) return "ru_forum";
+  if (/cbr\.ru|bank of russia|центральный банк|cbr/.test(raw)) return "cbr";
+  if (/rosstat|gks\.ru/.test(raw)) return "rosstat";
+  if (/akit/.test(raw)) return "akit";
+  if (/data.?insight/.test(raw)) return "data_insight";
+  if (/yakov/.test(raw)) return "yakov_partners";
+  if (/macro_context|宏观/.test(raw)) return "macro_context";
+  if (/industry_report|行业/.test(raw)) return "industry_report";
+  return raw.replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
+}
+
+function externalSourceLabel(sourceId = "") {
+  const id = canonicalExternalSourceId(sourceId);
+  return EXTERNAL_SOURCE_LABELS[id] || sourceId || "-";
+}
+
+function externalSourceLayerLabel(layer = "") {
+  const map = {
+    platform_trade: "平台交易/供给",
+    search_demand: "搜索需求",
+    cross_marketplace: "跨平台交易",
+    social_content: "社媒/内容",
+    adaptive_qualitative: "自主扩展/定性",
+    macro_context: "宏观/行业",
+    unplanned: "未声明信源",
+  };
+  return map[String(layer || "")] || layer || "-";
+}
+
+function getPlannedExternalSources(reportData = {}) {
+  const plan = reportData?.external_source_plan || {};
+  const layers = plan.layers || plan.source_layers || {};
+  const rows = new Map();
+  Object.entries(layers || {}).forEach(([layerKey, layer]) => {
+    if (!layer || typeof layer !== "object") return;
+    const status = String(layer.status || "not_used");
+    const sourceValues = Array.isArray(layer.sources)
+      ? layer.sources
+      : Array.isArray(layer.source)
+        ? layer.source
+        : layer.source
+          ? [layer.source]
+          : [];
+    if (!sourceValues.length) {
+      const sourceId = canonicalExternalSourceId(layerKey);
+      rows.set(sourceId, {
+        sourceId,
+        label: externalSourceLabel(sourceId),
+        layer: layerKey,
+        plannedStatus: status,
+        usedFor: valueToBusinessText(layer.used_for || layer.purpose || ""),
+        limitation: valueToBusinessText(layer.limitation || layer.limitations || ""),
+      });
+      return;
+    }
+    sourceValues.forEach((source) => {
+      const sourceId = canonicalExternalSourceId(source);
+      if (!sourceId) return;
+      rows.set(sourceId, {
+        sourceId,
+        label: externalSourceLabel(sourceId),
+        layer: layerKey,
+        plannedStatus: status,
+        usedFor: valueToBusinessText(layer.used_for || layer.purpose || ""),
+        limitation: valueToBusinessText(layer.limitation || layer.limitations || ""),
+      });
+    });
+  });
+  const discoveryCandidates = Array.isArray(reportData?.adaptive_source_discovery?.candidate_sources)
+    ? reportData.adaptive_source_discovery.candidate_sources
+    : [];
+  discoveryCandidates.forEach((source) => {
+    const sourceId = canonicalExternalSourceId(source.source_id || source.source_name || source.url || source.query || "");
+    if (!sourceId || rows.has(sourceId)) return;
+    rows.set(sourceId, {
+      sourceId,
+      label: externalSourceLabel(sourceId),
+      layer: "adaptive_qualitative",
+      plannedStatus: source.status || "not_used",
+      usedFor: valueToBusinessText(source.intended_use || ""),
+      limitation: "自主发现来源必须进入页面取证；不能单独证明 SKU 可卖。",
+    });
+  });
+  return rows;
+}
+
+function externalSourceIdsForEvidence(item = {}) {
+  const ids = new Set();
+  [
+    item.pageEvidence?.evidenceType,
+    item.pageEvidence?.source_type,
+    item.pageEvidence?.provider,
+    item.source_type,
+    item.provider,
+    item.tool,
+    item.url,
+    item.title,
+  ].forEach((value) => {
+    const id = canonicalExternalSourceId(value);
+    if (id && id !== "search_in_browser" && id !== "page_dom") ids.add(id);
+  });
+  if (String(item.tool || "").toLowerCase() === "gemini_google_search") ids.add("google");
+  return Array.from(ids);
+}
+
+function buildExternalSourceReconciliation(reportData = {}, bundle = null) {
+  const planned = getPlannedExternalSources(reportData);
+  const pageEvidence = Array.isArray(bundle?.pageEvidence) ? bundle.pageEvidence : [];
+  const observed = new Map();
+  pageEvidence.forEach((item) => {
+    externalSourceIdsForEvidence(item).forEach((sourceId) => {
+      if (!observed.has(sourceId)) observed.set(sourceId, []);
+      observed.get(sourceId).push(item);
+      if (!planned.has(sourceId)) {
+        planned.set(sourceId, {
+          sourceId,
+          label: externalSourceLabel(sourceId),
+          layer: EXTERNAL_SOURCE_LAYERS[sourceId] || "unplanned",
+          plannedStatus: "not_declared",
+          usedFor: "",
+          limitation: "证据包中出现，但报告 external_source_plan 未声明。",
+        });
+      }
+    });
+  });
+  return Array.from(planned.values()).map((row) => {
+    const items = observed.get(row.sourceId) || [];
+    const statuses = Array.from(new Set(items.map((item) => evidenceBusinessStatusLabel(item)).filter(Boolean)));
+    const urlExamples = Array.from(new Set(items.map((item) => compactEvidenceUrl(item.url || "")).filter(Boolean))).slice(0, 2);
+    return {
+      ...row,
+      observedCount: items.length,
+      evidenceStatuses: statuses,
+      urlExamples,
+      collectedLabel: items.length
+        ? `采集记录: ${items.length}`
+        : row.plannedStatus === "not_used"
+          ? "未采集"
+          : "未见采集记录",
+    };
+  }).sort((a, b) => {
+    const layerOrder = ["platform_trade", "search_demand", "cross_marketplace", "social_content", "macro_context", "unplanned"];
+    const aRank = layerOrder.includes(a.layer) ? layerOrder.indexOf(a.layer) : layerOrder.length;
+    const bRank = layerOrder.includes(b.layer) ? layerOrder.indexOf(b.layer) : layerOrder.length;
+    return aRank - bRank || a.label.localeCompare(b.label);
+  });
+}
+
+function externalSourceReconciliationToMarkdown(reportData = {}, bundle = null) {
+  const rows = buildExternalSourceReconciliation(reportData, bundle);
+  if (!rows.length) return "";
+  const lines = [
+    "### 外部信源启用与采集对账",
+    "| 信源 | 分层 | 报告声明 | 实际采集 | 证据状态 | URL 示例 |",
+    "| --- | --- | --- | --- | --- | --- |",
+  ];
+  rows.forEach((row) => {
+    lines.push(`| ${sanitizeBusinessReportMarkdown(row.label)} | ${externalSourceLayerLabel(row.layer)} | ${businessEnumLabel(row.plannedStatus || "not_used")} | ${row.collectedLabel} | ${sanitizeBusinessReportMarkdown(row.evidenceStatuses.join("、") || "-")} | ${sanitizeBusinessReportMarkdown(row.urlExamples.join("；") || "-")} |`);
+  });
+  lines.push("");
+  lines.push("说明：报告声明来自 external_source_plan；实际采集来自本轮证据包 pageEvidence。若声明为“已使用/阻断”但实际采集为 0，说明模型提出了取证计划或阻断结论，但插件没有留下可复核页面记录。");
+  return lines.join("\n");
+}
+
+function externalSourceReconciliationToPdfHtml(reportData = {}, bundle = null) {
+  const rows = buildExternalSourceReconciliation(reportData, bundle);
+  if (!rows.length) return "";
+  const body = rows.map((row, index) => `
+    <tr>
+      <td>${index + 1}</td>
+      <td>${escapeHtml(row.label)}</td>
+      <td>${escapeHtml(externalSourceLayerLabel(row.layer))}</td>
+      <td>${escapeHtml(businessEnumLabel(row.plannedStatus || "not_used"))}</td>
+      <td>${escapeHtml(row.collectedLabel)}</td>
+      <td>${escapeHtml(row.evidenceStatuses.join("、") || "-")}</td>
+      <td><span class="evidence-url">${escapeHtml(row.urlExamples.join("；") || "-")}</span></td>
+    </tr>
+  `).join("");
+  return `
+    <h3>外部信源启用与采集对账</h3>
+    <p class="meta">报告声明来自 external_source_plan；实际采集来自本轮证据包 pageEvidence。用于核对“计划启用”和“真实采集”是否一致。</p>
+    <table>
+      <thead><tr><th>#</th><th>信源</th><th>分层</th><th>报告声明</th><th>实际采集</th><th>证据状态</th><th>URL 示例</th></tr></thead>
+      <tbody>${body}</tbody>
+    </table>
+  `;
+}
+
 function formatDateInput(date) {
   return date.toISOString().slice(0, 10);
 }
@@ -3696,6 +4061,7 @@ function renderReportsList(monitorReports = [], savedResults = []) {
       title: name,
       date: new Date(r.createdAt || r.timestamp || Date.now()).toLocaleDateString(),
       content: sanitizeBusinessReportMarkdown(text),
+      reportData: normalizedResult,
       tag: "AI决策",
       evidenceBundle: r.evidence_bundle || null,
       evidenceStatus,
@@ -3730,6 +4096,7 @@ function renderReportsList(monitorReports = [], savedResults = []) {
   const renderReport = (rep, index) => {
     document.querySelectorAll(".report-item").forEach(item => item.classList.remove("active"));
     document.getElementById(`report-item-${index}`)?.classList.add("active");
+    const sourceAuditMarkdown = externalSourceReconciliationToMarkdown(rep.reportData || {}, rep.evidenceBundle);
     viewer.innerHTML = `
       <div class="report-viewer-toolbar">
         <div>
@@ -3746,7 +4113,7 @@ function renderReportsList(monitorReports = [], savedResults = []) {
         </div>
       </div>
       <div class="md-report">
-        ${marked.parse(sanitizeBusinessReportMarkdown(rep.content))}
+        ${marked.parse(sanitizeBusinessReportMarkdown([rep.content, sourceAuditMarkdown].filter(Boolean).join("\n\n")))}
       </div>
     `;
     viewer.querySelector(".report-copy-current")?.addEventListener("click", () => copyReportContent(rep));
@@ -4080,7 +4447,7 @@ async function downloadEvidenceBundleZip(rep) {
   });
 }
 
-function evidenceBundleToPdfAppendixHtml(bundle = null) {
+function evidenceBundleToPdfAppendixHtml(bundle = null, reportData = null) {
   if (!bundle || typeof bundle !== "object") return "";
   const quality = bundle.evidence_quality || {};
   const summary = bundle.reportSummary || {};
@@ -4132,6 +4499,8 @@ function evidenceBundleToPdfAppendixHtml(bundle = null) {
           <tr><th>核心取证动作</th><td colspan="3">${escapeHtml(tools.slice(0, 16).join(" / ") || "-")}</td></tr>
         </tbody>
       </table>
+
+      ${externalSourceReconciliationToPdfHtml(reportData || {}, bundle)}
 
       ${pageRows ? `
         <h3>页面证据</h3>
@@ -4277,7 +4646,7 @@ function downloadReportPdf(rep) {
   const dateStr = new Date().toISOString().split("T")[0];
   const cleanContent = sanitizeBusinessReportMarkdown(rep.content || "");
   const bodyHtml = window.marked?.parse ? window.marked.parse(cleanContent) : `<pre><code>${escapeHtml(cleanContent)}</code></pre>`;
-  const evidenceAppendixHtml = evidenceBundleToPdfAppendixHtml(rep.evidenceBundle);
+  const evidenceAppendixHtml = evidenceBundleToPdfAppendixHtml(rep.evidenceBundle, rep.reportData || {});
   const printHtml = buildNativePdfPrintHtml({
     title: rep.title,
     subtitle: `${rep.tag || "AI决策"} · ${rep.date || dateStr}`,

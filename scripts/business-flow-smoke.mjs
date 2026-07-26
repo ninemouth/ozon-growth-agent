@@ -376,11 +376,15 @@ assert.match(platformTrendsSkill, /blocking_gaps/, "platform trends skill should
 assert.match(platformTrendsSkill, /follow_up_tasks/, "platform trends skill should generate executable follow-up tasks");
 assert.match(platformTrendsSkill, /workflow_nodes/, "platform trends skill should generate canvas workflow nodes");
 assert.match(platformTrendsSkill, /external_source_plan[\s\S]*platform_trade[\s\S]*search_demand[\s\S]*macro_context/, "platform trends skill should require a layered external source plan");
+assert.match(platformTrendsSkill, /adaptive_source_discovery[\s\S]*qualitative_market_context[\s\S]*定性市场资料/, "platform trends skill should require adaptive source discovery and qualitative market context");
+assert.match(platformTrendsSkill, /status[\s\S]*真实取证一致[\s\S]*禁止把“计划要查\/理论上应查”的信源写成已使用/, "platform trends skill should require external source status to match captured evidence");
 assert.match(platformTrendsSkill, /宏观背景只能解释[\s\S]*不能单独证明某个 SKU 或商品机会可卖/, "platform trends skill should keep macro context out of direct sellability evidence");
-assert.match(toolRegistrySource, /yandex_wordstat[\s\S]*wildberries[\s\S]*avito[\s\S]*yandex_market[\s\S]*cbr[\s\S]*rosstat[\s\S]*akit[\s\S]*yakov_partners/, "search tool should expose Russian demand, marketplace, macro and industry engines");
+assert.match(toolRegistrySource, /yandex_wordstat[\s\S]*wildberries[\s\S]*avito[\s\S]*yandex_market[\s\S]*otzovik[\s\S]*irecommend[\s\S]*ru_forum[\s\S]*cbr[\s\S]*rosstat[\s\S]*akit[\s\S]*data_insight[\s\S]*yakov_partners/, "search tool should expose Russian demand, qualitative, marketplace, macro and industry engines");
 assert.match(agentLoopSource, /validateOzonPlatformTrendReport/, "agent loop should validate Ozon platform trend report quality");
 assert.match(agentLoopSource, /hasDirectPlatformDemandEvidence[\s\S]*宏观或行业资料只能作为背景，不能单独证明商品机会可卖/, "critic should reject macro-only observed sellability claims before final audit");
 assert.match(agentLoopSource, /Google Trends 数据不足|Google Trends 证据不足|hasInvalidGoogleTrendsEvidence/, "critic should downgrade insufficient Google Trends evidence");
+assert.match(agentLoopSource, /validateExternalSourcePlanEvidence[\s\S]*external_source_plan 声明[\s\S]*没有对应的可用页面\/搜索证据/, "critic should reject declared external source usage without captured evidence");
+assert.match(agentLoopSource, /validateAdaptiveSourceDiscovery[\s\S]*validateQualitativeMarketContext[\s\S]*不能只靠定性市场资料/, "critic should gate adaptive qualitative sources and prevent qualitative-only sellability claims");
 assert.match(agentLoopSource, /占位链接|XXXX|placeholder/, "critic should reject placeholder URLs in trend reports");
 assert.match(complianceSkill, /EAC|TR CU|欧亚经济联盟/, "compliance auditor should cover Ozon/RU compliance risks");
 
@@ -445,8 +449,33 @@ storage.savedResults.unshift({
           search_demand: { sources: ["yandex_wordstat"], status: "blocked", used_for: "搜索需求验证", limitation: "登录墙阻断" },
           cross_marketplace: { sources: ["wildberries"], status: "not_used", used_for: "跨平台价格验证", limitation: "本轮未打开" },
           social_content: { sources: [], status: "not_used", used_for: "社媒种草验证", limitation: "本轮未使用" },
+          adaptive_qualitative: { sources: ["otzovik"], status: "not_used", used_for: "评论口碑和买家语言", limitation: "本轮未启用" },
           macro_context: { sources: [], status: "not_used", used_for: "宏观背景", limitation: "不能证明 SKU 可卖" },
         },
+      },
+      adaptive_source_discovery: {
+        enabled: false,
+        trigger_reason: "本轮不需要补充规则外来源。",
+        candidate_sources: [{
+          source_id: "otzovik",
+          source_name: "Otzovik",
+          source_type: "review_site",
+          query: "кормушка для белок отзывы",
+          intended_use: "评论痛点和买家语言",
+          status: "not_used",
+          evidence_ref: "",
+        }],
+        selection_boundary: "发现来源不等于趋势已验证，必须进入页面取证和 evidence_ledger；定性资料不能单独证明 SKU 可卖。",
+      },
+      qualitative_market_context: {
+        status: "not_used",
+        buyer_language: [],
+        usage_scenarios: [],
+        content_themes: [],
+        cultural_fit: { fit: "unknown", reason: "本轮未采评论/论坛定性证据。", risks: [] },
+        objection_patterns: [],
+        evidence_ledger: [],
+        claim_boundary: "定性市场资料只能解释买家语言、使用场景、文化接受度和内容表达，不能单独证明某个 SKU 或商品机会可卖。",
       },
       macro_context: {
         status: "not_used",
@@ -461,6 +490,10 @@ storage.savedResults.unshift({
           direction: "图片搜索结果页筛选",
           evidence: "调用指令: search_in_browser 后，当前已有候选商品卡片。",
           first_actions: ["按主图相似度排序", "打开 1-3 个详情页"],
+          risk_guard: {
+            hard_blocks: ["未取得真实详情页不得采购"],
+            required_validation: ["低星评论", "物流毛利"],
+          },
         },
       ],
     },
@@ -469,8 +502,11 @@ storage.savedResults.unshift({
 context.renderReportsList([], storage.savedResults);
 const wrappedReportText = window.document.getElementById("report-viewer-content").textContent;
 assert.match(wrappedReportText, /Ozon 松鼠喂食器跨境供应链审计/, "wrapped final reports should render as business report content");
+assert.match(wrappedReportText, /外部信源启用与采集对账[\s\S]*Ozon 平台[\s\S]*采集记录: 1[\s\S]*Yandex Wordstat[\s\S]*阻断/, "report center should reconcile declared external sources against captured evidence");
+assert.match(wrappedReportText, /自主扩展信源发现[\s\S]*Otzovik[\s\S]*评论痛点和买家语言[\s\S]*定性市场洞察[\s\S]*不能单独证明某个 SKU 或商品机会可卖/, "report center should render adaptive source discovery and qualitative market context");
+assert.match(wrappedReportText, /强阻断[\s\S]*未取得真实详情页不得采购[\s\S]*必补验证[\s\S]*低星评论/, "report center should expand structured risk guardrails into readable business text");
 assert.doesNotMatch(wrappedReportText, /"type":\s*"final"/, "wrapped final reports should not render raw JSON by default");
-assert.doesNotMatch(wrappedReportText, /read_current_page|search_in_browser|DOM|调用指令/i, "report center should sanitize internal tool jargon in visible report text");
+assert.doesNotMatch(wrappedReportText, /read_current_page|search_in_browser|DOM|调用指令|\[object Object\]/i, "report center should sanitize internal tool jargon and object rendering defects in visible report text");
 assert.ok(window.document.querySelector(".report-evidence-current"), "report center should expose evidence bundle download for reports with evidence_bundle");
 assert.ok(window.document.querySelector(".report-verify-current"), "report center should expose evidence verification for reports with evidence_bundle");
 assert.ok(window.document.querySelector(".report-zip-current"), "report center should expose ZIP export for reports with evidence_bundle");
@@ -482,12 +518,14 @@ assert.match(storage.printHtml, /@page\s*\{\s*size:\s*A4 portrait;/, "report cen
 assert.match(storage.printHtml, /正在生成原生数字版 PDF/, "report center PDF should use the native print-to-PDF bridge");
 assert.match(storage.printHtml, /Ozon 松鼠喂食器跨境供应链审计/, "report center PDF should preserve Chinese report content");
 assert.match(storage.printHtml, /外部信源分层计划[\s\S]*搜索需求信号[\s\S]*阻断[\s\S]*宏观与行业背景边界[\s\S]*不能单独证明某个 SKU 或商品机会可卖/, "report center PDF should render external source plan and macro context boundaries");
+assert.match(storage.printHtml, /外部信源启用与采集对账[\s\S]*报告声明[\s\S]*实际采集[\s\S]*Ozon 平台[\s\S]*采集记录: 1[\s\S]*Wildberries[\s\S]*未采集/, "report center PDF should reconcile enabled external sources with captured page evidence");
+assert.match(storage.printHtml, /自主扩展信源发现[\s\S]*Otzovik[\s\S]*定性市场洞察[\s\S]*文化适配/, "report center PDF should render adaptive source discovery and qualitative market context");
 assert.match(storage.printHtml, /wordstat\.yandex\.com\/\?words=test[\s\S]*阻断/, "PDF evidence appendix should keep search query params and show login-wall evidence as blocked");
 assert.match(storage.printHtml, /证据包摘要/, "report center PDF should append evidence bundle summary when available");
 assert.match(storage.printHtml, /截图证据/, "report center PDF appendix should include human-readable screenshot evidence labels");
 assert.match(storage.printHtml, /取证动作/, "report center PDF appendix should include human-readable evidence action labels");
 assert.match(storage.printHtml, /Ozon 店铺页面采集|公开网页检索/, "report center PDF appendix should humanize tool names");
-assert.doesNotMatch(storage.printHtml, /artifact:\/\/ozon\/test|collect_ozon_shop_pages|search_in_browser|read_current_page|DOM/, "report center PDF should not expose raw artifact refs or internal tool names");
+assert.doesNotMatch(storage.printHtml, /artifact:\/\/ozon\/test|collect_ozon_shop_pages|search_in_browser|read_current_page|DOM|\[object Object\]/, "report center PDF should not expose raw artifact refs, internal tool names, or object rendering defects");
 assert.match(storage.printHtml, /截图可用/, "report center PDF appendix should include screenshot availability summary");
 assert.equal(storage.lastOpenedUrl, "chrome-extension://test/print.html", "report center PDF should open the shared print bridge");
 await window.document.querySelector(".report-verify-current").click();

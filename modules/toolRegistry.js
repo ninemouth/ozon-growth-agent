@@ -469,10 +469,14 @@ function getSearchEvidenceType(engine = "") {
     vk_posts: "social_signal",
     tgstat: "social_signal",
     dzen: "social_signal",
+    otzovik: "social_signal",
+    irecommend: "social_signal",
+    ru_forum: "social_signal",
     yandex_news: "ru_news",
     cbr: "macro_context",
     rosstat: "macro_context",
     akit: "industry_report",
+    data_insight: "industry_report",
     yakov_partners: "industry_report",
   };
   return map[normalizedEngine] || "page_dom";
@@ -2206,10 +2210,10 @@ ${JSON.stringify(readable.map((item, index) => ({
     };
     
     let targetQuery = query;
-    const isForeignPlatform = ["amazon", "etsy", "google", "google_ru", "google_trends", "bing", "yandex", "yandex_wordstat", "yandex_market", "ozon", "wildberries", "avito", "megamarket", "vk_posts", "tgstat", "dzen", "yandex_news", "cbr", "rosstat", "akit", "yakov_partners"].includes(normalizedEngine);
+    const isForeignPlatform = ["amazon", "etsy", "google", "google_ru", "google_trends", "bing", "yandex", "yandex_wordstat", "yandex_market", "ozon", "wildberries", "avito", "megamarket", "vk_posts", "tgstat", "dzen", "otzovik", "irecommend", "ru_forum", "yandex_news", "cbr", "rosstat", "akit", "data_insight", "yakov_partners"].includes(normalizedEngine);
     const hasChinese = /[\u4e00-\u9fa5]/.test(query);
     const hasCyrillic = /[\u0400-\u04ff]/.test(query);
-    const isRussianSearchEngine = ["google_ru", "google_trends", "yandex", "yandex_wordstat", "yandex_market", "ozon", "wildberries", "avito", "megamarket", "vk_posts", "tgstat", "dzen", "yandex_news", "cbr", "rosstat", "akit", "yakov_partners"].includes(normalizedEngine);
+    const isRussianSearchEngine = ["google_ru", "google_trends", "yandex", "yandex_wordstat", "yandex_market", "ozon", "wildberries", "avito", "megamarket", "vk_posts", "tgstat", "dzen", "otzovik", "irecommend", "ru_forum", "yandex_news", "cbr", "rosstat", "akit", "data_insight", "yakov_partners"].includes(normalizedEngine);
     const shouldLocalizeQuery = hasChinese || (isRussianSearchEngine && !hasCyrillic);
 
     if (isForeignPlatform && shouldLocalizeQuery) {
@@ -2258,10 +2262,14 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
       vk_posts: `https://vk.com/search?c%5Bsection%5D=statuses&c%5Bq%5D=${encodeURIComponent(targetQuery)}`,
       tgstat: `https://tgstat.ru/posts?q=${encodeURIComponent(targetQuery)}`,
       dzen: `https://dzen.ru/search?q=${encodeURIComponent(targetQuery)}`,
+      otzovik: `https://otzovik.com/search/?text=${encodeURIComponent(targetQuery)}`,
+      irecommend: `https://irecommend.ru/search/site/${encodeURIComponent(targetQuery)}`,
+      ru_forum: `https://yandex.ru/search/?text=${encodeURIComponent(`${targetQuery} форум отзывы обсуждение`)}`,
       yandex_news: `https://news.yandex.ru/yandsearch?text=${encodeURIComponent(targetQuery)}`,
       cbr: `https://www.google.com/search?q=${encodeURIComponent(`${targetQuery} site:cbr.ru inflation exchange rate consumer prices Russia`)}`,
       rosstat: `https://www.google.com/search?q=${encodeURIComponent(`${targetQuery} site:rosstat.gov.ru retail trade consumer prices Russia`)}`,
       akit: `https://www.google.com/search?q=${encodeURIComponent(`${targetQuery} АКИТ интернет торговля Россия маркетплейсы`)}`,
+      data_insight: `https://www.google.com/search?q=${encodeURIComponent(`${targetQuery} Data Insight ecommerce Russia marketplace`)}`,
       yakov_partners: `https://www.google.com/search?q=${encodeURIComponent(`${targetQuery} Yakov Partners ecommerce Russia marketplace`)}`,
     };
     const searchActionLabel = normalizedEngine === "google_trends"
@@ -2272,9 +2280,15 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
           ? "Telegram 帖子种草取证"
           : normalizedEngine === "dzen"
             ? "Dzen 博客评测取证"
-            : normalizedEngine === "yandex_news"
-              ? "Yandex.News 新闻舆情取证"
-              : normalizedEngine === "yandex_wordstat"
+            : normalizedEngine === "otzovik"
+              ? "Otzovik 评论与口碑取证"
+              : normalizedEngine === "irecommend"
+                ? "iRecommend 评论与口碑取证"
+                : normalizedEngine === "ru_forum"
+                  ? "俄语论坛/讨论页定性取证"
+                  : normalizedEngine === "yandex_news"
+                    ? "Yandex.News 新闻舆情取证"
+                    : normalizedEngine === "yandex_wordstat"
                 ? "Yandex Wordstat 搜索需求取证"
                 : normalizedEngine === "wildberries"
                   ? "Wildberries 平台交叉验证"
@@ -2284,14 +2298,14 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
                       ? "Yandex Market 价格与规格取证"
                       : normalizedEngine === "megamarket"
                         ? "MegaMarket 平台价格取证"
-                        : ["cbr", "rosstat", "akit", "yakov_partners"].includes(normalizedEngine)
+                        : ["cbr", "rosstat", "akit", "data_insight", "yakov_partners"].includes(normalizedEngine)
                           ? "俄罗斯宏观与行业背景取证"
               : ["google", "google_ru"].includes(normalizedEngine)
                 ? "Google 搜索结果取证"
                 : normalizedEngine === "yandex"
                   ? "Yandex.ru 搜索结果取证"
                   : "浏览器搜索结果取证";
-    const shouldAutoCloseSearchTab = ["google", "google_ru", "google_trends", "bing", "yandex", "yandex_wordstat", "yandex_market", "wildberries", "avito", "megamarket", "vk_posts", "tgstat", "dzen", "yandex_news", "cbr", "rosstat", "akit", "yakov_partners"].includes(normalizedEngine);
+    const shouldAutoCloseSearchTab = ["google", "google_ru", "google_trends", "bing", "yandex", "yandex_wordstat", "yandex_market", "wildberries", "avito", "megamarket", "vk_posts", "tgstat", "dzen", "otzovik", "irecommend", "ru_forum", "yandex_news", "cbr", "rosstat", "akit", "data_insight", "yakov_partners"].includes(normalizedEngine);
     const attachSearchScreenshotArtifact = async (payload, tabId) => {
       if (!shouldAutoCloseSearchTab || payload.screenshotRef || payload.screenshotCaptured) return payload;
       try {

@@ -517,7 +517,7 @@ function hasEvidenceSource(toolHistory = [], pageContext = {}, sourceType = "") 
   }
   if (normalized === "social_signal") {
     return hasSuccessfulToolCall(toolHistory, (entry) =>
-      entry.tool === "search_in_browser" && ["vk_posts", "tgstat", "dzen"].includes(String(entry.arguments?.engine || "").toLowerCase())
+      entry.tool === "search_in_browser" && ["vk_posts", "tgstat", "dzen", "otzovik", "irecommend", "ru_forum"].includes(String(entry.arguments?.engine || "").toLowerCase())
     );
   }
   if (normalized === "google_search") {
@@ -553,7 +553,7 @@ function hasEvidenceSource(toolHistory = [], pageContext = {}, sourceType = "") 
   }
   if (normalized === "industry_report") {
     return hasSuccessfulToolCall(toolHistory, (entry) =>
-      entry.tool === "search_in_browser" && ["akit", "yakov_partners", "google", "google_ru", "yandex"].includes(String(entry.arguments?.engine || "").toLowerCase())
+      entry.tool === "search_in_browser" && ["akit", "data_insight", "yakov_partners", "google", "google_ru", "yandex"].includes(String(entry.arguments?.engine || "").toLowerCase())
     );
   }
   if (normalized === "sourcing_search") {
@@ -604,6 +604,345 @@ function hasDirectPlatformDemandEvidence(ledger = []) {
     "page_dom",
     "screenshot_visual",
   ]);
+}
+
+const EXTERNAL_SOURCE_TO_EVIDENCE_TYPES = {
+  ozon: ["ozon_search", "page_dom"],
+  yandex_wordstat: ["yandex_wordstat"],
+  yandex: ["yandex_search"],
+  google: ["google_search"],
+  google_ru: ["google_search"],
+  google_trends: ["google_trends"],
+  wildberries: ["wildberries_search", "marketplace_crosscheck"],
+  avito: ["avito_search", "marketplace_crosscheck"],
+  yandex_market: ["yandex_market", "marketplace_crosscheck"],
+  megamarket: ["marketplace_crosscheck"],
+  vk_posts: ["vk_social", "social_signal"],
+  tgstat: ["telegram_social", "social_signal"],
+  dzen: ["dzen_blog", "social_signal"],
+  otzovik: ["social_signal"],
+  irecommend: ["social_signal"],
+  ru_forum: ["social_signal", "yandex_search"],
+  cbr: ["macro_context"],
+  rosstat: ["macro_context"],
+  akit: ["industry_report", "macro_context"],
+  data_insight: ["industry_report", "macro_context"],
+  yakov_partners: ["industry_report", "macro_context"],
+};
+
+function canonicalExternalSourceId(value = "") {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return "";
+  if (/wordstat\.yandex|yandex_wordstat|wordstat/.test(raw)) return "yandex_wordstat";
+  if (/trends\.google|google_trends|google trends/.test(raw)) return "google_trends";
+  if (/market\.yandex|yandex_market/.test(raw)) return "yandex_market";
+  if (/wildberries|wb\.ru/.test(raw)) return "wildberries";
+  if (/avito/.test(raw)) return "avito";
+  if (/megamarket/.test(raw)) return "megamarket";
+  if (/google\.ru|google_ru/.test(raw)) return "google_ru";
+  if (/google/.test(raw)) return "google";
+  if (/yandex/.test(raw)) return "yandex";
+  if (/ozon/.test(raw)) return "ozon";
+  if (/vk\.com|vk_posts|vkontakte/.test(raw)) return "vk_posts";
+  if (/tgstat|telegram/.test(raw)) return "tgstat";
+  if (/dzen/.test(raw)) return "dzen";
+  if (/otzovik/.test(raw)) return "otzovik";
+  if (/irecommend/.test(raw)) return "irecommend";
+  if (/ru_forum|форум|forum|discussion|обсуждение/.test(raw)) return "ru_forum";
+  if (/cbr\.ru|bank of russia|центральный банк|cbr/.test(raw)) return "cbr";
+  if (/rosstat|gks\.ru/.test(raw)) return "rosstat";
+  if (/akit/.test(raw)) return "akit";
+  if (/data.?insight/.test(raw)) return "data_insight";
+  if (/yakov/.test(raw)) return "yakov_partners";
+  if (/macro_context|宏观/.test(raw)) return "macro_context";
+  if (/industry_report|行业/.test(raw)) return "industry_report";
+  return raw.replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
+}
+
+function externalSourceName(sourceId = "") {
+  const map = {
+    ozon: "Ozon",
+    yandex_wordstat: "Yandex Wordstat",
+    yandex: "Yandex.ru",
+    google: "Google",
+    google_ru: "Google RU",
+    google_trends: "Google Trends RU",
+    wildberries: "Wildberries",
+    avito: "Avito",
+    yandex_market: "Yandex Market",
+    megamarket: "MegaMarket",
+    vk_posts: "VK",
+    tgstat: "TGStat",
+    dzen: "Dzen",
+    otzovik: "Otzovik",
+    irecommend: "iRecommend",
+    ru_forum: "俄语论坛",
+    cbr: "CBR",
+    rosstat: "Rosstat",
+    akit: "AKIT",
+    data_insight: "Data Insight",
+    yakov_partners: "Yakov and Partners",
+    macro_context: "宏观背景",
+    industry_report: "行业报告",
+  };
+  return map[sourceId] || sourceId || "未命名信源";
+}
+
+function externalSourceEngineMatches(sourceId = "", engine = "") {
+  const normalizedEngine = String(engine || "").toLowerCase();
+  if (!sourceId || !normalizedEngine) return false;
+  if (sourceId === "google" || sourceId === "google_ru") return ["google", "google_ru"].includes(normalizedEngine);
+  if (sourceId === "macro_context") return ["cbr", "rosstat", "google", "google_ru"].includes(normalizedEngine);
+  if (sourceId === "industry_report") return ["akit", "yakov_partners", "google", "google_ru", "yandex"].includes(normalizedEngine);
+  return normalizedEngine === sourceId;
+}
+
+function externalSourceUrlMatches(sourceId = "", url = "") {
+  const text = String(url || "").toLowerCase();
+  if (!text) return false;
+  if (sourceId === "ozon") return /ozon\./i.test(text);
+  if (sourceId === "yandex_wordstat") return /wordstat\.yandex/i.test(text);
+  if (sourceId === "yandex") return /(^|\/\/)([^/]+\.)?yandex\./i.test(text) && !/wordstat\.yandex|market\.yandex/i.test(text);
+  if (sourceId === "yandex_market") return /market\.yandex/i.test(text);
+  if (sourceId === "google_trends") return /trends\.google/i.test(text);
+  if (sourceId === "google" || sourceId === "google_ru") return /google\./i.test(text) && !/trends\.google/i.test(text);
+  if (sourceId === "wildberries") return /wildberries\.|wb\.ru/i.test(text);
+  if (sourceId === "avito") return /avito\./i.test(text);
+  if (sourceId === "megamarket") return /megamarket\./i.test(text);
+  if (sourceId === "vk_posts") return /vk\.com/i.test(text);
+  if (sourceId === "tgstat") return /tgstat\.|telegram\./i.test(text);
+  if (sourceId === "dzen") return /dzen\./i.test(text);
+  if (sourceId === "otzovik") return /otzovik\./i.test(text);
+  if (sourceId === "irecommend") return /irecommend\./i.test(text);
+  if (sourceId === "ru_forum") return /forum|форум|otzovik|irecommend|yandex\.[^/]+\/search/i.test(text);
+  if (sourceId === "cbr") return /cbr\.ru/i.test(text);
+  if (sourceId === "rosstat") return /rosstat\.gov|gks\.ru/i.test(text);
+  if (sourceId === "akit") return /akit\.ru|google\.[^/]+\/search/i.test(text);
+  if (sourceId === "data_insight") return /datainsight|data-insight|google\.[^/]+\/search/i.test(text);
+  if (sourceId === "yakov_partners") return /yakovpartners|yakov-partners|google\.[^/]+\/search/i.test(text);
+  return false;
+}
+
+function hasExternalSourceAttempt(toolHistory = [], pageContext = {}, sourceId = "") {
+  const normalized = canonicalExternalSourceId(sourceId);
+  if (!normalized) return false;
+  if (externalSourceUrlMatches(normalized, pageContext?.url)) return true;
+  return toolHistory.some((entry) => {
+    const engine = String(entry?.arguments?.engine || "").toLowerCase();
+    const urls = [
+      entry?.result?.url,
+      entry?.result?.finalUrl,
+      entry?.result?.searchUrl,
+      entry?.result?.pageData?.url,
+      entry?.arguments?.url,
+    ];
+    return externalSourceEngineMatches(normalized, engine) || urls.some((url) => externalSourceUrlMatches(normalized, url));
+  });
+}
+
+function hasExternalSourceUsableEvidence(toolHistory = [], pageContext = {}, sourceId = "") {
+  const normalized = canonicalExternalSourceId(sourceId);
+  if (!normalized) return false;
+  if (normalized === "ozon" && externalSourceUrlMatches(normalized, pageContext?.url) && (
+    pageContext?.title || pageContext?.text || pageContext?.visibleText || pageContext?.productCards?.length
+  )) return true;
+  const evidenceTypes = EXTERNAL_SOURCE_TO_EVIDENCE_TYPES[normalized] || [normalized];
+  return evidenceTypes.some((type) => hasEvidenceSource(toolHistory, pageContext, type)) ||
+    hasSuccessfulToolCall(toolHistory, (entry) => {
+      const engine = String(entry?.arguments?.engine || "").toLowerCase();
+      const urls = [
+        entry?.result?.url,
+        entry?.result?.finalUrl,
+        entry?.result?.searchUrl,
+        entry?.result?.pageData?.url,
+        entry?.arguments?.url,
+      ];
+      return externalSourceEngineMatches(normalized, engine) || urls.some((url) => externalSourceUrlMatches(normalized, url));
+    });
+}
+
+function getExternalSourcePlanRows(plan = {}) {
+  const layers = plan?.layers || plan?.source_layers || {};
+  const rows = [];
+  Object.entries(layers || {}).forEach(([layerKey, layer]) => {
+    if (!layer || typeof layer !== "object") return;
+    const sources = Array.isArray(layer.sources)
+      ? layer.sources
+      : Array.isArray(layer.source)
+        ? layer.source
+        : layer.source
+          ? [layer.source]
+          : [];
+    const status = String(layer.status || "not_used").toLowerCase();
+    if (!sources.length) {
+      rows.push({ layerKey, sourceId: canonicalExternalSourceId(layerKey), status, layer });
+      return;
+    }
+    sources.forEach((source) => rows.push({
+      layerKey,
+      sourceId: canonicalExternalSourceId(source),
+      status,
+      layer,
+    }));
+  });
+  return rows.filter((row) => row.sourceId);
+}
+
+function evidenceSourceIdsFromToolHistory(toolHistory = [], pageContext = {}) {
+  const ids = new Set();
+  if (pageContext?.url) {
+    const sourceId = canonicalExternalSourceId(pageContext.url);
+    if (sourceId) ids.add(sourceId);
+  }
+  toolHistory.forEach((entry) => {
+    [
+      entry?.arguments?.engine,
+      entry?.result?.pageEvidence?.source_type,
+      entry?.result?.pageData?.pageEvidence?.source_type,
+      entry?.result?.pageEvidence?.evidenceType,
+      entry?.result?.source_type,
+      entry?.result?.provider,
+      entry?.result?.url,
+      entry?.result?.finalUrl,
+      entry?.result?.searchUrl,
+      entry?.result?.pageData?.url,
+      entry?.arguments?.url,
+    ].forEach((value) => {
+      const sourceId = canonicalExternalSourceId(value);
+      if (sourceId && !["search_in_browser", "page_dom"].includes(sourceId)) ids.add(sourceId);
+    });
+    if (String(entry?.tool || "").toLowerCase() === "gemini_google_search") ids.add("google");
+  });
+  return ids;
+}
+
+function externalSourceBlockingGapRegex(sourceId = "") {
+  const name = externalSourceName(sourceId).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const raw = String(sourceId || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`${name}|${raw}|外部信源|信源|阻断|未完成|未采集|取证`, "i");
+}
+
+function validateExternalSourcePlanEvidence(out = {}, toolHistory = [], pageContext = {}) {
+  const errors = [];
+  const rows = getExternalSourcePlanRows(out.external_source_plan || {});
+  const plannedSourceIds = new Set(rows.map((row) => row.sourceId));
+  rows.forEach((row) => {
+    if (row.status === "not_used") return;
+    const sourceLabel = externalSourceName(row.sourceId);
+    if (["used", "observed"].includes(row.status)) {
+      if (!hasExternalSourceUsableEvidence(toolHistory, pageContext, row.sourceId)) {
+        errors.push(`external_source_plan 声明 ${sourceLabel} 为已使用，但本轮没有对应的可用页面/搜索证据。请补采该信源，或把状态降级为 blocked/not_used 并写入 blocking_gaps。`);
+      }
+      return;
+    }
+    if (row.status === "blocked") {
+      const hasAttempt = hasExternalSourceAttempt(toolHistory, pageContext, row.sourceId);
+      const hasGap = hasReportBlockingGap(out, externalSourceBlockingGapRegex(row.sourceId));
+      if (!hasAttempt && !hasGap) {
+        errors.push(`external_source_plan 声明 ${sourceLabel} 被阻断，但本轮没有对应访问尝试，也没有在 blocking_gaps 中说明阻断原因和恢复动作。`);
+      }
+    }
+  });
+
+  const observedSourceIds = evidenceSourceIdsFromToolHistory(toolHistory, pageContext);
+  observedSourceIds.forEach((sourceId) => {
+    if (!plannedSourceIds.has(sourceId) && !["macro_context", "industry_report"].includes(sourceId)) {
+      errors.push(`本轮已采集 ${externalSourceName(sourceId)} 证据，但 external_source_plan 未声明该信源；请补入对应分层、用途、状态和局限。`);
+    }
+  });
+  return errors;
+}
+
+function hasCommerceOrSearchDemandEvidence(ledger = []) {
+  return hasAnyLedgerType(ledger, [
+    "ozon_search",
+    "yandex_search",
+    "yandex_wordstat",
+    "google_search",
+    "google_trends",
+    "wildberries_search",
+    "avito_search",
+    "yandex_market",
+    "marketplace_crosscheck",
+  ]);
+}
+
+function validateAdaptiveSourceDiscovery(out = {}, toolHistory = [], pageContext = {}) {
+  const errors = [];
+  const discovery = out.adaptive_source_discovery;
+  if (!discovery || typeof discovery !== "object") {
+    errors.push("Ozon 平台趋势报告缺少 adaptive_source_discovery。必须说明是否启用自主扩展信源、触发原因、候选来源和边界。");
+    return errors;
+  }
+  if (typeof discovery.enabled !== "boolean") {
+    errors.push("adaptive_source_discovery.enabled 必须是布尔值，明确本轮是否启用规则外/补充信源发现。");
+  }
+  if (!discovery.trigger_reason) {
+    errors.push("adaptive_source_discovery 缺少 trigger_reason，无法解释为什么启用或不启用自主扩展信源。");
+  }
+  if (!/不等于|不能|不得|不可|证据|取证|验证|evidence/i.test(String(discovery.selection_boundary || ""))) {
+    errors.push("adaptive_source_discovery.selection_boundary 必须说明发现来源不等于趋势已验证，必须进入页面取证和证据账本。");
+  }
+  const candidates = Array.isArray(discovery.candidate_sources) ? discovery.candidate_sources : [];
+  if (discovery.enabled && candidates.length === 0) {
+    errors.push("adaptive_source_discovery.enabled=true 时，candidate_sources 至少需要列出 1 个自主发现或补充定性信源。");
+  }
+  candidates.forEach((source, idx) => {
+    const sourceId = canonicalExternalSourceId(source?.source_id || source?.source_name || source?.url || source?.query || "");
+    const status = String(source?.status || "").toLowerCase();
+    ["source_id", "source_name", "source_type", "query", "intended_use", "status"].forEach((field) => {
+      if (!source?.[field]) {
+        errors.push(`adaptive_source_discovery.candidate_sources 第 ${idx + 1} 项缺少 ${field}。`);
+      }
+    });
+    if (!["used", "blocked", "not_used"].includes(status)) {
+      errors.push(`adaptive_source_discovery.candidate_sources 第 ${idx + 1} 项 status 必须是 used / blocked / not_used。`);
+    }
+    if (status === "used" && !hasExternalSourceUsableEvidence(toolHistory, pageContext, sourceId)) {
+      errors.push(`adaptive_source_discovery 声明 ${externalSourceName(sourceId)} 已使用，但没有对应可用页面证据；请补采或降级为 blocked/not_used。`);
+    }
+    if (status === "blocked" && !hasExternalSourceAttempt(toolHistory, pageContext, sourceId) && !hasReportBlockingGap(out, externalSourceBlockingGapRegex(sourceId))) {
+      errors.push(`adaptive_source_discovery 声明 ${externalSourceName(sourceId)} 被阻断，但没有访问尝试或 blocking_gaps 恢复说明。`);
+    }
+  });
+  return errors;
+}
+
+function validateQualitativeMarketContext(out = {}, toolHistory = [], pageContext = {}) {
+  const errors = [];
+  const context = out.qualitative_market_context;
+  if (!context || typeof context !== "object") {
+    errors.push("Ozon 平台趋势报告缺少 qualitative_market_context。必须单独承接买家语言、使用场景、文化适配、内容主题和定性证据边界。");
+    return errors;
+  }
+  const status = String(context.status || "").toLowerCase();
+  if (!["observed", "assumption", "blocked", "not_used"].includes(status)) {
+    errors.push("qualitative_market_context.status 必须是 observed / assumption / blocked / not_used。");
+  }
+  if (!/不能|不得|不可|不单独|not.*alone|cannot.*alone|SKU|单品|可卖/i.test(String(context.claim_boundary || ""))) {
+    errors.push("qualitative_market_context.claim_boundary 必须声明定性市场资料只能解释买家语言、使用场景和文化接受度，不能单独证明某个 SKU 或商品机会可卖。");
+  }
+  if (status === "observed") {
+    errors.push(...validateEvidenceLedgerEntries({
+      entries: Array.isArray(context.evidence_ledger) ? context.evidence_ledger : [],
+      label: "qualitative_market_context",
+      toolHistory,
+      pageContext,
+      allowedTypes: ["social_signal", "vk_social", "telegram_social", "dzen_blog", "ru_news", "industry_report", "macro_context", "google_search", "yandex_search", "page_dom", "screenshot_visual", "assumption", "blocked"],
+    }));
+  }
+  if (["observed", "assumption"].includes(status)) {
+    const hasAnyContext =
+      (Array.isArray(context.buyer_language) && context.buyer_language.length) ||
+      (Array.isArray(context.usage_scenarios) && context.usage_scenarios.length) ||
+      (Array.isArray(context.content_themes) && context.content_themes.length) ||
+      (Array.isArray(context.objection_patterns) && context.objection_patterns.length) ||
+      (context.cultural_fit && typeof context.cultural_fit === "object");
+    if (!hasAnyContext) {
+      errors.push("qualitative_market_context 为 observed/assumption 时，必须至少给出买家语言、使用场景、内容主题、文化适配或异议模式之一。");
+    }
+  }
+  return errors;
 }
 
 function hasAssumptionFallback(ledger = [], topicRegex) {
@@ -673,6 +1012,8 @@ function reportTextForValidation(out = {}) {
     JSON.stringify(out.blocking_gaps || []),
     JSON.stringify(out.validated_opportunities || []),
     JSON.stringify(out.assumption_opportunities || []),
+    JSON.stringify(out.adaptive_source_discovery || {}),
+    JSON.stringify(out.qualitative_market_context || {}),
     JSON.stringify(out.follow_up_tasks || []),
     JSON.stringify(out.workflow_nodes || []),
     JSON.stringify(out.data || []),
@@ -791,6 +1132,7 @@ export function validateOzonPlatformTrendReport(out = {}, toolHistory = [], page
         errors.push(`external_source_plan 缺少 ${requiredLayer} 信源层，无法区分交易证据、搜索需求证据和宏观背景。`);
       }
     });
+    errors.push(...validateExternalSourcePlanEvidence(out, toolHistory, pageContext));
   }
   if (!out.macro_context || typeof out.macro_context !== "object") {
     errors.push("Ozon 平台趋势报告缺少 macro_context。即使本轮未取到宏观来源，也必须说明 status=assumption/blocked、影响边界和不能单独支撑 SKU 推荐。");
@@ -814,6 +1156,8 @@ export function validateOzonPlatformTrendReport(out = {}, toolHistory = [], page
       }));
     }
   }
+  errors.push(...validateAdaptiveSourceDiscovery(out, toolHistory, pageContext));
+  errors.push(...validateQualitativeMarketContext(out, toolHistory, pageContext));
   if (!out.store_fit || typeof out.store_fit !== "object") {
     errors.push("Ozon 平台趋势报告缺少 store_fit。即使当前不是自营店铺入口，也必须说明 fit=unknown 及原因，避免把平台趋势直接写成店铺行动。");
   }
@@ -973,6 +1317,9 @@ export function validateOzonPlatformTrendReport(out = {}, toolHistory = [], page
       String(item?.demand_signal || "") === "blocked";
     if (String(item?.demand_signal || "") === "observed" && !hasDirectPlatformDemandEvidence(ledgerEntries)) {
       errors.push(`平台趋势 data 第 ${idx + 1} 项 (${title}) 的 demand_signal=observed 只能由 Ozon/搜索需求/跨平台/社媒/页面证据支撑；宏观或行业资料只能作为背景，不能单独证明商品机会可卖。`);
+    }
+    if (String(item?.demand_signal || "") === "observed" && !hasCommerceOrSearchDemandEvidence(ledgerEntries)) {
+      errors.push(`平台趋势 data 第 ${idx + 1} 项 (${title}) 的 demand_signal=observed 不能只靠定性市场资料、社媒、评论、新闻、宏观或行业背景支撑；必须补 Ozon、搜索需求或跨平台交易证据，或降级为 assumption/blocked。`);
     }
     if (/[+-]?\d+\s*%|退货率|复购率|取消订单率|差评率|客服咨询量|14\s*-\s*25|3\s*-\s*7|100\+|1000\+|200€|€200/i.test(itemText) &&
       !hasAnyLedgerType(ledgerEntries, ["page_dom", "screenshot_visual", "official_policy", "ozon_search"]) &&
