@@ -356,7 +356,7 @@ const qualitativeOnlyErrors = validateOzonPlatformTrendReport(
   qualitativeOnlyReport,
   [
     { tool: "search_in_browser", arguments: { engine: "otzovik", query: "талисман отзывы" }, result: { ok: true, url: "https://otzovik.com/search/?text=талисман" } },
-    { tool: "search_in_browser", arguments: { engine: "ru_forum", query: "талисман форум" }, result: { ok: true, url: "https://yandex.ru/search/?text=талисман форум отзывы" } },
+    { tool: "search_in_browser", arguments: { engine: "ru_forum", query: "талисман форум" }, result: { ok: true, url: "https://yandex.com/search/?text=талисман форум отзывы" } },
   ],
   {}
 );

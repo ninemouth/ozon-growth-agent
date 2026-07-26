@@ -4,6 +4,15 @@ Ozon Growth Agent 是面向 Ozon 卖家的开源 AI 增长工作流 Chrome 插�
 
 核心原则：AI 先围绕真实业务环节产出诊断、证据、任务和报告；运营人员再在关键节点确认、执行、复盘，而不是每次从一句空泛的“帮我分析店铺”开始。
 
+## v1.3.2 小修复
+
+`v1.3.2` 修复 Yandex 普通搜索入口和报告标签混用问题，避免把 `Yandex.ru` 当作 `Yandex.com` 搜索引擎的同义标签。
+
+- 普通 Yandex 搜索入口改为 `https://yandex.com/search/?text=...`，内部仍保持 `engine="yandex"` / `yandex_search` 兼容历史证据类型。
+- 报告中心、PDF、技能提示和审计基座统一使用“Yandex 搜索”作为用户可读标签，不再把普通搜索写成 `Yandex.ru 公开搜索`。
+- 明确区分 Yandex 普通搜索、Yandex Wordstat 和 Yandex Market：Wordstat 只代表搜索需求/词族，Market 只代表价格与规格交叉验证，二者都不能替代普通搜索结果或 Ozon 站内证据。
+- 增加 smoke 断言，防止普通 Yandex 搜索入口回退到 `yandex.ru/search`。
+
 ## v1.3.1 重大更新
 
 `v1.3.1` 聚焦平台趋势报告的证据透明度、外部信源真实性和定性市场研究能力，适合需要向用户解释“到底查了哪些来源、哪些只是阻断或待验证”的测试与交付场景。

@@ -2249,7 +2249,7 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
       bing: `https://www.bing.com/search?q=${encodeURIComponent(targetQuery)}`,
       amazon: `https://www.amazon.com/s?k=${encodeURIComponent(targetQuery)}`,
       etsy: `https://www.etsy.com/search?q=${encodeURIComponent(targetQuery)}`,
-      yandex: `https://yandex.ru/search/?text=${encodeURIComponent(targetQuery)}`,
+      yandex: `https://yandex.com/search/?text=${encodeURIComponent(targetQuery)}`,
       yandex_wordstat: `https://wordstat.yandex.com/?region=225&words=${encodeURIComponent(targetQuery)}`,
       yandex_market: `https://market.yandex.ru/search?text=${encodeURIComponent(targetQuery)}`,
       ozon: `https://www.ozon.ru/search/?text=${encodeURIComponent(targetQuery)}&from_global=true`,
@@ -2264,7 +2264,7 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
       dzen: `https://dzen.ru/search?q=${encodeURIComponent(targetQuery)}`,
       otzovik: `https://otzovik.com/search/?text=${encodeURIComponent(targetQuery)}`,
       irecommend: `https://irecommend.ru/search/site/${encodeURIComponent(targetQuery)}`,
-      ru_forum: `https://yandex.ru/search/?text=${encodeURIComponent(`${targetQuery} форум отзывы обсуждение`)}`,
+      ru_forum: `https://yandex.com/search/?text=${encodeURIComponent(`${targetQuery} форум отзывы обсуждение`)}`,
       yandex_news: `https://news.yandex.ru/yandsearch?text=${encodeURIComponent(targetQuery)}`,
       cbr: `https://www.google.com/search?q=${encodeURIComponent(`${targetQuery} site:cbr.ru inflation exchange rate consumer prices Russia`)}`,
       rosstat: `https://www.google.com/search?q=${encodeURIComponent(`${targetQuery} site:rosstat.gov.ru retail trade consumer prices Russia`)}`,
@@ -2303,7 +2303,7 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
               : ["google", "google_ru"].includes(normalizedEngine)
                 ? "Google 搜索结果取证"
                 : normalizedEngine === "yandex"
-                  ? "Yandex.ru 搜索结果取证"
+                  ? "Yandex 搜索结果取证"
                   : "浏览器搜索结果取证";
     const shouldAutoCloseSearchTab = ["google", "google_ru", "google_trends", "bing", "yandex", "yandex_wordstat", "yandex_market", "wildberries", "avito", "megamarket", "vk_posts", "tgstat", "dzen", "otzovik", "irecommend", "ru_forum", "yandex_news", "cbr", "rosstat", "akit", "data_insight", "yakov_partners"].includes(normalizedEngine);
     const attachSearchScreenshotArtifact = async (payload, tabId) => {

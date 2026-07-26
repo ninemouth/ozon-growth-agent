@@ -380,6 +380,8 @@ assert.match(platformTrendsSkill, /adaptive_source_discovery[\s\S]*qualitative_m
 assert.match(platformTrendsSkill, /status[\s\S]*真实取证一致[\s\S]*禁止把“计划要查\/理论上应查”的信源写成已使用/, "platform trends skill should require external source status to match captured evidence");
 assert.match(platformTrendsSkill, /宏观背景只能解释[\s\S]*不能单独证明某个 SKU 或商品机会可卖/, "platform trends skill should keep macro context out of direct sellability evidence");
 assert.match(toolRegistrySource, /yandex_wordstat[\s\S]*wildberries[\s\S]*avito[\s\S]*yandex_market[\s\S]*otzovik[\s\S]*irecommend[\s\S]*ru_forum[\s\S]*cbr[\s\S]*rosstat[\s\S]*akit[\s\S]*data_insight[\s\S]*yakov_partners/, "search tool should expose Russian demand, qualitative, marketplace, macro and industry engines");
+assert.match(toolRegistrySource, /yandex:\s*`https:\/\/yandex\.com\/search\/\?text=/, "plain Yandex search should use yandex.com search instead of the yandex.ru portal label");
+assert.doesNotMatch(toolRegistrySource, /yandex:\s*`https:\/\/yandex\.ru\/search/, "plain Yandex search must not route to yandex.ru/search");
 assert.match(agentLoopSource, /validateOzonPlatformTrendReport/, "agent loop should validate Ozon platform trend report quality");
 assert.match(agentLoopSource, /hasDirectPlatformDemandEvidence[\s\S]*宏观或行业资料只能作为背景，不能单独证明商品机会可卖/, "critic should reject macro-only observed sellability claims before final audit");
 assert.match(agentLoopSource, /Google Trends 数据不足|Google Trends 证据不足|hasInvalidGoogleTrendsEvidence/, "critic should downgrade insufficient Google Trends evidence");

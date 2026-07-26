@@ -424,7 +424,7 @@ async function dispatchOzonSkills(userInstruction) {
           role: "system",
           content: `你是一个 Ozon 跨境电商运营智能路由器。请根据用户的输入需求，从以下 8 个专有 AI 技能路径中选择所有最相关的技能路径：
 1. "skills/ozon_product_opportunity_explorer.skill.md" (Ozon选品、类目需求分析、合规性风险审计)
-2. "skills/ozon_platform_trends.skill.md" (Ozon平台公开搜索、Yandex.ru、Google RU/Trends 和趋势机会分析)
+2. "skills/ozon_platform_trends.skill.md" (Ozon平台公开搜索、Yandex 搜索、Google RU/Trends 和趋势机会分析)
 3. "skills/ozon_sourcing_finder.skill.md" (1688货源开发、卢布跨境利润套利测算、运费关税核算)
 4. "skills/ozon_global_shop_optimizer.skill.md" (Ozon店铺经营诊断、Seller API对账、ABC分级优化)
 5. "skills/ozon_operations_tracker.skill.md" (监控数据、对比优化阶段、流量曝光转化效果)
@@ -562,7 +562,7 @@ async function listSkills() {
       id: "ozon_platform_trends",
       path: "skills/ozon_platform_trends.skill.md",
       name: "Ozon 平台趋势与公开需求研究专家",
-      description: "基于 Ozon 搜索、Yandex.ru、Google RU/Trends 和公开竞品页面分析平台级需求窗口，不把自营 API 数据冒充平台大盘",
+      description: "基于 Ozon 搜索、Yandex 搜索、Google RU/Trends 和公开竞品页面分析平台级需求窗口，不把自营 API 数据冒充平台大盘",
       icon: "📊",
     },
     {

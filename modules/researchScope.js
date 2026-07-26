@@ -122,7 +122,7 @@ function buildConclusionPolicy({ entryPageType, analysisScope, sourcePageRole, s
     forbidden.push("未完成公开趋势/竞品/合规/寻源验证前直接建议采购或批量上架");
   }
   if (analysisScope === "platform_trend") {
-    allowed.push("输出 Ozon 公开页面、Yandex.ru、Google RU/Trends 支撑的平台需求窗口");
+    allowed.push("输出 Ozon 公开页面、Yandex 搜索、Google RU/Trends 支撑的平台需求窗口");
     if (autoDiscoveryRequired) {
       allowed.push("在用户没有明确关键词时，先从 Ozon 首页推荐、热词/排行/类目入口和俄区外部公开趋势自动生成候选研究范围");
     }

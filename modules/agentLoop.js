@@ -663,7 +663,7 @@ function externalSourceName(sourceId = "") {
   const map = {
     ozon: "Ozon",
     yandex_wordstat: "Yandex Wordstat",
-    yandex: "Yandex.ru",
+    yandex: "Yandex 搜索",
     google: "Google",
     google_ru: "Google RU",
     google_trends: "Google Trends RU",
@@ -1358,13 +1358,13 @@ export function validateOzonPlatformTrendReport(out = {}, toolHistory = [], page
   const hasYandexRuClaim = /Yandex\.ru[^。；\n]*(验证|显示|证明|表明)/i.test(reportText);
   const hasGeneralYandexClaim = /Yandex(?!\s*(Wordstat|Market))[^。；\n]*(验证|显示|证明|表明)/i.test(reportText);
   if (hasYandexRuClaim && !hasEvidenceSource(toolHistory, pageContext, "yandex_search")) {
-    errors.push("报告声称 Yandex.ru 已验证趋势或需求，但本轮没有 yandex_search 真实证据；请补采或降级为待验证假设。");
+    errors.push("报告声称 Yandex 搜索已验证趋势或需求，但本轮没有 yandex_search 真实证据；请补采或降级为待验证假设。");
   }
   if (hasGeneralYandexClaim &&
     !hasEvidenceSource(toolHistory, pageContext, "yandex_search") &&
     !hasEvidenceSource(toolHistory, pageContext, "yandex_wordstat") &&
     !hasEvidenceSource(toolHistory, pageContext, "yandex_market")) {
-    errors.push("报告声称 Yandex 已验证趋势或需求，但本轮没有 Yandex.ru / Wordstat / Yandex Market 真实证据；请补采或降级为待验证假设。");
+    errors.push("报告声称 Yandex 已验证趋势或需求，但本轮没有 Yandex 搜索 / Wordstat / Yandex Market 真实证据；请补采或降级为待验证假设。");
   }
 
   if (status === "completed" && Array.isArray(out.blocking_gaps) && out.blocking_gaps.length > 0) {
@@ -1693,10 +1693,10 @@ function validateReport(parsed, userInstruction, skillId, toolHistory = [], page
       errors.push("店铺体检报告缺少 2-3 个同类高排名店铺/头部竞品页面的学习证据。请通过 Ozon 搜索/热卖榜打开可对标店铺或商品页，结合截图分析其橱窗、调性、标题、主图、评价门槛、价格带和履约承诺；阻断时必须写成待验证。");
     }
     if (!hasAnyLedgerType(allLedgerEntries, ["yandex_search", "google_search", "google_trends"]) && !hasAssumptionFallback(allLedgerEntries, /Yandex|Google|谷歌|站外|趋势|季节|需求/i)) {
-      errors.push("店铺优化报告缺少俄罗斯站外需求趋势证据。请至少使用 Yandex.ru、Google RU 或 Google Trends RU 之一，或用 assumption 明确说明工具/网络不可用并列为待验证。");
+      errors.push("店铺优化报告缺少俄罗斯站外需求趋势证据。请至少使用 Yandex 搜索、Google RU 或 Google Trends RU 之一，或用 assumption 明确说明工具/网络不可用并列为待验证。");
     }
     if (!hasAnyLedgerType(allLedgerEntries, ["yandex_search", "google_search", "google_trends"]) && hasAssumptionFallback(allLedgerEntries, /Yandex|Google|谷歌|站外|趋势|季节|需求/i) && /呈现|显示|证明|同比|环比|增长|下降|热度高|趋势上升/i.test(combinedReportText)) {
-      errors.push("店铺优化报告的站外趋势只有 assumption，正文不能写成已验证事实。请把趋势判断降级为待验证假设，或先调用 Yandex.ru / Google RU / Google Trends RU 获取真实证据。");
+      errors.push("店铺优化报告的站外趋势只有 assumption，正文不能写成已验证事实。请把趋势判断降级为待验证假设，或先调用 Yandex 搜索 / Google RU / Google Trends RU 获取真实证据。");
     }
     errors.push(...validateOzonShopDiagnosisDepth(out, toolHistory));
   }
@@ -1934,7 +1934,7 @@ function describeToolAction(toolName = "", toolArgs = {}, toolResult = null) {
     if (engine === "ozon") return { actionKind: "ozon_search_results", actionLabel: "Ozon 搜索/榜单取证", lifecycle: "搜索页在保存页面文本和截图证据后会继续进入竞品采集或关闭" };
     if (engine === "google_trends") return { actionKind: "trend_chart", actionLabel: "Google Trends RU 趋势图取证", lifecycle: "趋势页在保存截图证据后会自动关闭或进入证据复核" };
     if (engine === "google" || engine === "google_ru") return { actionKind: "web_search", actionLabel: "Google RU 搜索结果取证", lifecycle: "搜索页在保存页面文本和截图证据后会自动关闭或进入证据复核" };
-  if (engine === "yandex") return { actionKind: "web_search", actionLabel: "Yandex.ru 搜索结果取证", lifecycle: "搜索页在保存页面文本和截图证据后会自动关闭或进入证据复核" };
+  if (engine === "yandex") return { actionKind: "web_search", actionLabel: "Yandex 搜索结果取证", lifecycle: "搜索页在保存页面文本和截图证据后会自动关闭或进入证据复核" };
   if (engine === "yandex_wordstat") return { actionKind: "search_demand", actionLabel: "Yandex Wordstat 搜索需求取证", lifecycle: "词频页在保存页面文本和截图证据后会自动关闭或进入证据复核" };
   if (engine === "wildberries") return { actionKind: "marketplace_crosscheck", actionLabel: "Wildberries 平台交叉验证", lifecycle: "平台搜索页在保存页面文本和截图证据后会自动关闭或进入证据复核" };
   if (engine === "avito") return { actionKind: "local_market_crosscheck", actionLabel: "Avito 本地需求取证", lifecycle: "本地分类信息页在保存页面文本和截图证据后会自动关闭或进入证据复核" };
@@ -2115,7 +2115,7 @@ ${highRandomness ? `\n\n## ⚠️ [Anti-Cache] 强制发散与破局指令 (Nonc
 
 ${((skillId || "").includes("domestic_sourcing_finder") || (skillId || "").includes("ozon_sourcing_finder")) ? `\n\n## 国内供应链寻源运行硬约束\n- 如果目标是非标外观/造型/模具商品且存在 targetImageUrl，优先调用 image_search_1688 或 image_search_taobao。若已配置生图模型、且平台自动框选主体不完整，可先调用 prepare_clean_product_image，并把返回的 image_search_argument.imageUrl 用作图片搜索输入。\n- 非标品一旦启动图片搜索或干净搜图图准备流程，后续 Critic 打回也严禁调用 input_text_and_search 文本框搜索；必须继续用 productCards 候选主图、截图和视觉相似度证据筛选。\n- agentic_web_search 最多调用 1 次，且只用于物流、费率、政策或认证核算；严禁用它寻找 1688/淘宝货源或替代站内图片搜索。\n- 只要输出 financial_ledger 或 margin_rate，必须先调用 get_market_rates 获取 RUB/CNY 汇率快照，并调用 get_logistics_cost_profile 获取运费模型快照；把返回对象分别写入 financial_ledger.rate_snapshot 和 financial_ledger.logistics_profile_snapshot。若工具失败或用户未确认参数，利润率必须降级为待确认，不能写确定性高利润。` : ""}
 
-${isOzonPlatformTrendsSkill(skillId) ? `\n\n## 平台趋势自动发现与可卖候选规则\n- 如果 research_scope.auto_discovery_required=true，说明用户从 Ozon 首页、空白页或平台入口发起趋势研究但尚不确定关键词；这不是缺陷，不能要求用户先补关键词，也不能直接输出空报告。\n- 你必须先建立 6-10 个不同品类的候选研究范围：读取当前页面可见公开线索、Ozon 首页/公开入口的推荐、热词、排行、类目入口或可见商品卡；再用 Yandex Wordstat、Yandex.ru、Google RU、Google Trends RU、Wildberries/Avito/Yandex Market 的公开资料交叉验证。候选池应优先轻小件、低认证、低退货、可差异化、适合小批测试的商品方向。\n- 先应用中小微卖家不卖原则做初筛。命中强制认证、超大超重、尺码高退货、侵权、平台禁限售、本地安装售后或明显价格战的方向，只能进入 rejected_directions 简短记录，禁止占用 data、recommended_opportunities 或主结论篇幅。\n- 初筛后至少选出 2 个通过不卖原则的可卖候选继续做 Ozon 与站外证据验证。partial/completed 报告至少要交付 1 个 recommendation_status=recommended 的候选；如果第一批全部淘汰，必须继续扩展候选池，不能用“全部不建议卖”结束正常可访问的趋势任务。\n- 每个候选方向必须说明 seed_source（例如当前页面公开线索、Ozon 首页推荐、Ozon 热词/排行、Yandex Wordstat 词族、Wildberries 同类商品、Google Trends RU related queries）、为什么适合俄罗斯/独联体市场、下一步要用哪个 Ozon 搜索词验证。\n- 自动发现阶段只能输出平台机会窗口，不能写成当前店铺已适合采购或上架。\n- final.output 必须包含 external_source_plan 和 macro_context。宏观/行业背景只能解释价格敏感、汇率通胀、平台化、履约和品类大方向，不能单独证明某个 SKU 或商品机会可卖。` : ""}
+${isOzonPlatformTrendsSkill(skillId) ? `\n\n## 平台趋势自动发现与可卖候选规则\n- 如果 research_scope.auto_discovery_required=true，说明用户从 Ozon 首页、空白页或平台入口发起趋势研究但尚不确定关键词；这不是缺陷，不能要求用户先补关键词，也不能直接输出空报告。\n- 你必须先建立 6-10 个不同品类的候选研究范围：读取当前页面可见公开线索、Ozon 首页/公开入口的推荐、热词、排行、类目入口或可见商品卡；再用 Yandex Wordstat、Yandex 搜索、Google RU、Google Trends RU、Wildberries/Avito/Yandex Market 的公开资料交叉验证。候选池应优先轻小件、低认证、低退货、可差异化、适合小批测试的商品方向。\n- 先应用中小微卖家不卖原则做初筛。命中强制认证、超大超重、尺码高退货、侵权、平台禁限售、本地安装售后或明显价格战的方向，只能进入 rejected_directions 简短记录，禁止占用 data、recommended_opportunities 或主结论篇幅。\n- 初筛后至少选出 2 个通过不卖原则的可卖候选继续做 Ozon 与站外证据验证。partial/completed 报告至少要交付 1 个 recommendation_status=recommended 的候选；如果第一批全部淘汰，必须继续扩展候选池，不能用“全部不建议卖”结束正常可访问的趋势任务。\n- 每个候选方向必须说明 seed_source（例如当前页面公开线索、Ozon 首页推荐、Ozon 热词/排行、Yandex Wordstat 词族、Wildberries 同类商品、Google Trends RU related queries）、为什么适合俄罗斯/独联体市场、下一步要用哪个 Ozon 搜索词验证。\n- 自动发现阶段只能输出平台机会窗口，不能写成当前店铺已适合采购或上架。\n- final.output 必须包含 external_source_plan 和 macro_context。宏观/行业背景只能解释价格敏感、汇率通胀、平台化、履约和品类大方向，不能单独证明某个 SKU 或商品机会可卖。` : ""}
 
 ${isOzonPlatformTrendsSkill(skillId) ? `\n\n## 用户问题到关键词的执行漏斗\n- 在第一次市场搜索前，先在内部建立 query_funnel：把用户原问题拆成需求头词、品类词、具体商品词、场景/节日词、文化/产地修饰词，生成 6-12 个俄语候选。\n- 只对 3-5 个代表词做 Ozon/Yandex Wordstat/Yandex/Wildberries 轻量撒网，使用可见商品/评价关注信号、跨站覆盖、有效未来信号、小微卖家适配四项量表聚焦 2-4 个词。评分是本轮排序量表，不是平台搜索量。\n- query_funnel 必须声明 as_of_date 和未来 3/6/12 个月 forecast_horizon；已经结束的节日、生肖或季节窗口不能计入未来趋势分。\n- Google Trends 已加载但数据不足时，必须先退宽语义，再切同义词族，最多 3 个不同查询。运行时会拒绝重复词并在 final 前强制完成小循环。\n- 如果改写词成功，旧失败词只进入 refinement_log，不得污染成功证据；3 个词均不足时停止搜索，在成稿前降级，不能等待 Critic 才发现。\n- 退宽词必须标记 exact / parent_proxy / adjacent_proxy；父级或相邻代理有数据不能直接证明原始细分品类增长。\n- final.output 必须包含完整 query_funnel，包括 user_intent、as_of_date、forecast_horizon、intent_dimensions、discovery_queries、scored_queries、focus_queries、refinement_log。` : ""}
 
@@ -2494,7 +2494,7 @@ ${(skillId || "").includes("tiktok_shop_monitor") ? `\n\n## ⚠️ TikTok 监控
             content: JSON.stringify({
               type: "tool_error",
               tool: toolName,
-              error: "当前任务是 Ozon 店铺优化诊断，不是寻源流程。第一步必须围绕店铺健康评级、页面/截图/自营 API 数据、Ozon 站内竞品、Yandex.ru / Google RU / Google Trends RU 需求证据构建 ABC 优化方案；除非用户明确要求 1688/货源/采购，否则禁止调用采购平台搜索或生成供应商链接。",
+              error: "当前任务是 Ozon 店铺优化诊断，不是寻源流程。第一步必须围绕店铺健康评级、页面/截图/自营 API 数据、Ozon 站内竞品、Yandex 搜索 / Google RU / Google Trends RU 需求证据构建 ABC 优化方案；除非用户明确要求 1688/货源/采购，否则禁止调用采购平台搜索或生成供应商链接。",
             }),
           });
           await checkpoint("running", { step, lastStage: "tool_guard_rejected", blockedTool: toolName });

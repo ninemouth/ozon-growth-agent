@@ -3371,7 +3371,7 @@ function evidenceSourceLabel(item = {}) {
   if (/google\./i.test(url)) return "Google 公开搜索";
   if (/wordstat\.yandex\./i.test(url)) return "Yandex Wordstat 搜索需求";
   if (/market\.yandex\./i.test(url)) return "Yandex Market 价格与规格";
-  if (/yandex\./i.test(url)) return "Yandex.ru 公开搜索";
+  if (/yandex\./i.test(url)) return "Yandex 搜索";
   if (/wildberries\.ru/i.test(url)) return "Wildberries 平台交叉验证";
   if (/avito\.ru/i.test(url)) return "Avito 本地需求";
   if (/megamarket\.ru/i.test(url)) return "MegaMarket 平台交叉验证";
@@ -3427,7 +3427,7 @@ function evidenceResultSummary(item = {}) {
 const EXTERNAL_SOURCE_LABELS = {
   ozon: "Ozon 平台",
   yandex_wordstat: "Yandex Wordstat",
-  yandex: "Yandex.ru",
+  yandex: "Yandex 搜索",
   google_ru: "Google RU",
   google: "Google",
   google_trends: "Google Trends RU",

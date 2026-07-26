@@ -10,7 +10,7 @@
 
 ### 全量体检与深度体检的正确边界
 - **全量商品体检不是逐个打开所有商品详情页**。全量层必须优先通过 Seller API 对全部可获得 SKU 做轻量扫描，覆盖曝光、浏览、加购、订单、价格带、履约和商品结构。
-- **深度体检只聚焦高价值/高风险/高机会对象**：从全量扫描中挑选低加购、低付款、低利润、履约风险、可放大和竞品异常相关的重点 SKU 或店铺模块，再结合当前页面、截图、Ozon 搜索、Yandex.ru / Google RU / Google Trends RU 做深度诊断。
+- **深度体检只聚焦高价值/高风险/高机会对象**：从全量扫描中挑选低加购、低付款、低利润、履约风险、可放大和竞品异常相关的重点 SKU 或店铺模块，再结合当前页面、截图、Ozon 搜索、Yandex 搜索 / Google RU / Google Trends RU 做深度诊断。
 - **报告必须任务化**：每个方案都要输出可由运营人员确认的动作，例如“改首图”“重写标题”“调整价格”“补库存”“报名活动”“绑定竞品监控”“进入 7 天实验”。如果某一步需要人工完成，必须明确写成“人工确认点”，不能假装已经自动执行。
 - **闭环而非一次性报告**：输出时要说明本轮诊断会生成哪些任务、哪些任务完成后进入观察期、观察期应在什么时间窗口复盘。
 
@@ -18,7 +18,7 @@
 1. 先读取当前 Ozon 店铺/商品页上下文：调用 `read_current_page`，结合截图判断页面类型、店铺视觉、商品结构、标题/描述/评论等真实信息。
 2. 必须先抽取“平台属性与店铺定位底稿”：从当前页面与 API 信息中判断店铺主营类目、商品价格带、目标客群、使用场景、视觉调性/格调、专业度、垂直度和当前定位是否成立。不能只写“视觉一般/需要优化”，必须回答“这家店现在想卖给谁、应该卖给谁、靠什么差异化成立”。
 3. 如果当前页面被识别为已绑定自营店铺，优先调用 `ozon_api_get_store_snapshot` 一次性获取店铺商品、流量与 FBS/FBO 履约订单快照；必要时再调用 `ozon_api_get_products`、`ozon_api_get_analytics`、`ozon_api_get_transactions` 兼容工具补细节，但不得把已失效的 finance transaction 接口当作默认证据来源。
-4. 如果当前页面是未绑定的公开店铺，也允许做“公开店铺体检/定位学习”，但必须降级为公开页面证据口径：只能基于页面文本、截图、Ozon 搜索、竞品对标、Yandex.ru / Google RU / Google Trends RU 做诊断；不能把该页面写成“我的店铺/本店/已绑定店铺”，也不能伪造 Seller API 或内部经营数据。
+4. 如果当前页面是未绑定的公开店铺，也允许做“公开店铺体检/定位学习”，但必须降级为公开页面证据口径：只能基于页面文本、截图、Ozon 搜索、竞品对标、Yandex 搜索 / Google RU / Google Trends RU 做诊断；不能把该页面写成“我的店铺/本店/已绑定店铺”，也不能伪造 Seller API 或内部经营数据。
 5. 必须进行 Ozon 站内搜索分析：围绕店铺主营类目/核心商品词调用 Ozon 搜索或热卖榜，读取第一页或榜单中同类高排名商品/店铺，提取价格带、评价门槛、主图风格、标题关键词、促销标签和履约承诺。没有完成该动作时，不能把截图视觉判断写成最终定位结论。
 6. 必须学习 2-3 个同类高排名店铺或头部竞品页面：从 Ozon 搜索/榜单结果中打开可对标的店铺页或商品页，读取页面文本并结合截图，反向工程其店铺调性、橱窗组织、首图卖点、标题结构、价格带和信任元素。若已经拿到 2-3 个 Ozon 竞品店铺/商品 URL，优先调用 `collect_ozon_competitor_shops` 一次性批量采集；若只补采单个页面，再调用 `collect_ozon_shop_pages`。采集完成后必须调用 `analyze_ozon_shop_crawl_screenshots` 对已缓存截图做独立视觉解读。该截图分析工具会按三步返回：`stage_observations`（逐截图视觉事实）、`stage_synthesis`（逐竞品方法归纳）、`stage_report_inputs`（可写入报告的证据账本、竞品草稿和诊断矩阵提示）。后续报告必须沿用这些阶段结论，而不是重新凭截图印象一次性写策略。取证后按标签页生命周期纪律关闭临时标签页。若页面/登录/验证码阻断，必须在 `evidence_ledger`、`competitor_benchmarks` 和正文中写成 `assumption` 或待人工确认，不能伪造成已完成对标。
    - 页面级证据契约：每一个竞品的页面级结论必须同时有页面文本/可见商品卡片证据和 `screenshot_visual` 证据；工具如果只能返回搜索结果卡片，报告只能写“搜索结果初筛”，不得写竞品完整店铺橱窗、详情页画廊、包装、评论或完整 SKU 方法。
@@ -75,9 +75,9 @@
    - **逻辑**：通过 Ozon 平台热卖排行榜 (Популярные товары) 评估目标品类的爆款指标。
    - **证据链**：分析该品类销量排名前 5 爆款的价格区间、起效主图规范（带俄语卖点首图比例）以及组货/SKU 搭配策略。
 3. **第三层：俄罗斯站外需求趋势 (External Demand Trends)**
-   - **逻辑**：通过 `search_in_browser` 对核心商品词执行 Yandex.ru、Google RU 或 Google Trends RU 检索，判断俄罗斯本地需求表达、季节性窗口、站外内容竞争和搜索趋势。
+   - **逻辑**：通过 `search_in_browser` 对核心商品词执行 Yandex 搜索、Google RU 或 Google Trends RU 检索，判断俄罗斯本地需求表达、季节性窗口、站外内容竞争和搜索趋势。
    - **证据链**：
-     - **Yandex.ru**：俄罗斯本地搜索结果、站外竞品分布、内容入口和本地常用词。
+     - **Yandex 搜索**：俄罗斯本地搜索结果、站外竞品分布、内容入口和本地常用词。
      - **Google RU**：俄区 Google 搜索结果，用于交叉验证关键词表达和站外内容竞争。
      - **Google Trends RU**：年度/季度/近 12 个月趋势方向；无法读取图表时必须写明“趋势图待人工确认”，不得输出具体 YoY/QoQ 数字。
 4. **第四层：高销竞品店铺反向工程 (Competitor Reverse Engineering)**
@@ -103,7 +103,7 @@
   - *证据*：店铺页面类目杂乱度、Ozon API 的低会话/低加购 SKU、竞品店铺首页类目聚焦度。
 * **候选方案 A-2：[方案名称，例如：按季节需求重组前台橱窗与广告入口]**
   - *方向*：围绕俄罗斯当季需求，把首页首屏、主推 SKU、标题关键词和促销活动重新编排。
-  - *证据*：Ozon 站内搜索第一页竞品价格/评价门槛、Yandex.ru / Google RU / Google Trends RU 的真实趋势或明确待验证假设、当前店铺曝光与加购数据。
+  - *证据*：Ozon 站内搜索第一页竞品价格/评价门槛、Yandex 搜索 / Google RU / Google Trends RU 的真实趋势或明确待验证假设、当前店铺曝光与加购数据。
 * **候选方案 A-3：[方案名称，例如：建立低价引流款 + 利润款 + 信任款三级商品矩阵]**
   - *方向*：把商品分成拉新、利润、品牌信任三类，分别配置价格、主图、评价目标和履约方式。
   - *证据*：自营商品售价带、订单贡献、评论数量、履约成本与退货风险。
@@ -155,7 +155,7 @@
      1. Ozon 站内搜索/热卖榜/高排名竞品页面已经访问的查询词和页面。
      2. `collect_ozon_competitor_shops` 或 `collect_ozon_shop_pages` 已采集的竞品 URL、页面类型、可见商品样本数量和截图口径。
      3. `analyze_ozon_shop_crawl_screenshots` 返回的阶段结论如何写入 `competitor_benchmarks` 和 `diagnostic_depth_matrix`。
-     4. Yandex.ru / Google RU / Google Trends RU 已访问的查询词和页面；若阻断，必须写成待验证。
+     4. Yandex 搜索 / Google RU / Google Trends RU 已访问的查询词和页面；若阻断，必须写成待验证。
    - 必须包含“竞品店铺商品结构解析”小节，逐店铺对应 `competitor_benchmarks` 中的结构化数据；正文展示的数据必须与 `competitor_benchmarks` 数组一致，不能正文写 3 家而结构化只给 1 家。
 3. **summary (下一步决策)**：
    - 明确推荐其中一个候选方向，并给出前 3 步最紧迫的落地执行动作。
@@ -219,7 +219,7 @@
     - `screenshot_visual`: 当前截图中的视觉陈列、主图质量、首屏信息密度、俄语卖点图等。
   - `ozon_api`: `ozon_api_get_store_snapshot` / `ozon_api_get_products` / `ozon_api_get_analytics` / `ozon_api_get_transactions` 兼容工具返回的自营 Seller API 值，其中订单应来自 FBS/FBO posting，不能声称来自已失效的 finance transaction 默认接口。
   - `ozon_search`: Ozon 站内搜索或榜单页面返回值。
-  - `yandex_search`: Yandex.ru 搜索返回值。
+  - `yandex_search`: Yandex 搜索返回值。
   - `google_search`: Google RU 搜索返回值。
   - `google_trends`: Google Trends RU 趋势页面返回值。
   - `assumption`: 明确标注为待验证假设，不得写成真实数据。
@@ -229,4 +229,4 @@
 - `confidence` 取值建议为 `high` / `medium` / `low`。
 - `limitation` 必须说明局限：例如“API 未绑定，无法确认真实订单”“搜索结果仅第一页”“截图只能判断视觉，不能识别完整参数”。
 
-如果没有真实工具结果，不得伪造 `ozon_api`、`ozon_search`、`yandex_search`、`google_search` 或 `google_trends` 证据；只能使用 `assumption` 并明确“待后续验证”。如果报告正文提到趋势已经上升/下降、季节性窗口、YoY/QoQ 或站外需求结论，必须有 Yandex.ru / Google RU / Google Trends RU 真实证据；只有 assumption 时，正文必须写成“待验证假设”。
+如果没有真实工具结果，不得伪造 `ozon_api`、`ozon_search`、`yandex_search`、`google_search` 或 `google_trends` 证据；只能使用 `assumption` 并明确“待后续验证”。如果报告正文提到趋势已经上升/下降、季节性窗口、YoY/QoQ 或站外需求结论，必须有 Yandex 搜索 / Google RU / Google Trends RU 真实证据；只有 assumption 时，正文必须写成“待验证假设”。
