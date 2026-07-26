@@ -185,7 +185,36 @@ assert.equal(fallbackRequests[0].url, "https://www.thinktv.ai/v1/responses");
 assert.equal(fallbackRequests.at(-1).url, "https://www.thinktv.ai/v1/chat/completions");
 assert.ok(JSON.parse(fallbackRequests[0].options.body).input, "first attempt should use Responses API input payload");
 assert.ok(JSON.parse(fallbackRequests.at(-1).options.body).messages, "fallback attempt should use Chat Completions messages payload");
-assert.ok(fallbackEvents.some((event) => event.warning === "responses_api_fallback_to_chat_completions"));
+assert.ok(fallbackEvents.some((event) => event.type === "provider_retry" && event.status === 502), "transient provider failures should surface retry progress");
+assert.ok(fallbackEvents.some((event) => event.type === "provider_fallback" && event.warning === "responses_api_fallback_to_chat_completions"));
+
+let retryAttemptCount = 0;
+const retryEvents = [];
+global.fetch = async (url, options) => {
+  capturedRequest = { url, options };
+  retryAttemptCount += 1;
+  if (retryAttemptCount === 1) {
+    return {
+      ok: false,
+      status: 502,
+      text: async () => JSON.stringify({ error: { message: "Upstream request failed", type: "upstream_error" } }),
+      headers: { get: () => "application/json" },
+    };
+  }
+  return {
+    ok: true,
+    status: 200,
+    json: async () => ({ output_text: "retry recovered response" }),
+    text: async () => "retry recovered response",
+    headers: { get: () => "application/json" },
+  };
+};
+const retryResult = await callLLM(
+  [{ role: "user", content: "Retry transient provider failure." }],
+  (event) => retryEvents.push(event),
+);
+assert.equal(retryResult, "retry recovered response");
+assert.ok(retryEvents.some((event) => event.type === "provider_retry" && event.message.includes("正在重试")), "HTTP retry should be emitted to the user-facing provider event stream");
 
 const pageEvidence = collectPageEvidenceFromToolHistory([{
   tool: "gemini_google_search",
@@ -238,6 +267,8 @@ assert.match(sidepanel, /填写后优先于 Provider/);
 assert.match(agentLoop, /gemini_google_search/);
 assert.match(agentLoop, /LLM 返回空响应/);
 assert.match(agentLoop, /invalid_text_response/);
+assert.match(agentLoop, /provider_error/);
+assert.match(background, /provider_retry/);
 assert.match(background, /assertDeliverableWorkflowResult\(result, matchedSkills\)/);
 assert.match(evidenceBundle, /result\.sources/);
 

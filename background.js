@@ -133,8 +133,23 @@ const GITHUB_RELEASES_URL = "https://github.com/ninemouth/ozon-growth-agent/rele
 const GITHUB_LATEST_RELEASE_API = "https://api.github.com/repos/ninemouth/ozon-growth-agent/releases/latest";
 const GITHUB_MANIFEST_URL = "https://raw.githubusercontent.com/ninemouth/ozon-growth-agent/main/manifest.json";
 
+function maskSensitiveUrl(value = "") {
+  try {
+    const parsed = new URL(String(value));
+    for (const key of Array.from(parsed.searchParams.keys())) {
+      if (/key|token|secret|password|auth/i.test(key)) {
+        parsed.searchParams.set(key, "[redacted]");
+      }
+    }
+    return parsed.toString();
+  } catch (_) {
+    return String(value || "").replace(/([?&][^=]*(?:key|token|secret|password|auth)[^=]*=)[^&]+/gi, "$1[redacted]");
+  }
+}
+
 function summarizeTaskLogDetails(value = {}) {
   const safe = value && typeof value === "object" ? value : {};
+  const providerError = safe.providerError && typeof safe.providerError === "object" ? safe.providerError : {};
   return {
     step: Number(safe.step || 0),
     toolName: safe.toolName || "",
@@ -142,6 +157,17 @@ function summarizeTaskLogDetails(value = {}) {
     actionLabel: safe.actionLabel || "",
     stage: safe.stage || "",
     errorCode: safe.errorCode || "",
+    provider: safe.provider || providerError.provider || "",
+    protocol: safe.protocol || providerError.protocol || providerError.protocolId || "",
+    endpoint: maskSensitiveUrl(safe.endpoint || providerError.endpoint || ""),
+    status: Number.isInteger(Number(safe.status || providerError.status)) ? Number(safe.status || providerError.status) : undefined,
+    category: safe.category || providerError.category || "",
+    attempt: Number.isInteger(Number(safe.attempt)) ? Number(safe.attempt) : undefined,
+    maxRetries: Number.isInteger(Number(safe.maxRetries)) ? Number(safe.maxRetries) : undefined,
+    retryDelayMs: Number.isInteger(Number(safe.retryDelayMs)) ? Number(safe.retryDelayMs) : undefined,
+    fallbackFrom: maskSensitiveUrl(safe.fallbackFrom || ""),
+    fallbackTo: maskSensitiveUrl(safe.fallbackTo || ""),
+    suggestedAction: safe.suggestedAction || providerError.suggestedAction || "",
     tabId: Number.isInteger(Number(safe.tabId)) ? Number(safe.tabId) : undefined,
     elapsedSeconds: Number(safe.elapsedSeconds || 0) || undefined,
   };
@@ -157,8 +183,11 @@ function taskLogSeverityForProgress(progress = {}) {
     "trend_query_guard",
     "trend_query_refinement_exhausted",
     "trend_evidence_downgrade_required",
+    "provider_retry",
+    "provider_warning",
+    "provider_fallback",
   ].includes(progress.type)) return "warning";
-  if (["error", "failed"].includes(progress.type)) return "error";
+  if (["error", "failed", "provider_error"].includes(progress.type)) return "error";
   return "info";
 }
 

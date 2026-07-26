@@ -613,6 +613,16 @@ async function runSkill() {
             addLog("info", "⏱", msg.message || `${msg.toolName || "工具"} 仍在执行`);
           } else if (msg.type === "tool_timeout") {
             addLog("warning", "⏸", msg.message || `${msg.actionLabel || msg.toolName || "工具"} 超时，已回收临时标签页`);
+          } else if (msg.type === "provider_retry") {
+            addLog("warning", "🔁", msg.message || "模型服务暂时不可用，正在自动重试。");
+          } else if (msg.type === "provider_fallback") {
+            addLog("warning", "🔀", msg.message || "当前模型接口不兼容，已自动切换到兼容调用方式重试。");
+          } else if (msg.type === "provider_warning") {
+            addLog("warning", "⚠️", msg.message || "模型服务返回警告，请检查 Provider 设置。");
+          } else if (msg.type === "provider_error") {
+            const providerHint = msg.suggestedAction ? ` ${msg.suggestedAction}` : "";
+            addLog("error", "❌", `${msg.message || "模型服务调用失败。"}${providerHint}`);
+            showError(`${msg.message || "模型服务调用失败。"}${providerHint}`);
           } else if (msg.type === "paused_for_verification" || msg.type === "captcha_warning") {
             addLog("warning", "🧩", msg.message || "采购平台需要人工验证。请完成验证码/登录后发送“继续”恢复。");
           } else if (["trend_query_refinement_required", "trend_query_guard", "trend_query_refinement_exhausted", "trend_evidence_downgrade_required"].includes(msg.type)) {

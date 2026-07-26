@@ -10,13 +10,143 @@ export async function getSettings() {
   });
 }
 
-async function fetchWithRetry(url, options, maxRetries = 3) {
+function redactEndpointUrl(url = "") {
+  try {
+    const parsed = new URL(String(url));
+    for (const key of Array.from(parsed.searchParams.keys())) {
+      if (/key|token|secret|password|auth/i.test(key)) {
+        parsed.searchParams.set(key, "[redacted]");
+      }
+    }
+    return parsed.toString();
+  } catch (_) {
+    return String(url || "").replace(/([?&][^=]*(?:key|token|secret|password|auth)[^=]*=)[^&]+/gi, "$1[redacted]");
+  }
+}
+
+function trimProviderText(value = "", maxLength = 420) {
+  return String(value || "").replace(/\s+/g, " ").trim().slice(0, maxLength);
+}
+
+function classifyProviderIssue({ status, text = "", error } = {}) {
+  const numericStatus = Number(status || 0);
+  const raw = `${text || ""} ${error?.message || ""}`.toLowerCase();
+  if (numericStatus === 401 || numericStatus === 403 || /api key|apikey|unauthorized|forbidden|permission|认证|鉴权|权限/.test(raw)) {
+    return {
+      category: "auth",
+      reason: "API Key 或账号权限校验失败",
+      suggestedAction: "请检查 API Key、账号额度、模型权限，或切换到可用 Provider。",
+    };
+  }
+  if (numericStatus === 404 || /model.*not.*found|unknown model|model_not_found|模型不存在|模型.*不支持/.test(raw)) {
+    return {
+      category: "model_or_endpoint",
+      reason: "模型名或接口地址不匹配",
+      suggestedAction: "请检查模型名、自定义 API Endpoint，以及该代理是否支持当前接口协议。",
+    };
+  }
+  if (numericStatus === 429 || /rate limit|quota|too many requests|限流|额度/.test(raw)) {
+    return {
+      category: "rate_limit",
+      reason: "模型服务限流或额度不足",
+      suggestedAction: "请稍后重试、降低并发，或切换到额度充足的模型/Provider。",
+    };
+  }
+  if ([400, 405, 422, 501].includes(numericStatus) || /responses?|chat\/completions|unsupported|not supported|not implemented|invalid endpoint|兼容|不支持/.test(raw)) {
+    return {
+      category: "protocol_compatibility",
+      reason: "当前代理或上游接口协议不兼容",
+      suggestedAction: "插件会优先尝试自动降级；若仍失败，请把 Endpoint 改为该供应商支持的 Chat Completions 地址。",
+    };
+  }
+  if (numericStatus >= 500 || /upstream|bad gateway|gateway|timeout|network|fetch failed|上游|网关|超时/.test(raw)) {
+    return {
+      category: "upstream",
+      reason: "模型代理或上游服务暂时不可用",
+      suggestedAction: "请稍后重试；如果连续失败，请切换 Provider、模型或检查代理服务状态。",
+    };
+  }
+  return {
+    category: "provider_error",
+    reason: "模型服务返回异常",
+    suggestedAction: "请检查 Provider 设置、模型名、Endpoint 和网络/代理状态。",
+  };
+}
+
+function providerProtocolLabel(protocol = "") {
+  if (protocol === "responses") return "Responses API";
+  if (protocol === "chat") return "Chat Completions";
+  if (protocol === "gemini_interactions") return "Gemini 内置搜索接口";
+  return protocol || "LLM API";
+}
+
+function buildProviderUserMessage({ provider, protocol, status, endpoint, text = "", error, prefix = "模型服务调用失败" } = {}) {
+  const issue = classifyProviderIssue({ status, text, error });
+  const numericStatus = Number(status);
+  const statusText = Number.isFinite(numericStatus) && numericStatus > 0 ? `（HTTP ${numericStatus}）` : "";
+  const endpointText = endpoint ? `请求地址：${redactEndpointUrl(endpoint)}。` : "";
+  const snippet = trimProviderText(text || error?.message || "");
+  const snippetText = snippet ? `返回信息：${snippet}` : "";
+  return [
+    `${prefix}${statusText}：${issue.reason}。`,
+    `Provider：${provider || "unknown"}；接口：${providerProtocolLabel(protocol)}。`,
+    endpointText,
+    snippetText,
+    issue.suggestedAction,
+  ].filter(Boolean).join(" ");
+}
+
+function createProviderError({ provider, protocol, endpoint, status, text = "", error, prefix } = {}) {
+  const issue = classifyProviderIssue({ status, text, error });
+  const numericStatus = Number(status);
+  const message = buildProviderUserMessage({ provider, protocol, endpoint, status, text, error, prefix });
+  const providerError = new Error(message);
+  providerError.providerError = {
+    provider: provider || "unknown",
+    protocol: providerProtocolLabel(protocol),
+    protocolId: protocol || "",
+    endpoint: redactEndpointUrl(endpoint || ""),
+    status: Number.isFinite(numericStatus) && numericStatus > 0 ? numericStatus : undefined,
+    category: issue.category,
+    reason: issue.reason,
+    suggestedAction: issue.suggestedAction,
+    rawMessageSnippet: trimProviderText(text || error?.message || ""),
+  };
+  providerError.cause = error;
+  return providerError;
+}
+
+function notifyProviderEvent(callback, event = {}) {
+  if (typeof callback !== "function") return;
+  callback({
+    providerEvent: true,
+    severity: event.severity || "warning",
+    ...event,
+    endpoint: event.endpoint ? redactEndpointUrl(event.endpoint) : undefined,
+  });
+}
+
+async function fetchWithRetry(url, options, maxRetries = 3, providerEventCallback = null, context = {}) {
   let delay = 1000;
   for (let i = 0; i < maxRetries; i++) {
     try {
       const response = await fetch(url, options);
       if (response.status === 429 || response.status >= 500) {
         if (i === maxRetries - 1) return response;
+        const issue = classifyProviderIssue({ status: response.status });
+        notifyProviderEvent(providerEventCallback, {
+          type: "provider_retry",
+          provider: context.provider || "unknown",
+          protocol: providerProtocolLabel(context.protocol),
+          status: response.status,
+          endpoint: url,
+          attempt: i + 1,
+          maxRetries,
+          retryDelayMs: delay,
+          category: issue.category,
+          message: `模型服务返回 ${response.status}：${issue.reason}，正在重试 ${i + 1}/${maxRetries}。`,
+          suggestedAction: issue.suggestedAction,
+        });
         console.warn(`LLM API returned HTTP ${response.status}. Retrying in ${delay}ms (Attempt ${i + 1}/${maxRetries})...`);
         await new Promise(r => setTimeout(r, delay));
         delay *= 2;
@@ -25,6 +155,19 @@ async function fetchWithRetry(url, options, maxRetries = 3) {
       return response;
     } catch (err) {
       if (i === maxRetries - 1) throw err;
+      const issue = classifyProviderIssue({ error: err });
+      notifyProviderEvent(providerEventCallback, {
+        type: "provider_retry",
+        provider: context.provider || "unknown",
+        protocol: providerProtocolLabel(context.protocol),
+        endpoint: url,
+        attempt: i + 1,
+        maxRetries,
+        retryDelayMs: delay,
+        category: issue.category,
+        message: `模型服务网络请求失败：${issue.reason}，正在重试 ${i + 1}/${maxRetries}。`,
+        suggestedAction: issue.suggestedAction,
+      });
       console.warn(`LLM API network failure: ${err.message}. Retrying in ${delay}ms (Attempt ${i + 1}/${maxRetries})...`);
       await new Promise(r => setTimeout(r, delay));
       delay *= 2;
@@ -269,18 +412,47 @@ async function callGeminiInteractions({ apiKey, model, messages, temperature, st
         "x-goog-api-key": apiKey,
       },
       body: JSON.stringify(body),
+    }, 3, streamCallback, {
+      provider: "gemini",
+      protocol: "gemini_interactions",
     });
   } catch (err) {
-    throw new Error(`Gemini 网络请求失败: ${err.message}`);
+    throw createProviderError({
+      provider: "gemini",
+      protocol: "gemini_interactions",
+      endpoint: GEMINI_INTERACTIONS_URL,
+      error: err,
+      prefix: "Gemini 网络请求失败",
+    });
   }
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`Gemini API 错误 (${response.status}) [${GEMINI_INTERACTIONS_URL}]: ${text}`);
+    throw createProviderError({
+      provider: "gemini",
+      protocol: "gemini_interactions",
+      endpoint: GEMINI_INTERACTIONS_URL,
+      status: response.status,
+      text,
+      prefix: "Gemini API 调用失败",
+    });
   }
 
   const data = await response.json();
-  const parsed = parseGeminiInteractionResponse(data);
+  let parsed;
+  try {
+    parsed = parseGeminiInteractionResponse(data);
+  } catch (err) {
+    throw createProviderError({
+      provider: "gemini",
+      protocol: "gemini_interactions",
+      endpoint: GEMINI_INTERACTIONS_URL,
+      status: data?.error?.code || data?.status,
+      text: err.message,
+      error: err,
+      prefix: "Gemini 未返回可用结果",
+    });
+  }
   if (typeof streamCallback === "function") {
     streamCallback({ chunk: parsed.text, fullText: parsed.text, isReasoning: false });
     if (parsed.searchEvidence) streamCallback({ searchEvidence: parsed.searchEvidence });
@@ -474,14 +646,30 @@ export async function callLLM(messages, streamCallback, isHighRandomness = false
           "anthropic-version": "2023-06-01",
         },
         body: JSON.stringify(body),
+      }, 3, streamCallback, {
+        provider,
+        protocol: "anthropic_messages",
       });
     } catch (err) {
-      throw new Error(`网络请求彻底失败 (Network Error)。\n请求地址: ${baseUrl}\n可能原因：\n1. 你的网络环境 (VPN/代理) 无法连通此地址。\n2. API 服务器宕机。\n3. Chrome 插件跨域拦截。\n原始错误: ${err.message}`);
+      throw createProviderError({
+        provider,
+        protocol: "anthropic_messages",
+        endpoint: baseUrl,
+        error: err,
+        prefix: "Anthropic 网络请求失败",
+      });
     }
 
     if (!response.ok) {
       const text = await response.text();
-      throw new Error(`Anthropic API 错误 (${response.status}) [${baseUrl}]: ${text}`);
+      throw createProviderError({
+        provider,
+        protocol: "anthropic_messages",
+        endpoint: baseUrl,
+        status: response.status,
+        text,
+        prefix: "Anthropic API 调用失败",
+      });
     }
 
     if (isStreaming) {
@@ -490,7 +678,15 @@ export async function callLLM(messages, streamCallback, isHighRandomness = false
 
     const data = await response.json();
     const text = data.content?.[0]?.text || "";
-    if (!text.trim()) throw new Error("Anthropic API 返回了空正文，任务未完成。");
+    if (!text.trim()) {
+      throw createProviderError({
+        provider,
+        protocol: "anthropic_messages",
+        endpoint: baseUrl,
+        text: "Anthropic API 返回了空正文",
+        prefix: "模型服务返回空正文",
+      });
+    }
     return text;
   }
 
@@ -540,9 +736,18 @@ export async function callLLM(messages, streamCallback, isHighRandomness = false
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify(body),
+    }, 3, streamCallback, {
+      provider,
+      protocol,
     });
   } catch (err) {
-    throw new Error(`网络请求彻底失败 (Network Error)。\n请求地址: ${baseUrl}\n可能原因：\n1. 你的网络环境 (VPN/代理) 无法连通此地址。\n2. 你在使用本地大模型或自定义 API 时，未开启跨域 (CORS) 支持。\n3. Ollama 必须设置 OLLAMA_ORIGINS="*" 环境变量。\n原始错误: ${err.message}`);
+    throw createProviderError({
+      provider,
+      protocol,
+      endpoint: baseUrl,
+      error: err,
+      prefix: "模型服务网络请求失败",
+    });
   }
 
   if (!response.ok) {
@@ -559,11 +764,18 @@ export async function callLLM(messages, streamCallback, isHighRandomness = false
         llmBaseUrl,
       });
       if (typeof streamCallback === "function") {
-        streamCallback({
+        notifyProviderEvent(streamCallback, {
+          type: "provider_fallback",
           warning: "responses_api_fallback_to_chat_completions",
           message: "当前代理/上游不支持 Responses API，已自动降级到 Chat Completions 重试。",
-          from: baseUrl,
-          to: fallbackUrl,
+          provider,
+          protocol: providerProtocolLabel(protocol),
+          endpoint: baseUrl,
+          status: response.status,
+          category: "protocol_compatibility",
+          fallbackFrom: baseUrl,
+          fallbackTo: fallbackUrl,
+          suggestedAction: "如果降级后仍失败，请确认自定义 Endpoint 是否支持 /v1/chat/completions。",
         });
       }
       console.warn(`Responses API request failed via ${baseUrl}; retrying once with Chat Completions fallback ${fallbackUrl}.`);
@@ -574,15 +786,32 @@ export async function callLLM(messages, streamCallback, isHighRandomness = false
           Authorization: `Bearer ${apiKey}`,
         },
         body: JSON.stringify(fallbackBody),
-      }, 1);
+      }, 1, streamCallback, {
+        provider,
+        protocol: "chat",
+      });
       if (!response.ok) {
         const fallbackText = await response.text();
-        throw new Error(`LLM API 错误 (${response.status}) [${fallbackUrl}]: ${fallbackText}\n原 Responses API 错误 (${baseUrl}): ${text}`);
+        throw createProviderError({
+          provider,
+          protocol: "chat",
+          endpoint: fallbackUrl,
+          status: response.status,
+          text: `${fallbackText}\n原 Responses API 错误 (${redactEndpointUrl(baseUrl)}): ${trimProviderText(text)}`,
+          prefix: "模型服务降级后仍调用失败",
+        });
       }
       baseUrl = fallbackUrl;
       protocol = "chat";
     } else {
-      throw new Error(`LLM API 错误 (${response.status}) [${baseUrl}]: ${text}`);
+      throw createProviderError({
+        provider,
+        protocol,
+        endpoint: baseUrl,
+        status: response.status,
+        text,
+        prefix: "模型服务调用失败",
+      });
     }
   }
 
@@ -592,7 +821,15 @@ export async function callLLM(messages, streamCallback, isHighRandomness = false
       const data = await response.json();
       const chunk = extractResponseText(data);
       streamCallback({ chunk, fullText: chunk });
-      if (!String(chunk || "").trim()) throw new Error("LLM API 返回了空正文，任务未完成。");
+      if (!String(chunk || "").trim()) {
+        throw createProviderError({
+          provider,
+          protocol,
+          endpoint: baseUrl,
+          text: "LLM API 返回了空正文",
+          prefix: "模型服务返回空正文",
+        });
+      }
       return chunk;
     }
     return await readSSEStream(response, streamCallback, "openai");
@@ -600,7 +837,15 @@ export async function callLLM(messages, streamCallback, isHighRandomness = false
 
   const data = await response.json();
   const text = extractResponseText(data);
-  if (!String(text).trim()) throw new Error("LLM API 返回了空正文，任务未完成。");
+  if (!String(text).trim()) {
+    throw createProviderError({
+      provider,
+      protocol,
+      endpoint: baseUrl,
+      text: "LLM API 返回了空正文",
+      prefix: "模型服务返回空正文",
+    });
+  }
   return text;
 }
 

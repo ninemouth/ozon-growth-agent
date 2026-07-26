@@ -15,6 +15,7 @@ import {
 
 const globalSessionCache = {};
 const inFlightToolRuns = new Map();
+const PROVIDER_PROGRESS_TYPES = new Set(["provider_retry", "provider_warning", "provider_fallback", "provider_error"]);
 
 function hasConcreteVisualTerms(text) {
   return /颜色|配色|材质|金属|铁艺|铜|铝|钢|塑料|木|硅胶|玻璃|陶瓷|布|皮革|亚克力|轮廓|造型|形状|结构|弧形|圆形|方形|边缘|纹理|表面|光泽|磨砂|透明|图案|花纹|主体|比例|开孔|把手|支架|外观|细节|同模|相似|差异/i.test(String(text || ""));
@@ -1891,13 +1892,41 @@ ${(skillId || "").includes("tiktok_shop_monitor") ? `\n\n## ⚠️ TikTok 监控
     let assistantContent = "";
     let geminiSearchEvidence = null;
     const llmStartedAt = Date.now();
-    assistantContent = await callLLM(messages, ({ chunk, fullText, isReasoning, searchEvidence }) => {
-      if (searchEvidence) {
-        geminiSearchEvidence = searchEvidence;
-        return;
-      }
-      sendProgress({ type: "streaming", step, chunk, fullText, isReasoning });
-    }, highRandomness);
+    try {
+      assistantContent = await callLLM(messages, (event = {}) => {
+        if (event.searchEvidence) {
+          geminiSearchEvidence = event.searchEvidence;
+          return;
+        }
+        if (event.providerEvent || PROVIDER_PROGRESS_TYPES.has(event.type) || event.warning === "responses_api_fallback_to_chat_completions") {
+          sendProgress({
+            ...event,
+            type: event.type || "provider_warning",
+            step,
+          });
+          return;
+        }
+        const { chunk, fullText, isReasoning } = event;
+        if (chunk == null && fullText == null) return;
+        sendProgress({ type: "streaming", step, chunk, fullText, isReasoning });
+      }, highRandomness);
+    } catch (err) {
+      const providerError = err?.providerError || {};
+      sendProgress({
+        type: "provider_error",
+        step,
+        provider: providerError.provider || "",
+        protocol: providerError.protocol || providerError.protocolId || "",
+        endpoint: providerError.endpoint || "",
+        status: providerError.status,
+        category: providerError.category || "provider_error",
+        errorCode: "llm_provider_error",
+        suggestedAction: providerError.suggestedAction || "请检查 Provider 设置、模型名、Endpoint 和网络/代理状态。",
+        message: err?.message || "模型服务调用失败，请检查 Provider 设置。",
+        providerError,
+      });
+      throw err;
+    }
 
     if (geminiSearchEvidence) {
       const llmCompletedAt = Date.now();

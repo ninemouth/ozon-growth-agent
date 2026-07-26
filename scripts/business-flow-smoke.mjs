@@ -322,6 +322,10 @@ assert.match(backgroundSource, /GET_TASK_LOGS/, "background should expose durabl
 assert.match(backgroundSource, /TASK_LOG_PRUNE_ALARM/, "background should prune durable task logs on a schedule");
 assert.match(backgroundSource, /WORKFLOW_RECOVERY_ALARM/, "background should schedule workflow recovery sweeps");
 assert.match(backgroundSource, /runWorkflowRecoverySweep/, "background should run stale workflow recovery from alarms and startup");
+assert.match(agentLoopSource, /provider_retry[\s\S]*provider_fallback[\s\S]*provider_error|provider_error[\s\S]*provider_retry[\s\S]*provider_fallback/, "agent loop should route provider retry/fallback/final errors into user-visible progress");
+assert.match(backgroundSource, /provider_retry[\s\S]*provider_warning[\s\S]*provider_fallback[\s\S]*provider_error/, "task logs should persist provider retry/fallback/final error events with severity");
+assert.match(sidepanelSource, /provider_retry[\s\S]*模型服务暂时不可用[\s\S]*provider_fallback[\s\S]*provider_error/, "sidepanel should surface provider retry/fallback/final errors in the progress dialog");
+assert.match(contentSource, /provider_retry[\s\S]*模型服务暂时不可用[\s\S]*provider_fallback[\s\S]*provider_error/, "floating dock should surface provider retry/fallback/final errors in the chat dialog");
 assert.match(backgroundSource, /cleanupActiveWorkflowTabs[\s\S]*cleanupOwnedTabs\(checkpointKey\)/, "workflow completion should close every workflow-created tab while the source tab remains protected");
 assert.doesNotMatch(backgroundSource, /preserveOzonPages|preserveUrlPattern:\s*preserveOzonPages/, "platform trend cleanup must not preserve every workflow-created Ozon evidence tab");
 assert.match(workflowRuntimeSource, /TASK_LOG_STORE/, "workflow runtime should have a dedicated task log store");

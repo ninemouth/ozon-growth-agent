@@ -3987,6 +3987,15 @@
               log(`↪ ${data.message || `${data.actionLabel || data.toolName || "工具"} 正在执行`}`);
             } else if (data.type === "tool_result") {
               log(`📥 执行完毕，获取到相关数据。`);
+            } else if (data.type === "provider_retry") {
+              log(`🔁 ${data.message || "模型服务暂时不可用，正在自动重试。"}`);
+            } else if (data.type === "provider_fallback") {
+              log(`🔀 ${data.message || "当前模型接口不兼容，已自动切换到兼容调用方式重试。"}`);
+            } else if (data.type === "provider_warning") {
+              log(`⚠️ ${data.message || "模型服务返回警告，请检查 Provider 设置。"}`);
+            } else if (data.type === "provider_error") {
+              const providerHint = data.suggestedAction ? ` ${data.suggestedAction}` : "";
+              log(`❌ ${data.message || "模型服务调用失败。"}${providerHint}`);
             } else if (data.type === "paused_for_verification" || data.type === "captcha_warning") {
               log(`🧩 ${data.message || "采购平台需要人工验证。请完成验证码/登录后发送“继续”恢复。"}`);
             } else if (["trend_query_refinement_required", "trend_query_guard", "trend_query_refinement_exhausted", "trend_evidence_downgrade_required"].includes(data.type)) {
