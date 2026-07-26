@@ -80,6 +80,55 @@ function extractResponseText(data = {}) {
   return "";
 }
 
+function buildChatCompletionsBody({ llmModel, messages, finalTemperature, isStreaming, provider, customEndpointActive, llmBaseUrl }) {
+  const body = {
+    model: llmModel,
+    messages,
+    temperature: finalTemperature,
+    max_tokens: 8192,
+    stream: isStreaming,
+  };
+
+  const isQwenModel = (!customEndpointActive && provider === "qwen") || llmModel.toLowerCase().includes("qwen") || (llmBaseUrl && llmBaseUrl.includes("dashscope"));
+  const isGeminiModel = llmModel.toLowerCase().includes("gemini") || (llmBaseUrl && llmBaseUrl.includes("google"));
+  const isGlmModel = llmModel.toLowerCase().includes("glm") || provider === "zhipu" || (llmBaseUrl && llmBaseUrl.includes("zhipu"));
+  const isBaichuan = llmModel.toLowerCase().includes("baichuan") || provider === "baichuan";
+  const isDoubaoModel = llmModel.toLowerCase().includes("doubao") || (llmBaseUrl && llmBaseUrl.includes("volcengine"));
+  const isMinimaxModel = llmModel.toLowerCase().includes("minimax");
+  const isHunyuanModel = llmModel.toLowerCase().includes("hunyuan") || llmModel.toLowerCase().includes("tencent");
+
+  if (isQwenModel) {
+    body.enable_search = true;
+    body.tools = [{ type: "web_search" }];
+  } else if (isGeminiModel) {
+    body.tools = [{ googleSearch: {} }];
+  } else if (isGlmModel) {
+    body.tools = [{ type: "web_search", web_search: { enable: true } }];
+  } else if (isBaichuan || isDoubaoModel || isMinimaxModel || isHunyuanModel) {
+    body.tools = [{ type: "web_search" }];
+  }
+
+  return body;
+}
+
+function resolveChatCompletionsFallbackUrl(baseUrl = "") {
+  const normalized = normalizeBaseUrl(baseUrl);
+  if (!normalized) return "";
+  if (normalized.endsWith("/chat/completions")) return normalized;
+  if (normalized.endsWith("/responses")) return normalized.replace(/\/responses$/i, "/chat/completions");
+  if (normalized.endsWith("/completions")) return normalized.replace(/\/completions$/i, "/chat/completions");
+  if (normalized.endsWith("/v1")) return `${normalized}/chat/completions`;
+  return `${normalized}/v1/chat/completions`;
+}
+
+function shouldFallbackResponsesToChat({ protocol, provider, customEndpointActive, status, text = "" }) {
+  if (protocol !== "responses") return false;
+  if (!(customEndpointActive || provider === "qwen")) return false;
+  const statusMayIndicateCompatibility = [400, 404, 405, 422, 500, 501, 502].includes(Number(status));
+  if (!statusMayIndicateCompatibility) return false;
+  return /responses?|chat\/completions|completions|unsupported|not\s*found|not\s*implemented|not\s*supported|unknown\s*endpoint|invalid\s*endpoint|upstream request failed|upstream_error|endpoint|route|path|兼容|不支持|未实现|上游/i.test(String(text || ""));
+}
+
 function dataUrlToGeminiImage(dataUrl) {
   const match = String(dataUrl || "").match(/^data:([^;,]+)?;base64,(.*)$/s);
   if (!match) return null;
@@ -471,32 +520,15 @@ export async function callLLM(messages, streamCallback, isHighRandomness = false
       enable_thinking: true,
     };
   } else {
-    body = {
-      model: llmModel,
+    body = buildChatCompletionsBody({
+      llmModel,
       messages,
-      temperature: finalTemperature,
-      max_tokens: 8192,
-      stream: isStreaming,
-    };
-
-    const isQwenModel = (!customEndpointActive && provider === "qwen") || llmModel.toLowerCase().includes("qwen") || (llmBaseUrl && llmBaseUrl.includes("dashscope"));
-    const isGeminiModel = llmModel.toLowerCase().includes("gemini") || (llmBaseUrl && llmBaseUrl.includes("google"));
-    const isGlmModel = llmModel.toLowerCase().includes("glm") || provider === "zhipu" || (llmBaseUrl && llmBaseUrl.includes("zhipu"));
-    const isBaichuan = llmModel.toLowerCase().includes("baichuan") || provider === "baichuan";
-    const isDoubaoModel = llmModel.toLowerCase().includes("doubao") || (llmBaseUrl && llmBaseUrl.includes("volcengine"));
-    const isMinimaxModel = llmModel.toLowerCase().includes("minimax");
-    const isHunyuanModel = llmModel.toLowerCase().includes("hunyuan") || llmModel.toLowerCase().includes("tencent");
-
-    if (isQwenModel) {
-      body.enable_search = true;
-      body.tools = [{ type: "web_search" }];
-    } else if (isGeminiModel) {
-      body.tools = [{ googleSearch: {} }];
-    } else if (isGlmModel) {
-      body.tools = [{ type: "web_search", web_search: { enable: true } }];
-    } else if (isBaichuan || isDoubaoModel || isMinimaxModel || isHunyuanModel) {
-      body.tools = [{ type: "web_search" }];
-    }
+      finalTemperature,
+      isStreaming,
+      provider,
+      customEndpointActive,
+      llmBaseUrl,
+    });
   }
 
   let response;
@@ -515,7 +547,43 @@ export async function callLLM(messages, streamCallback, isHighRandomness = false
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`LLM API 错误 (${response.status}) [${baseUrl}]: ${text}`);
+    if (shouldFallbackResponsesToChat({ protocol, provider, customEndpointActive, status: response.status, text })) {
+      const fallbackUrl = resolveChatCompletionsFallbackUrl(baseUrl);
+      const fallbackBody = buildChatCompletionsBody({
+        llmModel,
+        messages,
+        finalTemperature,
+        isStreaming,
+        provider,
+        customEndpointActive,
+        llmBaseUrl,
+      });
+      if (typeof streamCallback === "function") {
+        streamCallback({
+          warning: "responses_api_fallback_to_chat_completions",
+          message: "当前代理/上游不支持 Responses API，已自动降级到 Chat Completions 重试。",
+          from: baseUrl,
+          to: fallbackUrl,
+        });
+      }
+      console.warn(`Responses API request failed via ${baseUrl}; retrying once with Chat Completions fallback ${fallbackUrl}.`);
+      response = await fetchWithRetry(fallbackUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify(fallbackBody),
+      }, 1);
+      if (!response.ok) {
+        const fallbackText = await response.text();
+        throw new Error(`LLM API 错误 (${response.status}) [${fallbackUrl}]: ${fallbackText}\n原 Responses API 错误 (${baseUrl}): ${text}`);
+      }
+      baseUrl = fallbackUrl;
+      protocol = "chat";
+    } else {
+      throw new Error(`LLM API 错误 (${response.status}) [${baseUrl}]: ${text}`);
+    }
   }
 
   if (isStreaming) {

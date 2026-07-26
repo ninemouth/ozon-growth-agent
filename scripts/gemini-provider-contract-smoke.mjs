@@ -155,6 +155,38 @@ const responsesEndpointResult = await callLLM([{ role: "user", content: "Use res
 assert.equal(responsesEndpointResult, "responses endpoint response");
 assert.equal(capturedRequest.url, "https://www.thinktv.ai/v1/responses");
 
+const fallbackRequests = [];
+global.fetch = async (url, options) => {
+  fallbackRequests.push({ url, options });
+  if (String(url).endsWith("/responses")) {
+    return {
+      ok: false,
+      status: 502,
+      text: async () => JSON.stringify({ error: { message: "Upstream request failed", type: "upstream_error" } }),
+      headers: { get: () => "application/json" },
+    };
+  }
+  return {
+    ok: true,
+    status: 200,
+    json: async () => ({ choices: [{ message: { content: "fallback chat response" } }] }),
+    text: async () => "fallback chat response",
+    headers: { get: () => "application/json" },
+  };
+};
+const fallbackEvents = [];
+const fallbackResult = await callLLM(
+  [{ role: "user", content: "Responses proxy unsupported, please fallback." }],
+  (event) => fallbackEvents.push(event),
+);
+assert.equal(fallbackResult, "fallback chat response");
+assert.ok(fallbackRequests.length >= 2, "responses-compatible custom proxies should retry with chat completions when responses is unsupported");
+assert.equal(fallbackRequests[0].url, "https://www.thinktv.ai/v1/responses");
+assert.equal(fallbackRequests.at(-1).url, "https://www.thinktv.ai/v1/chat/completions");
+assert.ok(JSON.parse(fallbackRequests[0].options.body).input, "first attempt should use Responses API input payload");
+assert.ok(JSON.parse(fallbackRequests.at(-1).options.body).messages, "fallback attempt should use Chat Completions messages payload");
+assert.ok(fallbackEvents.some((event) => event.warning === "responses_api_fallback_to_chat_completions"));
+
 const pageEvidence = collectPageEvidenceFromToolHistory([{
   tool: "gemini_google_search",
   result: {
