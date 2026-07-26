@@ -86,7 +86,9 @@ npm install
 3. 开启“开发者模式”
 4. 点击“加载已解压的扩展程序”
 5. 选择本项目文件夹 `ozon-growth-agent`
-6. 在侧边栏设置中配置 LLM Provider、模型和 API Key
+6. 在侧边栏设置中配置 LLM Provider、模型和 API Key；如果填写了自定义 API Endpoint，插件会优先使用该 endpoint，Provider 只在 endpoint 为空时决定官方请求地址。
+
+选择 Google Gemini 时，插件直连 Gemini Interactions API，并默认启用服务端 `google_search`。搜索查询和来源链接会进入本地证据轨迹；Google Search 公开网页结果不会被当作 Google Trends 数据。
 
 ## 更新机制说明
 

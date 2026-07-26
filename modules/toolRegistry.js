@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: MIT | Copyright (c) 2026 Yang Cao <cao.x.yang@gmail.com> */
 // modules/toolRegistry.js — Tool registry and content script bridge
 
-import { callLLM, getSettings, prepareCleanProductImage } from './llmClient.js';
+import { callLLM, getEffectiveLlmProvider, getSettings, prepareCleanProductImage } from './llmClient.js';
 import { ozonGetProductList, ozonGetProductInfo, ozonGetAnalyticsData, ozonGetFbsPostingList, ozonGetFboPostingList, ozonGetStoreSnapshot } from './ozonApi.js';
 import { getArtifactDataUrl, putDataUrlArtifact } from './artifactStore.js';
 import { isWorkflowCancellationRequested } from './workflowRuntime.js';
@@ -1960,8 +1960,8 @@ ${JSON.stringify(readable.map((item, index) => ({
     // 0. Prioritize using the large model's native built-in search tool via callLLM
     try {
       const settings = await getSettings();
-      const { llmProvider, llmModel, llmBaseUrl } = settings;
-      const provider = llmProvider || "openai";
+      const { llmModel, llmBaseUrl } = settings;
+      const provider = getEffectiveLlmProvider(settings);
       
       const isQwenModel = provider === "qwen" || llmModel.toLowerCase().includes("qwen") || (llmBaseUrl && llmBaseUrl.includes("dashscope"));
       const isGeminiModel = llmModel.toLowerCase().includes("gemini") || (llmBaseUrl && llmBaseUrl.includes("google"));
@@ -2098,10 +2098,10 @@ ${JSON.stringify(readable.map((item, index) => ({
     };
     
     let targetQuery = query;
-    const isForeignPlatform = ["amazon", "etsy", "google", "google_ru", "google_trends", "bing", "yandex", "ozon", "vk_posts", "tgstat", "dzen", "yandex_news"].includes(normalizedEngine);
+    const isForeignPlatform = ["amazon", "etsy", "google", "google_ru", "google_trends", "bing", "yandex", "yandex_wordstat", "yandex_market", "ozon", "wildberries", "avito", "megamarket", "vk_posts", "tgstat", "dzen", "yandex_news", "cbr", "rosstat", "akit", "yakov_partners"].includes(normalizedEngine);
     const hasChinese = /[\u4e00-\u9fa5]/.test(query);
     const hasCyrillic = /[\u0400-\u04ff]/.test(query);
-    const isRussianSearchEngine = ["google_ru", "google_trends", "yandex", "ozon", "vk_posts", "tgstat", "dzen", "yandex_news"].includes(normalizedEngine);
+    const isRussianSearchEngine = ["google_ru", "google_trends", "yandex", "yandex_wordstat", "yandex_market", "ozon", "wildberries", "avito", "megamarket", "vk_posts", "tgstat", "dzen", "yandex_news", "cbr", "rosstat", "akit", "yakov_partners"].includes(normalizedEngine);
     const shouldLocalizeQuery = hasChinese || (isRussianSearchEngine && !hasCyrillic);
 
     if (isForeignPlatform && shouldLocalizeQuery) {
@@ -2138,7 +2138,12 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
       amazon: `https://www.amazon.com/s?k=${encodeURIComponent(targetQuery)}`,
       etsy: `https://www.etsy.com/search?q=${encodeURIComponent(targetQuery)}`,
       yandex: `https://yandex.ru/search/?text=${encodeURIComponent(targetQuery)}`,
+      yandex_wordstat: `https://wordstat.yandex.com/?region=225&words=${encodeURIComponent(targetQuery)}`,
+      yandex_market: `https://market.yandex.ru/search?text=${encodeURIComponent(targetQuery)}`,
       ozon: `https://www.ozon.ru/search/?text=${encodeURIComponent(targetQuery)}&from_global=true`,
+      wildberries: `https://www.wildberries.ru/catalog/0/search.aspx?search=${encodeURIComponent(targetQuery)}`,
+      avito: `https://www.avito.ru/rossiya?q=${encodeURIComponent(targetQuery)}`,
+      megamarket: `https://megamarket.ru/catalog/?q=${encodeURIComponent(targetQuery)}`,
       taobao: `https://s.taobao.com/search?q=${encodeURIComponent(targetQuery)}&_input_charset=utf-8`,
       jd: `https://search.jd.com/Search?keyword=${encodeURIComponent(targetQuery)}&enc=utf-8`,
       pinduoduo: `https://mobile.yangkeduo.com/search_result.html?search_key=${encodeURIComponent(targetQuery)}`,
@@ -2146,6 +2151,10 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
       tgstat: `https://tgstat.ru/posts?q=${encodeURIComponent(targetQuery)}`,
       dzen: `https://dzen.ru/search?q=${encodeURIComponent(targetQuery)}`,
       yandex_news: `https://news.yandex.ru/yandsearch?text=${encodeURIComponent(targetQuery)}`,
+      cbr: `https://www.google.com/search?q=${encodeURIComponent(`${targetQuery} site:cbr.ru inflation exchange rate consumer prices Russia`)}`,
+      rosstat: `https://www.google.com/search?q=${encodeURIComponent(`${targetQuery} site:rosstat.gov.ru retail trade consumer prices Russia`)}`,
+      akit: `https://www.google.com/search?q=${encodeURIComponent(`${targetQuery} АКИТ интернет торговля Россия маркетплейсы`)}`,
+      yakov_partners: `https://www.google.com/search?q=${encodeURIComponent(`${targetQuery} Yakov Partners ecommerce Russia marketplace`)}`,
     };
     const searchActionLabel = normalizedEngine === "google_trends"
       ? "Google Trends RU 趋势图取证"
@@ -2157,12 +2166,24 @@ Do NOT include any quotation marks, punctuation, explanations, or introductory t
             ? "Dzen 博客评测取证"
             : normalizedEngine === "yandex_news"
               ? "Yandex.News 新闻舆情取证"
+              : normalizedEngine === "yandex_wordstat"
+                ? "Yandex Wordstat 搜索需求取证"
+                : normalizedEngine === "wildberries"
+                  ? "Wildberries 平台交叉验证"
+                  : normalizedEngine === "avito"
+                    ? "Avito 本地需求取证"
+                    : normalizedEngine === "yandex_market"
+                      ? "Yandex Market 价格与规格取证"
+                      : normalizedEngine === "megamarket"
+                        ? "MegaMarket 平台价格取证"
+                        : ["cbr", "rosstat", "akit", "yakov_partners"].includes(normalizedEngine)
+                          ? "俄罗斯宏观与行业背景取证"
               : ["google", "google_ru"].includes(normalizedEngine)
                 ? "Google 搜索结果取证"
                 : normalizedEngine === "yandex"
                   ? "Yandex.ru 搜索结果取证"
                   : "浏览器搜索结果取证";
-    const shouldAutoCloseSearchTab = ["google", "google_ru", "google_trends", "bing", "yandex", "vk_posts", "tgstat", "dzen", "yandex_news"].includes(normalizedEngine);
+    const shouldAutoCloseSearchTab = ["google", "google_ru", "google_trends", "bing", "yandex", "yandex_wordstat", "yandex_market", "wildberries", "avito", "megamarket", "vk_posts", "tgstat", "dzen", "yandex_news", "cbr", "rosstat", "akit", "yakov_partners"].includes(normalizedEngine);
     const attachSearchScreenshotArtifact = async (payload, tabId) => {
       if (!shouldAutoCloseSearchTab || payload.screenshotRef || payload.screenshotCaptured) return payload;
       try {

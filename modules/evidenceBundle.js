@@ -47,6 +47,14 @@ function compactResult(result = {}) {
     loadState: result.loadState || result.readyReason || "",
     blockingGap: result.blockingGap || "",
     blockingGaps: result.blockingGaps || [],
+    provider: result.provider || "",
+    source_type: result.source_type || "",
+    interactionId: result.interactionId || "",
+    queries: Array.isArray(result.queries) ? result.queries.slice(0, 12) : undefined,
+    sources: Array.isArray(result.sources) ? result.sources.slice(0, 20).map((source) => ({
+      title: truncateText(source.title || source.name || "", 180),
+      url: source.url || source.uri || "",
+    })) : undefined,
     pageEvidence: result.pageEvidence || result.pageData?.pageEvidence || {},
     screenshotRef: result.screenshotRef || "",
     screenshotRefs: result.screenshotRefs || [],
@@ -158,6 +166,19 @@ export function collectPageEvidenceFromToolHistory(toolHistory = [], pageContext
         evidenceOk: page.ok,
         pageEvidence: page.pageEvidence || {},
         pageData: compactPageRecord(page),
+      });
+    });
+    (Array.isArray(result.sources) ? result.sources : []).forEach((source) => {
+      push({
+        tool: entry?.tool || "",
+        url: source.url || source.uri || "",
+        title: source.title || source.name || "",
+        evidenceOk: true,
+        pageEvidence: {
+          source_type: result.source_type || "google_search",
+          provider: result.provider || "",
+          interactionId: result.interactionId || "",
+        },
       });
     });
   });

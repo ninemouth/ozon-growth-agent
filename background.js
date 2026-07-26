@@ -441,6 +441,26 @@ async function exportResults() {
   return existing.savedResults || [];
 }
 
+function assertDeliverableWorkflowResult(result = {}, matchedSkills = []) {
+  if (result?.ok !== true) throw new Error("工作流没有返回成功结果，禁止保存报告。");
+  const isOzonBusinessRun = matchedSkills.some((skill) => String(skill || "").includes("ozon_"));
+  if (!isOzonBusinessRun) return;
+
+  const output = result.result;
+  const allowedStatuses = new Set(["completed", "partial", "blocked", "assumption_only"]);
+  if (result.type !== "final" || !output || typeof output !== "object" || Array.isArray(output)) {
+    throw new Error("Ozon 业务任务未返回 final 结构，禁止保存空报告。");
+  }
+  if (!allowedStatuses.has(String(output.report_status || ""))) {
+    throw new Error("Ozon 业务报告缺少合法 report_status，禁止写入报告中心。");
+  }
+  const hasBusinessContent = [output.overview, output.analysis, output.summary]
+    .some((value) => String(value || "").trim()) ||
+    (Array.isArray(output.data) && output.data.length > 0) ||
+    (Array.isArray(output.blocking_gaps) && output.blocking_gaps.length > 0);
+  if (!hasBusinessContent) throw new Error("Ozon 业务报告正文为空，禁止写入报告中心。");
+}
+
 function sanitizeBundleFileName(value = "", fallback = "artifact") {
   const cleaned = String(value || fallback)
     .replace(/^artifact:\/\//, "")
@@ -1009,6 +1029,7 @@ chrome.runtime.onConnect.addListener((port) => {
               });
             },
           });
+          assertDeliverableWorkflowResult(result, matchedSkills);
 
           if (!isCancelled) {
             // Automatically save successful runs to savedResults

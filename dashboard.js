@@ -1812,27 +1812,27 @@ function normalizeFinalOutput(value) {
 function resultToReportMarkdown(result = {}) {
   const data = normalizeFinalOutput(result);
   const lines = [];
-  if (data.overview) lines.push(`### ${data.overview}`);
-  if (data.analysis) lines.push(`**决策诊断与数据推演**:\n${data.analysis}`);
-  if (data.summary) lines.push(`**下一步建议**:\n${data.summary}`);
+  if (data.overview) lines.push(`### ${plainReportHeading(data.overview, "分析概述")}`);
+  if (data.analysis) lines.push(`**决策诊断与数据推演**:\n${sanitizeBusinessReportMarkdown(data.analysis)}`);
+  if (data.summary) lines.push(`**下一步建议**:\n${sanitizeBusinessReportMarkdown(data.summary)}`);
   const queryFunnel = data.query_funnel;
   if (queryFunnel && typeof queryFunnel === "object") {
     lines.push("### 关键词发现与聚焦漏斗");
-    if (queryFunnel.user_intent) lines.push(`- 原始问题: ${queryFunnel.user_intent}`);
+    if (queryFunnel.user_intent) lines.push(`- 原始问题: ${sanitizeBusinessReportMarkdown(queryFunnel.user_intent)}`);
     if (Array.isArray(queryFunnel.intent_dimensions) && queryFunnel.intent_dimensions.length) {
-      lines.push(`- 意图维度: ${queryFunnel.intent_dimensions.join("；")}`);
+      lines.push(`- 意图维度: ${sanitizeBusinessReportMarkdown(queryFunnel.intent_dimensions.join("；"))}`);
     }
     if (Array.isArray(queryFunnel.focus_queries) && queryFunnel.focus_queries.length) {
-      lines.push(`- 最终聚焦词: ${queryFunnel.focus_queries.join("；")}`);
+      lines.push(`- 最终聚焦词: ${sanitizeBusinessReportMarkdown(queryFunnel.focus_queries.join("；"))}`);
     }
     if (Array.isArray(queryFunnel.scored_queries) && queryFunnel.scored_queries.length) {
       queryFunnel.scored_queries.slice(0, 6).forEach((item) => {
-        lines.push(`- ${item.query_ru || "未命名查询"}: ${item.total_score ?? "-"}/10 · ${item.decision || "reserve"} · ${item.evidence || "待补证"}`);
+        lines.push(`- ${sanitizeBusinessReportMarkdown(item.query_ru || "未命名查询")}: ${item.total_score ?? "-"}/10 · ${sanitizeBusinessReportMarkdown(item.decision || "reserve")} · ${sanitizeBusinessReportMarkdown(item.evidence || "待补证")}`);
       });
     }
     if (Array.isArray(queryFunnel.refinement_log) && queryFunnel.refinement_log.length) {
       queryFunnel.refinement_log.slice(0, 3).forEach((item) => {
-        lines.push(`- 查询调整: ${item.from_query || "-"} -> ${item.to_query || "-"} · ${item.reason || ""} · ${item.result || ""}`);
+        lines.push(`- 查询调整: ${sanitizeBusinessReportMarkdown(item.from_query || "-")} -> ${sanitizeBusinessReportMarkdown(item.to_query || "-")} · ${sanitizeBusinessReportMarkdown(item.reason || "")} · ${sanitizeBusinessReportMarkdown(item.result || "")}`);
       });
     }
   }
@@ -1840,7 +1840,7 @@ function resultToReportMarkdown(result = {}) {
     lines.push("### 结构化行动项");
     data.data.slice(0, 12).forEach((item, index) => {
       if (!item || typeof item !== "object") return;
-      const title = item.plan_id || item.title || item.name || item.direction || `行动项 ${index + 1}`;
+      const title = plainReportHeading(item.plan_id || item.title || item.name || item.direction || `行动项 ${index + 1}`, `行动项 ${index + 1}`);
       const actions = item.first_actions || item.next_steps || item.actionable_tasks || item.actions;
       const fields = [
         ["优先级", item.diagnosis_level || item.priority || item.severity],
@@ -1854,11 +1854,11 @@ function resultToReportMarkdown(result = {}) {
       ];
       lines.push(`#### ${index + 1}. ${title}`);
       fields.forEach(([label, value]) => {
-        if (value) lines.push(`- ${label}: ${value}`);
+        if (value) lines.push(`- ${label}: ${sanitizeBusinessReportMarkdown(String(value))}`);
       });
     });
   }
-  return lines.filter(Boolean).join("\n\n") || "```json\n" + JSON.stringify(data, null, 2) + "\n```";
+  return sanitizeBusinessReportMarkdown(lines.filter(Boolean).join("\n\n") || "```json\n" + JSON.stringify(data, null, 2) + "\n```");
 }
 
 function renderWorkflowReportHtml(report) {
@@ -3094,6 +3094,133 @@ function escapeHtml(value) {
     .replace(/'/g, "&#039;");
 }
 
+const BUSINESS_REPORT_TERM_REPLACEMENTS = [
+  [/\bread_current_page\b/gi, "页面信息读取"],
+  [/\bsearch_in_browser\b/gi, "公开网页检索"],
+  [/\bclose_tab\b/gi, "证据页收尾"],
+  [/\bopen_new_tab\b/gi, "打开证据页"],
+  [/\bnavigate_to\b/gi, "页面跳转"],
+  [/\bclick_by_text\b/gi, "页面操作"],
+  [/\bclick_by_selector\b/gi, "页面操作"],
+  [/\bclick_by_coordinate\b/gi, "页面操作"],
+  [/\binput_text_and_search\b/gi, "站内搜索"],
+  [/\bagentic_web_search\b/gi, "公开网页检索"],
+  [/\bimage_search_1688\b/gi, "1688 图片找货"],
+  [/\bimage_search_taobao\b/gi, "淘宝图片找货"],
+  [/\bimage_search_in_browser\b/gi, "图片找货"],
+  [/\bcollect_ozon_shop_pages\b/gi, "Ozon 店铺页面采集"],
+  [/\bcollect_ozon_competitor_shops\b/gi, "竞品店铺采集"],
+  [/\banalyze_ozon_shop_crawl_screenshots\b/gi, "店铺截图分析"],
+  [/\bDOM\b/g, "页面可见内容"],
+  [/\bxpath\b/gi, "页面定位规则"],
+  [/\btool_call\b/gi, "执行步骤"],
+  [/\btoolTimeline\b/g, "取证轨迹"],
+  [/\bevidence_bundle\b/gi, "证据包"],
+  [/\bartifact:\/\//gi, "截图证据 "],
+  [/调用指令[:：]?\s*/gi, "取证结果："],
+  [/验证码|人机拦截/gi, "页面访问限制"],
+  [/自愈程序|爬虫/gi, "自动恢复机制"],
+];
+
+function replaceBusinessTerms(chunk = "") {
+  return BUSINESS_REPORT_TERM_REPLACEMENTS.reduce(
+    (text, [pattern, replacement]) => text.replace(pattern, replacement),
+    String(chunk || "")
+  );
+}
+
+function sanitizeBusinessReportMarkdown(text = "") {
+  return String(text || "")
+    .split(/(https?:\/\/[^\s)\]>]+)/g)
+    .map((part) => /^https?:\/\//i.test(part) ? part : replaceBusinessTerms(part))
+    .join("")
+    .replace(/^\s*#{1,6}\s+#{1,6}\s+/gm, "### ")
+    .replace(/[ \t]+$/gm, "")
+    .trim();
+}
+
+function plainReportHeading(value = "", fallback = "报告") {
+  const text = sanitizeBusinessReportMarkdown(value)
+    .replace(/^\s*#{1,6}\s+/gm, "")
+    .replace(/\*\*/g, "")
+    .trim();
+  return text || fallback;
+}
+
+function humanToolLabel(tool = "") {
+  const normalized = String(tool || "").toLowerCase();
+  const map = {
+    initial_page_context: "初始页面线索",
+    read_current_page: "页面信息读取",
+    search_in_browser: "公开网页检索",
+    close_tab: "证据页收尾",
+    open_new_tab: "打开证据页",
+    navigate_to: "页面跳转",
+    input_text_and_search: "站内搜索",
+    image_search_in_browser: "图片找货",
+    image_search_1688: "1688 图片找货",
+    image_search_taobao: "淘宝图片找货",
+    collect_ozon_shop_pages: "Ozon 店铺页面采集",
+    collect_ozon_competitor_shops: "竞品店铺采集",
+    analyze_ozon_shop_crawl_screenshots: "店铺截图分析",
+    gemini_google_search: "Gemini Google Search 来源",
+  };
+  return map[normalized] || replaceBusinessTerms(tool || "页面证据");
+}
+
+function evidenceSourceLabel(item = {}) {
+  const evidenceType = String(item.pageEvidence?.evidenceType || item.pageEvidence?.source_type || "").toLowerCase();
+  if (evidenceType === "google_trends") return "Google Trends 趋势页";
+  if (evidenceType === "google_search") return "Google 公开搜索";
+  if (evidenceType === "yandex_wordstat") return "Yandex Wordstat 搜索需求";
+  if (evidenceType === "wildberries_search") return "Wildberries 平台交叉验证";
+  if (evidenceType === "avito_search") return "Avito 本地需求";
+  if (evidenceType === "yandex_market") return "Yandex Market 价格与规格";
+  if (evidenceType === "marketplace_crosscheck") return "跨平台交易信号";
+  if (evidenceType === "social_signal") return "俄罗斯社媒/内容信号";
+  if (evidenceType === "macro_context") return "俄罗斯宏观背景";
+  if (evidenceType === "industry_report") return "俄罗斯电商行业资料";
+  const url = String(item.url || "");
+  if (/trends\.google\./i.test(url)) return "Google Trends 趋势页";
+  if (/google\./i.test(url)) return "Google 公开搜索";
+  if (/wordstat\.yandex\./i.test(url)) return "Yandex Wordstat 搜索需求";
+  if (/market\.yandex\./i.test(url)) return "Yandex Market 价格与规格";
+  if (/yandex\./i.test(url)) return "Yandex.ru 公开搜索";
+  if (/wildberries\.ru/i.test(url)) return "Wildberries 平台交叉验证";
+  if (/avito\.ru/i.test(url)) return "Avito 本地需求";
+  if (/megamarket\.ru/i.test(url)) return "MegaMarket 平台交叉验证";
+  if (/vk\.com|tgstat\.ru|dzen\.ru/i.test(url)) return "俄罗斯社媒/内容信号";
+  if (/cbr\.ru|rosstat\.gov\.ru/i.test(url)) return "俄罗斯宏观背景";
+  if (/akit\.ru|yakovpartners\.ru/i.test(url)) return "俄罗斯电商行业资料";
+  if (/ozon\./i.test(url)) return "Ozon 公开页面";
+  return humanToolLabel(item.tool || "页面证据");
+}
+
+function compactEvidenceUrl(url = "") {
+  const text = String(url || "");
+  if (!text) return "-";
+  try {
+    const parsed = new URL(text);
+    const path = decodeURIComponent(parsed.pathname || "/");
+    return `${parsed.hostname}${path.length > 1 ? path : ""}`;
+  } catch (_) {
+    return text.replace(/^artifact:\/\//i, "截图证据 ");
+  }
+}
+
+function evidenceResultSummary(item = {}) {
+  const result = item.result || {};
+  if (result.blockingGap) return sanitizeBusinessReportMarkdown(result.blockingGap);
+  if (Array.isArray(result.blockingGaps) && result.blockingGaps.length) {
+    return sanitizeBusinessReportMarkdown(result.blockingGaps.slice(0, 2).join("；"));
+  }
+  if (result.loadState) return sanitizeBusinessReportMarkdown(String(result.loadState));
+  if (result.evidenceOk === false) return "证据不足，已标记待复核";
+  if (result.evidenceOk === true) return "已获得可用页面证据";
+  if (result.url || result.title || result.pageEvidence) return "已记录页面来源";
+  return "";
+}
+
 function formatDateInput(date) {
   return date.toISOString().slice(0, 10);
 }
@@ -3447,7 +3574,7 @@ function renderReportsList(monitorReports = [], savedResults = []) {
   const list = [];
   monitorReports.forEach(r => {
     const text = `### ${r.overview || '诊断概述'}\n\n**决策诊断与数据推演**:\n${r.analysis || ''}\n\n**下一步建议与分级路线图**:\n${r.summary || ''}`;
-    list.push({ id: r.id, source: "monitor", title: r.title || r.shop_name || "店铺诊断报告", date: new Date(r.created_at || Date.now()).toLocaleDateString(), content: text, tag: "店铺报告" });
+    list.push({ id: r.id, source: "monitor", title: r.title || r.shop_name || "店铺诊断报告", date: new Date(r.created_at || Date.now()).toLocaleDateString(), content: sanitizeBusinessReportMarkdown(text), tag: "店铺报告" });
   });
 
   savedResults.forEach(r => {
@@ -3462,7 +3589,7 @@ function renderReportsList(monitorReports = [], savedResults = []) {
     if (normalizedResult && (normalizedResult.overview || normalizedResult.analysis || normalizedResult.summary || normalizedResult.data)) {
       text = resultToReportMarkdown(normalizedResult);
     } else {
-      text = typeof r.result === "string" ? r.result : JSON.stringify(r.result, null, 2);
+      text = sanitizeBusinessReportMarkdown(typeof r.result === "string" ? r.result : JSON.stringify(r.result, null, 2));
     }
     
     const evidenceStatus = getEvidenceBundleStatus(r.evidence_bundle || null);
@@ -3471,7 +3598,7 @@ function renderReportsList(monitorReports = [], savedResults = []) {
       source: "saved",
       title: name,
       date: new Date(r.createdAt || r.timestamp || Date.now()).toLocaleDateString(),
-      content: text,
+      content: sanitizeBusinessReportMarkdown(text),
       tag: "AI决策",
       evidenceBundle: r.evidence_bundle || null,
       evidenceStatus,
@@ -3522,7 +3649,7 @@ function renderReportsList(monitorReports = [], savedResults = []) {
         </div>
       </div>
       <div class="md-report">
-        ${marked.parse(rep.content)}
+        ${marked.parse(sanitizeBusinessReportMarkdown(rep.content))}
       </div>
     `;
     viewer.querySelector(".report-copy-current")?.addEventListener("click", () => copyReportContent(rep));
@@ -3571,7 +3698,7 @@ function renderReportsList(monitorReports = [], savedResults = []) {
 
 async function copyReportContent(rep) {
   if (!rep) return;
-  const text = `# ${rep.title}\n\n${rep.content}`;
+  const text = sanitizeBusinessReportMarkdown(`# ${rep.title}\n\n${rep.content}`);
   const clipboard = window.navigator?.clipboard || navigator?.clipboard;
   if (clipboard?.writeText) {
     await clipboard.writeText(text);
@@ -3864,36 +3991,48 @@ function evidenceBundleToPdfAppendixHtml(bundle = null) {
   const toolTimeline = Array.isArray(bundle.toolTimeline) ? bundle.toolTimeline : [];
   const screenshotRefs = Array.isArray(bundle.screenshotRefs) ? bundle.screenshotRefs : [];
   const pageEvidence = Array.isArray(bundle.pageEvidence) ? bundle.pageEvidence : [];
-  const tools = Array.from(new Set(toolTimeline.map((item) => item.tool).filter(Boolean)));
+  const tools = Array.from(new Set(toolTimeline.map((item) => humanToolLabel(item.tool)).filter(Boolean)));
   const pageRows = pageEvidence.slice(0, 12).map((item, index) => `
     <tr>
       <td>${index + 1}</td>
-      <td>${escapeHtml(item.tool || "页面证据")}</td>
-      <td>${escapeHtml(item.title || "-")}</td>
-      <td>${escapeHtml(item.url || "-")}</td>
+      <td>${escapeHtml(evidenceSourceLabel(item))}</td>
+      <td>${escapeHtml(sanitizeBusinessReportMarkdown(item.title || "-"))}</td>
+      <td><span class="evidence-url">${escapeHtml(compactEvidenceUrl(item.url || "-"))}</span></td>
       <td>${escapeHtml(item.evidenceOk === false ? "待复核" : "可用")}</td>
     </tr>
   `).join("");
   const toolRows = toolTimeline.slice(0, 20).map((item) => `
     <tr>
       <td>${escapeHtml(item.index || "")}</td>
-      <td>${escapeHtml(item.tool || "")}</td>
-      <td>${escapeHtml(item.result?.loadState || item.result?.evidenceOk || item.result?.blockingGap || "")}</td>
+      <td>${escapeHtml(humanToolLabel(item.tool || ""))}</td>
+      <td>${escapeHtml(evidenceResultSummary(item) || "已完成")}</td>
     </tr>
   `).join("");
+  const screenshotRows = screenshotRefs.slice(0, 24).map((ref, index) => {
+    const available = Array.isArray(manifest.artifacts)
+      ? manifest.artifacts.find((item) => item.ref === ref)?.available
+      : undefined;
+    return `
+      <tr>
+        <td>${index + 1}</td>
+        <td>截图证据 ${index + 1}</td>
+        <td>${available === false ? "缺失，需重新校验" : available === true ? "可用" : "待校验"}</td>
+      </tr>
+    `;
+  }).join("");
 
   return `
     <section class="section-divider evidence-appendix">
       <h2>证据包摘要</h2>
-      <p class="meta">该尾页来自本次工作流的 evidence_bundle，用于复盘报告结论的证据来源、页面采集和工具轨迹。</p>
+      <p class="meta">该尾页用于复盘报告结论的证据来源、页面采集和取证动作。</p>
       <table>
         <tbody>
           <tr><th>证据等级</th><td>${escapeHtml(quality.grade || "-")}</td><th>报告状态</th><td>${escapeHtml(summary.status || quality.report_status || "-")}</td></tr>
-          <tr><th>证据账本</th><td>${escapeHtml(quality.summary || "-")}</td><th>阻断缺口</th><td>${escapeHtml(String(summary.blockingGapCount ?? quality.blocking_gap_count ?? 0))}</td></tr>
-          <tr><th>截图 artifact</th><td>${escapeHtml(String(screenshotRefs.length))}</td><th>工具调用</th><td>${escapeHtml(String(toolTimeline.length))}</td></tr>
-          <tr><th>artifact 可用</th><td>${escapeHtml(String(manifest.available ?? "-"))}</td><th>artifact 缺失</th><td>${escapeHtml(String(manifest.missing ?? "-"))}</td></tr>
-          <tr><th>Workflow</th><td colspan="3">${escapeHtml(bundle.workflowId || "-")}</td></tr>
-          <tr><th>核心工具</th><td colspan="3">${escapeHtml(tools.slice(0, 16).join(" / ") || "-")}</td></tr>
+          <tr><th>证据账本</th><td>${escapeHtml(sanitizeBusinessReportMarkdown(quality.summary || "-"))}</td><th>阻断缺口</th><td>${escapeHtml(String(summary.blockingGapCount ?? quality.blocking_gap_count ?? 0))}</td></tr>
+          <tr><th>截图证据</th><td>${escapeHtml(String(screenshotRefs.length))}</td><th>取证动作</th><td>${escapeHtml(String(toolTimeline.length))}</td></tr>
+          <tr><th>截图可用</th><td>${escapeHtml(String(manifest.available ?? "-"))}</td><th>截图缺失</th><td>${escapeHtml(String(manifest.missing ?? "-"))}</td></tr>
+          <tr><th>流程编号</th><td colspan="3">${escapeHtml(bundle.workflowId || "-")}</td></tr>
+          <tr><th>核心取证动作</th><td colspan="3">${escapeHtml(tools.slice(0, 16).join(" / ") || "-")}</td></tr>
         </tbody>
       </table>
 
@@ -3906,16 +4045,19 @@ function evidenceBundleToPdfAppendixHtml(bundle = null) {
       ` : ""}
 
       ${toolRows ? `
-        <h3>工具轨迹</h3>
+        <h3>取证动作</h3>
         <table>
-          <thead><tr><th>#</th><th>工具</th><th>结果摘要</th></tr></thead>
+          <thead><tr><th>#</th><th>动作</th><th>结果摘要</th></tr></thead>
           <tbody>${toolRows}</tbody>
         </table>
       ` : ""}
 
-      ${screenshotRefs.length ? `
-        <h3>截图引用</h3>
-        <pre><code>${escapeHtml(screenshotRefs.slice(0, 24).join("\n"))}</code></pre>
+      ${screenshotRows ? `
+        <h3>截图证据</h3>
+        <table>
+          <thead><tr><th>#</th><th>名称</th><th>状态</th></tr></thead>
+          <tbody>${screenshotRows}</tbody>
+        </table>
       ` : ""}
     </section>
   `;
@@ -3987,6 +4129,9 @@ function buildNativePdfPrintHtml({
     th, td { border: 1px solid #cbd5e1 !important; padding: 12px !important; text-align: left !important; vertical-align: top; word-break: break-word; }
     th { background-color: #f8fafc !important; color: #0f172a !important; font-weight: 700; font-size: 9pt; }
     tr:nth-child(even) { background-color: #f8fafc; }
+    .evidence-appendix table { page-break-inside: auto; table-layout: fixed; }
+    .evidence-appendix th:nth-child(1), .evidence-appendix td:nth-child(1) { width: 12%; }
+    .evidence-url { display: block; max-width: 100%; overflow-wrap: anywhere; word-break: break-word; color: #475569; font-size: 9pt; }
 
     code { background: #f1f5f9; color: #b91c1c; padding: 2px 6px; border-radius: 4px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.9em; text-align: left !important; }
     pre { page-break-inside: avoid; text-align: left !important; }
@@ -4033,7 +4178,8 @@ async function deleteReportEntry(rep) {
 function downloadReportPdf(rep) {
   if (!rep) return;
   const dateStr = new Date().toISOString().split("T")[0];
-  const bodyHtml = window.marked?.parse ? window.marked.parse(rep.content || "") : `<pre><code>${escapeHtml(rep.content || "")}</code></pre>`;
+  const cleanContent = sanitizeBusinessReportMarkdown(rep.content || "");
+  const bodyHtml = window.marked?.parse ? window.marked.parse(cleanContent) : `<pre><code>${escapeHtml(cleanContent)}</code></pre>`;
   const evidenceAppendixHtml = evidenceBundleToPdfAppendixHtml(rep.evidenceBundle);
   const printHtml = buildNativePdfPrintHtml({
     title: rep.title,

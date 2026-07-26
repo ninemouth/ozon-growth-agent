@@ -137,7 +137,7 @@ export const STORAGE_KEY_REGISTRY = Object.freeze({
     category: "settings",
     sensitivity: "config",
     retention: "until_user_changes_settings",
-    description: "Custom LLM provider base URL.",
+    description: "Custom LLM provider base URL. When present, it takes precedence over the selected provider endpoint.",
   },
   [STORAGE_KEYS.LLM_MODEL]: {
     owner: "sidepanel/llmClient/background",

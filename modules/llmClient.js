@@ -32,12 +32,219 @@ async function fetchWithRetry(url, options, maxRetries = 3) {
   }
 }
 
+const GEMINI_INTERACTIONS_URL = "https://generativelanguage.googleapis.com/v1beta/interactions";
+const GEMINI_FAILURE_STATUSES = new Set(["failed", "cancelled", "incomplete", "budget_exceeded"]);
+
+function normalizeBaseUrl(value = "") {
+  return String(value || "").trim().replace(/\/+$/, "");
+}
+
+function hasCustomApiEndpoint(settings = {}) {
+  return Boolean(normalizeBaseUrl(settings.llmBaseUrl));
+}
+
+export function getEffectiveLlmProvider(settings = {}) {
+  return hasCustomApiEndpoint(settings) ? "custom" : (settings.llmProvider || "openai");
+}
+
+function contentToPlainText(content) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return content == null ? "" : JSON.stringify(content);
+  return content.map((part) => {
+    if (typeof part === "string") return part;
+    if (typeof part?.text === "string") return part.text;
+    return "";
+  }).filter(Boolean).join("\n");
+}
+
+function extractResponseText(data = {}) {
+  if (typeof data.output_text === "string") return data.output_text;
+  if (typeof data.output?.text === "string") return data.output.text;
+  if (typeof data.choices?.[0]?.message?.content === "string") return data.choices[0].message.content;
+
+  if (Array.isArray(data.output)) {
+    return data.output.map((item) => {
+      if (typeof item?.text === "string") return item.text;
+      if (typeof item?.content === "string") return item.content;
+      if (Array.isArray(item?.content)) {
+        return item.content.map((part) => part?.text || part?.content || "").join("");
+      }
+      return "";
+    }).join("").trim();
+  }
+
+  if (Array.isArray(data.content)) {
+    return data.content.map((part) => part?.text || part?.content || "").join("").trim();
+  }
+
+  return "";
+}
+
+function dataUrlToGeminiImage(dataUrl) {
+  const match = String(dataUrl || "").match(/^data:([^;,]+)?;base64,(.*)$/s);
+  if (!match) return null;
+  return {
+    type: "image",
+    mime_type: match[1] || "image/jpeg",
+    data: match[2],
+  };
+}
+
+function toGeminiContent(content) {
+  const parts = Array.isArray(content) ? content : [{ type: "text", text: contentToPlainText(content) }];
+  return parts.map((part) => {
+    if (typeof part === "string") return { type: "text", text: part };
+    if (["text", "input_text", "output_text"].includes(part?.type) || typeof part?.text === "string") {
+      return { type: "text", text: String(part.text || "") };
+    }
+    if (part?.type === "image_url") {
+      const imageUrl = String(part.image_url?.url || part.image_url || "");
+      return dataUrlToGeminiImage(imageUrl) || { type: "image", uri: imageUrl };
+    }
+    if (part?.type === "input_image" || part?.type === "image") {
+      const imageUrl = String(part.image_url || part.uri || "");
+      return dataUrlToGeminiImage(imageUrl) || {
+        type: "image",
+        ...(imageUrl ? { uri: imageUrl } : {}),
+        ...(part.data ? { data: part.data } : {}),
+        ...(part.mime_type ? { mime_type: part.mime_type } : {}),
+      };
+    }
+    return { type: "text", text: JSON.stringify(part) };
+  }).filter((part) => part.type !== "text" || part.text.trim());
+}
+
+export function buildGeminiInteractionRequest(messages = [], { model, temperature = 0.2 } = {}) {
+  const systemInstruction = messages
+    .filter((message) => message?.role === "system")
+    .map((message) => contentToPlainText(message.content))
+    .filter(Boolean)
+    .join("\n\n");
+  const input = messages
+    .filter((message) => message?.role !== "system")
+    .map((message) => ({
+      type: message?.role === "assistant" ? "model_output" : "user_input",
+      content: toGeminiContent(message?.content),
+    }))
+    .filter((step) => step.content.length > 0);
+
+  if (!input.length) throw new Error("Gemini Interactions API 缺少可发送的用户内容。");
+
+  return {
+    model,
+    input,
+    ...(systemInstruction ? { system_instruction: systemInstruction } : {}),
+    generation_config: {
+      temperature,
+      max_output_tokens: 8192,
+    },
+    tools: [{ type: "google_search" }],
+    store: false,
+    stream: false,
+  };
+}
+
+function normalizeGeminiSources(steps = [], annotations = []) {
+  const sources = [];
+  const addSource = (source = {}) => {
+    const url = String(source.url || source.uri || source.source_url || "").trim();
+    if (!url || sources.some((item) => item.url === url)) return;
+    sources.push({
+      title: String(source.title || source.name || source.source_title || url).trim(),
+      url,
+    });
+  };
+
+  steps.filter((step) => step?.type === "google_search_result").forEach((step) => {
+    const results = Array.isArray(step.result) ? step.result : step.result ? [step.result] : [];
+    results.forEach(addSource);
+  });
+  annotations.flatMap((annotation) => Array.isArray(annotation) ? annotation : [annotation]).forEach(addSource);
+  return sources;
+}
+
+function geminiInteractionError(data = {}) {
+  const error = data.error || data.response?.error || data.incomplete_details || {};
+  const code = error.code || data.code || data.status || "unknown";
+  const message = error.message || data.message || error.reason || "Gemini 未返回可用结果";
+  return `Gemini Interactions API 失败 [${code}]: ${message}`;
+}
+
+export function parseGeminiInteractionResponse(data = {}) {
+  const status = String(data.status || "").toLowerCase();
+  if (GEMINI_FAILURE_STATUSES.has(status) || data.error) {
+    throw new Error(geminiInteractionError(data));
+  }
+  if (status && status !== "completed") {
+    throw new Error(`Gemini Interactions API 返回非完成状态: ${status}`);
+  }
+
+  const steps = Array.isArray(data.steps) ? data.steps : [];
+  const outputParts = steps
+    .filter((step) => step?.type === "model_output")
+    .flatMap((step) => Array.isArray(step.content) ? step.content : []);
+  const text = outputParts
+    .filter((part) => part?.type === "text" || typeof part?.text === "string")
+    .map((part) => String(part.text || ""))
+    .join("")
+    .trim();
+
+  if (!text) throw new Error("Gemini Interactions API 返回了空正文，任务未完成。");
+
+  const queries = steps
+    .filter((step) => step?.type === "google_search_call")
+    .flatMap((step) => step.arguments?.queries || step.arguments?.query || [])
+    .map((query) => String(query).trim())
+    .filter(Boolean);
+  const annotations = outputParts.flatMap((part) => part?.annotations || []);
+  const sources = normalizeGeminiSources(steps, annotations);
+  const searchEvidence = queries.length || sources.length ? {
+    provider: "gemini",
+    source_type: "google_search",
+    interactionId: data.id || "",
+    queries: Array.from(new Set(queries)),
+    sources,
+  } : null;
+
+  return { text, searchEvidence };
+}
+
+async function callGeminiInteractions({ apiKey, model, messages, temperature, streamCallback }) {
+  const body = buildGeminiInteractionRequest(messages, { model, temperature });
+  let response;
+  try {
+    response = await fetchWithRetry(GEMINI_INTERACTIONS_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": apiKey,
+      },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    throw new Error(`Gemini 网络请求失败: ${err.message}`);
+  }
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Gemini API 错误 (${response.status}) [${GEMINI_INTERACTIONS_URL}]: ${text}`);
+  }
+
+  const data = await response.json();
+  const parsed = parseGeminiInteractionResponse(data);
+  if (typeof streamCallback === "function") {
+    streamCallback({ chunk: parsed.text, fullText: parsed.text, isReasoning: false });
+    if (parsed.searchEvidence) streamCallback({ searchEvidence: parsed.searchEvidence });
+  }
+  return parsed.text;
+}
+
 function resolveImageEditUrl(settings) {
-  const provider = settings.llmProvider || "openai";
+  const provider = getEffectiveLlmProvider(settings);
   if (provider === "openai") return "https://api.openai.com/v1/images/edits";
   if (provider === "custom") {
     if (!settings.llmBaseUrl) throw new Error("未配置自定义 API 地址，无法调用生图模型。");
-    const raw = settings.llmBaseUrl.replace(/\/+$/, "");
+    const raw = normalizeBaseUrl(settings.llmBaseUrl);
     if (raw.endsWith("/images/edits") || raw.endsWith("/images/generations")) return raw;
     if (raw.endsWith("/v1")) return `${raw}/images/edits`;
     return `${raw}/v1/images/edits`;
@@ -148,19 +355,35 @@ export async function callLLM(messages, streamCallback, isHighRandomness = false
     thinktv: "https://www.thinktv.ai/v1",
   };
 
-  const provider = llmProvider || "openai";
+  const configuredProvider = llmProvider || "openai";
+  const provider = getEffectiveLlmProvider(settings);
+  const customEndpointActive = provider === "custom" && normalizeBaseUrl(llmBaseUrl);
+  const isStreaming = typeof streamCallback === "function";
+  const finalTemperature = isHighRandomness ? 0.95 : (parseFloat(temperature) || 0.2);
+
+  if (provider === "gemini") {
+    return callGeminiInteractions({
+      apiKey,
+      model: llmModel,
+      messages,
+      temperature: finalTemperature,
+      streamCallback,
+    });
+  }
   
   let protocol = "chat";
-  if (provider === "qwen" && (llmModel.includes("qwen3.") || llmModel.includes("reason"))) {
+  const usesNativeQwenEndpoint = !customEndpointActive && configuredProvider === "qwen";
+  const usesDashScopeCompatibleEndpoint = Boolean(llmBaseUrl && llmBaseUrl.includes("dashscope"));
+  if ((usesNativeQwenEndpoint || usesDashScopeCompatibleEndpoint) && (llmModel.includes("qwen3.") || llmModel.includes("reason"))) {
     protocol = "responses";
-  } else if (provider === "openai" && (llmModel.includes("gpt-5") || llmModel.includes("gpt-6") || /^o\d/.test(llmModel))) {
+  } else if ((provider === "openai" || customEndpointActive) && (llmModel.includes("gpt-5") || llmModel.includes("gpt-6") || /^o\d/.test(llmModel))) {
     protocol = "responses";
   }
 
   let baseUrl;
   if (provider === "custom") {
     if (!llmBaseUrl) throw new Error("未配置自定义 API 地址，请在设置页面填写完整的 API 端点 URL。");
-    const raw = llmBaseUrl.replace(/\/+$/, "");
+    const raw = normalizeBaseUrl(llmBaseUrl);
     if (raw.endsWith("/chat/completions") || raw.endsWith("/responses") || raw.endsWith("/completions")) {
       baseUrl = raw;
     } else if (raw.endsWith("/v1")) {
@@ -178,9 +401,6 @@ export async function callLLM(messages, streamCallback, isHighRandomness = false
   }
 
   if (!baseUrl) throw new Error("未能解析 API 地址，请检查设置。");
-
-  const isStreaming = typeof streamCallback === "function";
-  const finalTemperature = isHighRandomness ? 0.95 : (parseFloat(temperature) || 0.2);
 
   if (provider === "anthropic") {
     const systemMsg = messages.find((m) => m.role === "system")?.content || "";
@@ -220,7 +440,9 @@ export async function callLLM(messages, streamCallback, isHighRandomness = false
     }
 
     const data = await response.json();
-    return data.content?.[0]?.text || "";
+    const text = data.content?.[0]?.text || "";
+    if (!text.trim()) throw new Error("Anthropic API 返回了空正文，任务未完成。");
+    return text;
   }
 
   let body = {};
@@ -257,7 +479,7 @@ export async function callLLM(messages, streamCallback, isHighRandomness = false
       stream: isStreaming,
     };
 
-    const isQwenModel = provider === "qwen" || llmModel.toLowerCase().includes("qwen") || (llmBaseUrl && llmBaseUrl.includes("dashscope"));
+    const isQwenModel = (!customEndpointActive && provider === "qwen") || llmModel.toLowerCase().includes("qwen") || (llmBaseUrl && llmBaseUrl.includes("dashscope"));
     const isGeminiModel = llmModel.toLowerCase().includes("gemini") || (llmBaseUrl && llmBaseUrl.includes("google"));
     const isGlmModel = llmModel.toLowerCase().includes("glm") || provider === "zhipu" || (llmBaseUrl && llmBaseUrl.includes("zhipu"));
     const isBaichuan = llmModel.toLowerCase().includes("baichuan") || provider === "baichuan";
@@ -300,18 +522,18 @@ export async function callLLM(messages, streamCallback, isHighRandomness = false
     const contentType = response.headers.get("content-type") || "";
     if (contentType.includes("application/json")) {
       const data = await response.json();
-      let chunk = "";
-      if (data.output && data.output.text) chunk = data.output.text;
-      else if (data.choices && data.choices[0] && data.choices[0].message) chunk = data.choices[0].message.content;
-      else chunk = JSON.stringify(data);
+      const chunk = extractResponseText(data);
       streamCallback({ chunk, fullText: chunk });
+      if (!String(chunk || "").trim()) throw new Error("LLM API 返回了空正文，任务未完成。");
       return chunk;
     }
     return await readSSEStream(response, streamCallback, "openai");
   }
 
   const data = await response.json();
-  return data.choices?.[0]?.message?.content || "";
+  const text = extractResponseText(data);
+  if (!String(text).trim()) throw new Error("LLM API 返回了空正文，任务未完成。");
+  return text;
 }
 
 async function readSSEStream(response, callback, format) {
@@ -412,5 +634,6 @@ async function readSSEStream(response, callback, format) {
     }
   }
 
+  if (!fullText.trim()) throw new Error("LLM 流式响应结束但没有返回正文，任务未完成。");
   return fullText;
 }

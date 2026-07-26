@@ -18,6 +18,7 @@ const WORKFLOW_CHECKPOINTS_KEY = "agentWorkflowCheckpoints";
 const MODEL_HINTS = {
   openai: ["gpt-5.2-omni", "gpt-4o", "gpt-4o-mini", "o1-mini", "o3-mini"],
   anthropic: ["claude-3-5-sonnet-20241022", "claude-3-haiku-20240307"],
+  gemini: ["gemini-3.6-flash", "gemini-3.1-pro-preview", "gemini-2.5-pro"],
   qwen: ["qwen3.7-max", "qwen3.6-plus", "qwen3.5-plus", "qwen-vl-max"],
   siliconflow: ["Qwen/Qwen2.5-VL-72B-Instruct", "Pro/deepseek-ai/DeepSeek-R1"],
   groq: ["llama-3.2-90b-vision-preview", "llama-3.3-70b-versatile"],
@@ -26,6 +27,7 @@ const MODEL_HINTS = {
 
 const IMAGE_MODEL_HINTS = {
   openai: ["gpt-image-1"],
+  gemini: [],
   qwen: ["wanx2.1-t2i-turbo", "wanx2.1-i2i-turbo"],
   siliconflow: ["black-forest-labs/FLUX.1-schnell"],
   custom: ["gpt-image-1"],
@@ -34,6 +36,7 @@ const IMAGE_MODEL_HINTS = {
 const PROVIDER_LINKS = {
   openai: "https://platform.openai.com/api-keys",
   anthropic: "https://console.anthropic.com/settings/keys",
+  gemini: "https://aistudio.google.com/apikey",
   qwen: "https://dashscope.console.aliyun.com/apiKey",
   siliconflow: "https://cloud.siliconflow.cn/account/ak",
   groq: "https://console.groq.com/keys"
@@ -895,6 +898,7 @@ function normalizeFinalOutput(value) {
 
 function renderMarkdown(text) {
   if (!text) return "";
+  text = sanitizeBusinessReportText(text);
   if (typeof marked !== 'undefined') {
     return marked.parse(String(text));
   }
@@ -930,7 +934,7 @@ function renderReport(resultObj) {
     let title = key.charAt(0).toUpperCase() + key.slice(1).replace(/_/g, ' ');
     // Handle standard keys without titles if preferred, but adding title makes it robust for random keys
     let titleHtml = standardKeys.includes(key) ? '' : `<h3 style="margin-top:10px;margin-bottom:5px;font-size:1.1em;color:var(--text);">${escapeHtml(title)}</h3>`;
-    return `${titleHtml}<div class="report-section" style="padding:10px;background:var(--bg3);border-radius:6px;margin-bottom:10px;">${renderMarkdown(String(val))}</div>`;
+    return `${titleHtml}<div class="report-section" style="padding:10px;background:var(--bg3);border-radius:6px;margin-bottom:10px;">${renderMarkdown(sanitizeBusinessReportText(String(val)))}</div>`;
   };
 
   // Render standard keys first
@@ -1390,7 +1394,16 @@ function updateApiStatusUI(h10Key, ssKey, fmKey) {
 }
 
 function updateProviderUI(provider) {
-  $("customUrlGroup").style.display = provider === "custom" ? "block" : "none";
+  $("customUrlGroup").style.display = "block";
+
+  const modelInput = $("llmModel");
+  const imageModelInput = $("imageGenerationModel");
+  if (provider === "gemini") {
+    if (!modelInput.value || /^(qwen|gpt-|claude-|llama-|deepseek)/i.test(modelInput.value)) {
+      modelInput.value = MODEL_HINTS.gemini[0];
+    }
+    if (/^(qwen-image|wanx)/i.test(imageModelInput?.value || "")) imageModelInput.value = "";
+  }
   
   const linkEl = $("providerLink");
   if (PROVIDER_LINKS[provider]) {
@@ -1829,6 +1842,43 @@ function escapeHtml(str) {
     .replace(/"/g, "&quot;");
 }
 
+const BUSINESS_REPORT_TERM_REPLACEMENTS = [
+  [/\bread_current_page\b/gi, "页面信息读取"],
+  [/\bsearch_in_browser\b/gi, "公开网页检索"],
+  [/\bclose_tab\b/gi, "证据页收尾"],
+  [/\bopen_new_tab\b/gi, "打开证据页"],
+  [/\bclick_by_text\b/gi, "页面操作"],
+  [/\bclick_by_selector\b/gi, "页面操作"],
+  [/\binput_text_and_search\b/gi, "站内搜索"],
+  [/\bagentic_web_search\b/gi, "公开网页检索"],
+  [/\bimage_search_1688\b/gi, "1688 图片找货"],
+  [/\bimage_search_taobao\b/gi, "淘宝图片找货"],
+  [/\bimage_search_in_browser\b/gi, "图片找货"],
+  [/\bcollect_ozon_shop_pages\b/gi, "Ozon 店铺页面采集"],
+  [/\bcollect_ozon_competitor_shops\b/gi, "竞品店铺采集"],
+  [/\bDOM\b/g, "页面可见内容"],
+  [/\bxpath\b/gi, "页面定位规则"],
+  [/\bartifact:\/\//gi, "截图证据 "],
+  [/调用指令[:：]?\s*/gi, "取证结果："],
+  [/验证码|人机拦截/gi, "页面访问限制"],
+  [/自愈程序|爬虫/gi, "自动恢复机制"],
+];
+
+function sanitizeBusinessReportText(text = "") {
+  return String(text || "")
+    .split(/(https?:\/\/[^\s)\]>]+)/g)
+    .map((part) => {
+      if (/^https?:\/\//i.test(part)) return part;
+      return BUSINESS_REPORT_TERM_REPLACEMENTS.reduce(
+        (current, [pattern, replacement]) => current.replace(pattern, replacement),
+        part
+      );
+    })
+    .join("")
+    .replace(/^\s*#{1,6}\s+#{1,6}\s+/gm, "### ")
+    .trim();
+}
+
 function sanitizeHtml(htmlString) {
   if (!htmlString) return "";
   const purifiedHtml = window.DOMPurify?.sanitize
@@ -1964,13 +2014,13 @@ function convertResultToMarkdown(obj) {
   if (!obj) return "";
   let md = "";
   if (obj.overview) {
-    md += `# 📊 概述\n\n${obj.overview}\n\n`;
+    md += `# 📊 概述\n\n${sanitizeBusinessReportText(obj.overview)}\n\n`;
   }
   if (obj.analysis) {
-    md += `## 💡 深度分析\n\n${obj.analysis}\n\n`;
+    md += `## 💡 深度分析\n\n${sanitizeBusinessReportText(obj.analysis)}\n\n`;
   }
   if (obj.summary) {
-    md += `## 🏁 核心结论\n\n${obj.summary}\n\n`;
+    md += `## 🏁 核心结论\n\n${sanitizeBusinessReportText(obj.summary)}\n\n`;
   }
   
   let targetArray = null;
@@ -2005,7 +2055,7 @@ function convertResultToMarkdown(obj) {
         let val = item[col];
         if (val === undefined || val === null) val = '';
         else if (typeof val === 'object') val = JSON.stringify(val);
-        else val = String(val).replace(/\n/g, "<br>");
+        else val = sanitizeBusinessReportText(String(val)).replace(/\n/g, "<br>");
         return val;
       });
       md += `| ${row.join(" | ")} |\n`;
@@ -2013,7 +2063,7 @@ function convertResultToMarkdown(obj) {
     md += `\n`;
   }
   
-  return md;
+  return sanitizeBusinessReportText(md);
 }
 
 // ── Web Audio alert sound generator and Captcha Banner Alerting ──

@@ -2956,14 +2956,15 @@
           <select class="form-input" id="llm-provider">
             <option value="qwen">Qwen (通义千问)</option>
             <option value="anthropic">Anthropic</option>
+            <option value="gemini">Google Gemini</option>
             <option value="openrouter">OpenRouter</option>
             <option value="thinktv">ThinkTV</option>
             <option value="custom">Custom (自定义 OpenAI 端点)</option>
           </select>
         </div>
 
-        <div class="form-group hidden" id="custom-url-container">
-          <label class="form-label">自定义 API Endpoint</label>
+        <div class="form-group" id="custom-url-container">
+          <label class="form-label">自定义 API Endpoint（可选，填写后优先）</label>
           <input type="text" class="form-input" id="llm-base-url" placeholder="https://www.thinktv.ai/v1">
         </div>
 
@@ -2983,6 +2984,8 @@
             <span class="chip" data-val="qwen3.6-plus">qwen3.6-plus</span>
             <span class="chip" data-val="qwen3.5-plus">qwen3.5-plus</span>
             <span class="chip" data-val="qwen-vl-max">qwen-vl-max</span>
+            <span class="chip" data-val="gemini-3.6-flash">gemini-3.6-flash</span>
+            <span class="chip" data-val="gemini-3.1-pro-preview">gemini-3.1-pro-preview</span>
           </div>
         </div>
 
@@ -3027,21 +3030,26 @@
     shadow.appendChild(settingsDrawer);
 
     // Setup interactive handlers for new Settings parameters
-    const toggleCustomUrlContainer = (provider) => {
+    const toggleCustomUrlContainer = () => {
       const containerEl = shadow.getElementById("custom-url-container");
       if (containerEl) {
-        if (provider === "custom") {
-          containerEl.classList.remove("hidden");
-        } else {
-          containerEl.classList.add("hidden");
-        }
+        containerEl.classList.remove("hidden");
       }
     };
 
     const providerSelect = shadow.getElementById("llm-provider");
     if (providerSelect) {
       providerSelect.addEventListener("change", (e) => {
-        toggleCustomUrlContainer(e.target.value);
+        const provider = e.target.value;
+        toggleCustomUrlContainer(provider);
+        const modelInput = shadow.getElementById("llm-model");
+        const imageModelInput = shadow.getElementById("image-gen-model");
+        if (provider === "gemini") {
+          if (!modelInput.value || /^(qwen|gpt-|claude-|llama-|deepseek)/i.test(modelInput.value)) {
+            modelInput.value = "gemini-3.6-flash";
+          }
+          if (/^(qwen-image|wanx)/i.test(imageModelInput?.value || "")) imageModelInput.value = "";
+        }
       });
     }
 
