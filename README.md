@@ -4,6 +4,15 @@ Ozon Growth Agent 是面向 Ozon 卖家的开源 AI 增长工作流 Chrome 插�
 
 核心原则：AI 先围绕真实业务环节产出诊断、证据、任务和报告；运营人员再在关键节点确认、执行、复盘，而不是每次从一句空泛的“帮我分析店铺”开始。
 
+## v1.3.3 小修复
+
+`v1.3.3` 前置修复平台趋势报告里的宏观证据降级问题，避免模型把未取证的宏观背景写成已验证证据后被 Critic 反复打回。
+
+- 新增宏观/行业证据自动降级器：当 `macro_context.status=observed/used` 但本轮没有 CBR、Rosstat、AKIT、Data Insight、Yakov Partners、政策页或宏观相关搜索证据时，会在进入 Critic 前自动降级。
+- 没有访问尝试时降级为 `assumption`；有访问尝试但页面不可用、验证码或未形成可用证据时降级为 `blocked`，并补入 `blocking_gaps`。
+- 自动同步修正 `macro_context.evidence_ledger`、`data[].evidence_ledger` 和 `external_source_plan.layers.macro_context`，避免报告声称“已使用宏观来源”但证据包对不上。
+- 如果宏观来源阻断且报告原本写 `completed`，会自动降为 `partial`，避免“有关键缺口却完成”的状态冲突。
+
 ## v1.3.2 小修复
 
 `v1.3.2` 修复 Yandex 普通搜索入口和报告标签混用问题，避免把 `Yandex.ru` 当作 `Yandex.com` 搜索引擎的同义标签。

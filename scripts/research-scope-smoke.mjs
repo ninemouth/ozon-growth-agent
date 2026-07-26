@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { buildResearchScope } from "../modules/researchScope.js";
-import { validateOzonPlatformTrendReport, validateWorkflowReadyOutput } from "../modules/agentLoop.js";
+import {
+  sanitizeFinalReportBeforeCritic,
+  validateOzonPlatformTrendReport,
+  validateWorkflowReadyOutput,
+} from "../modules/agentLoop.js";
 
 const storeScope = buildResearchScope({
   pageContext: { url: "https://www.ozon.ru/seller/test-shop-123/", title: "Test Shop" },
@@ -255,6 +259,67 @@ assert.deepEqual(
   validateOzonPlatformTrendReport(validPlatformTrendReport, platformTrendToolHistory, {}),
   [],
   "platform trend reports should allow macro_context status=not_used when the boundary is explicit and direct demand evidence exists"
+);
+
+const macroObservedWithoutEvidenceReport = structuredClone(validPlatformTrendReport);
+macroObservedWithoutEvidenceReport.report_status = "completed";
+macroObservedWithoutEvidenceReport.macro_context = {
+  status: "observed",
+  summary: "俄罗斯宏观背景显示买家更关注价格敏感和平台化购物。",
+  affects: ["价格敏感", "平台化"],
+  claim_boundary: "宏观背景不能单独证明某个 SKU 或商品机会可卖。",
+  evidence_ledger: [{
+    source_type: "macro_context",
+    source_ref: "macro_context",
+    observed_value: "俄罗斯宏观背景显示价格敏感。",
+    used_for: "解释价格敏感",
+    confidence: "medium",
+    limitation: "不能证明单品可卖",
+  }],
+};
+macroObservedWithoutEvidenceReport.external_source_plan.layers.macro_context = {
+  sources: ["cbr", "rosstat"],
+  status: "used",
+  used_for: "解释价格敏感和电商结构",
+};
+macroObservedWithoutEvidenceReport.data[0].evidence_ledger.push({
+  source_type: "macro_context",
+  source_ref: "macro_context",
+  observed_value: "宏观背景用于说明价格敏感。",
+  used_for: "解释价格敏感",
+  confidence: "medium",
+  limitation: "不能证明单品可卖",
+});
+const macroAssumptionDowngrade = sanitizeFinalReportBeforeCritic(
+  { type: "final", output: macroObservedWithoutEvidenceReport },
+  platformTrendToolHistory,
+  {}
+);
+assert.equal(macroAssumptionDowngrade.macroDowngraded, true, "pre-critic sanitizer should downgrade unsupported observed macro context");
+assert.equal(macroAssumptionDowngrade.parsed.output.macro_context.status, "assumption", "unsupported macro context without an attempt should become assumption");
+assert.equal(macroAssumptionDowngrade.parsed.output.external_source_plan.layers.macro_context.status, "not_used", "macro source plan should not keep used status without evidence");
+assert.equal(macroAssumptionDowngrade.parsed.output.data[0].evidence_ledger.at(-1).source_type, "assumption", "unsupported data macro ledger should be downgraded before critic");
+assert.deepEqual(
+  validateOzonPlatformTrendReport(macroAssumptionDowngrade.parsed.output, platformTrendToolHistory, {}),
+  [],
+  "pre-critic macro assumption downgrade should prevent repeated critic rejection"
+);
+
+const macroBlockedDowngrade = sanitizeFinalReportBeforeCritic(
+  { type: "final", output: macroObservedWithoutEvidenceReport },
+  [
+    ...platformTrendToolHistory,
+    { tool: "search_in_browser", arguments: { engine: "cbr", query: "Russia inflation ecommerce" }, result: { ok: false, isCaptcha: true, url: "https://www.cbr.ru/" } },
+  ],
+  {}
+);
+assert.equal(macroBlockedDowngrade.parsed.output.macro_context.status, "blocked", "attempted but unusable macro context should become blocked");
+assert.equal(macroBlockedDowngrade.parsed.output.report_status, "partial", "macro blocking gap should downgrade completed trend report to partial");
+assert.match(JSON.stringify(macroBlockedDowngrade.parsed.output.blocking_gaps), /macro_context_evidence_blocked/, "macro blocked downgrade should add a recoverable blocking gap");
+assert.deepEqual(
+  validateOzonPlatformTrendReport(macroBlockedDowngrade.parsed.output, [...platformTrendToolHistory, { tool: "search_in_browser", arguments: { engine: "cbr", query: "Russia inflation ecommerce" }, result: { ok: false, isCaptcha: true, url: "https://www.cbr.ru/" } }], {}),
+  [],
+  "pre-critic macro blocked downgrade should satisfy external source and ledger validators"
 );
 
 const macroOnlyObservedReport = structuredClone(validPlatformTrendReport);

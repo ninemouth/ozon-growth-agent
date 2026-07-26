@@ -48,6 +48,11 @@ function stableToolValue(value) {
   return value;
 }
 
+function cloneReportJson(value) {
+  if (value === undefined) return undefined;
+  return JSON.parse(JSON.stringify(value));
+}
+
 function toolRunKey(toolName, toolArgs = {}) {
   const workflowId = String(toolArgs.workflowId || "default");
   const dedupeArgs = { ...toolArgs };
@@ -253,6 +258,210 @@ function normalizeEvidenceLedgerValue(value) {
   return value;
 }
 
+const MACRO_CONTEXT_EVIDENCE_TYPES = new Set([
+  "macro_context",
+  "industry_report",
+  "official_policy",
+]);
+
+const TOP_LEVEL_MACRO_CONTEXT_EVIDENCE_TYPES = new Set([
+  ...MACRO_CONTEXT_EVIDENCE_TYPES,
+  "google_search",
+  "yandex_search",
+]);
+
+function isMacroOrIndustrySearchQuery(query = "") {
+  return /macro|inflation|exchange rate|consumer prices|retail trade|ecommerce|e-commerce|marketplace|marketplaces|cbr|rosstat|akit|data insight|yakov|макро|инфляц|курс|рубл|потребительск|розничн|электронн|интернет.?торгов|маркетплейс|цб рф|росстат|акит/i.test(String(query || ""));
+}
+
+function hasMacroContextEvidence(toolHistory = [], pageContext = {}) {
+  return ["macro_context", "industry_report", "official_policy"].some((type) => hasEvidenceSource(toolHistory, pageContext, type));
+}
+
+function hasMacroContextAttempt(toolHistory = [], pageContext = {}) {
+  const pageUrl = String(pageContext?.url || "");
+  if (/cbr\.ru|rosstat\.gov|gks\.ru|akit\.ru|datainsight|data-insight|yakovpartners|yakov-partners/i.test(pageUrl)) return true;
+  return toolHistory.some((entry) => {
+    const tool = String(entry?.tool || "").toLowerCase();
+    const engine = String(entry?.arguments?.engine || "").toLowerCase();
+    const query = String(entry?.arguments?.query || entry?.arguments?.keyword || "");
+    const urls = [
+      entry?.result?.url,
+      entry?.result?.finalUrl,
+      entry?.result?.searchUrl,
+      entry?.result?.pageData?.url,
+      entry?.arguments?.url,
+    ].map((url) => String(url || "")).join(" ");
+    if (tool === "agentic_web_search" && isMacroOrIndustrySearchQuery(query)) return true;
+    if (tool !== "search_in_browser") return false;
+    if (["cbr", "rosstat", "akit", "data_insight", "yakov_partners"].includes(engine)) return true;
+    if (["google", "google_ru", "yandex"].includes(engine) && isMacroOrIndustrySearchQuery(query)) return true;
+    return /cbr\.ru|rosstat\.gov|gks\.ru|akit\.ru|datainsight|data-insight|yakovpartners|yakov-partners/i.test(urls);
+  });
+}
+
+function appendEvidenceLimitation(entry = {}, message = "") {
+  const current = String(entry?.limitation || "").trim();
+  if (!current) return message;
+  if (current.includes(message)) return current;
+  return `${current}；${message}`;
+}
+
+function downgradedMacroLedgerEntry(entry = {}, downgradeType = "assumption", message = "") {
+  const originalType = String(entry?.source_type || "").trim() || "macro_context";
+  return {
+    ...entry,
+    source_type: downgradeType,
+    original_source_type: entry.original_source_type || originalType,
+    source_ref: entry.source_ref || (downgradeType === "blocked" ? "宏观/行业来源访问阻断" : "宏观/行业来源待验证"),
+    observed_value: entry.observed_value || "本轮未取得可用宏观/行业页面证据。",
+    used_for: entry.used_for || "解释价格敏感、履约和品类背景",
+    confidence: "low",
+    limitation: appendEvidenceLimitation(
+      entry,
+      message || "本轮没有匹配到真实宏观/行业页面证据，已在进入 Critic 前降级；不能证明任何 SKU 或商品机会可卖。"
+    ),
+  };
+}
+
+function downgradeEvidenceLedgerEntries(entries = [], {
+  downgradeType = "assumption",
+  sourceTypes = MACRO_CONTEXT_EVIDENCE_TYPES,
+  forceAllListedTypes = false,
+  toolHistory = [],
+  pageContext = {},
+  message = "",
+} = {}) {
+  if (!Array.isArray(entries)) return entries;
+  return entries.map((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return entry;
+    const sourceType = String(entry.source_type || "").toLowerCase();
+    if (!sourceTypes.has(sourceType)) return entry;
+    if (!forceAllListedTypes && hasEvidenceSource(toolHistory, pageContext, sourceType)) return entry;
+    return downgradedMacroLedgerEntry(entry, downgradeType, message);
+  });
+}
+
+function downgradeMacroContextLedgersInValue(value, options = {}) {
+  if (Array.isArray(value)) {
+    return value.map((item) => downgradeMacroContextLedgersInValue(item, options));
+  }
+  if (value && typeof value === "object") {
+    const next = {};
+    Object.entries(value).forEach(([key, entryValue]) => {
+      if (key === "evidence_ledger" && Array.isArray(entryValue)) {
+        next[key] = downgradeEvidenceLedgerEntries(entryValue, options);
+      } else {
+        next[key] = downgradeMacroContextLedgersInValue(entryValue, options);
+      }
+    });
+    return next;
+  }
+  return value;
+}
+
+function ensureMacroContextBlockingGap(out = {}, downgradeType = "assumption") {
+  if (downgradeType !== "blocked") return out;
+  const message = "宏观/行业来源本轮未取得可用页面证据，macro_context 已自动降级为 blocked；宏观背景不能单独证明任何 SKU 或商品机会可卖。";
+  const gaps = Array.isArray(out.blocking_gaps) ? [...out.blocking_gaps] : [];
+  if (!gaps.some((gap) => JSON.stringify(gap).includes("宏观/行业来源"))) {
+    gaps.push({
+      gap_id: "macro_context_evidence_blocked",
+      evidence_type: "macro_context",
+      reason: message,
+      required_evidence: "CBR、Rosstat、AKIT、Data Insight、Yakov Partners 或宏观/行业相关 Google/Yandex 搜索页面证据",
+      recovery_action: "补采宏观/行业来源，或保持为 blocked/assumption，不把宏观背景写成已验证可卖结论。",
+    });
+  }
+  return {
+    ...out,
+    report_status: out.report_status === "completed" ? "partial" : out.report_status,
+    blocking_gaps: gaps,
+  };
+}
+
+function downgradeExternalMacroSourcePlan(plan = {}, downgradeType = "assumption") {
+  if (!plan || typeof plan !== "object") return plan;
+  const next = cloneReportJson(plan);
+  const layer = next.layers?.macro_context || next.source_layers?.macro_context;
+  if (!layer || typeof layer !== "object") return next;
+  const status = String(layer.status || "").toLowerCase();
+  if (["used", "observed"].includes(status)) {
+    layer.status = downgradeType === "blocked" ? "blocked" : "not_used";
+    layer.limitation = appendEvidenceLimitation(
+      layer,
+      downgradeType === "blocked"
+        ? "本轮宏观/行业来源访问或取证未形成可用证据，已降级为阻断。"
+        : "本轮未取得真实宏观/行业来源，已降级为未使用。"
+    );
+  }
+  return next;
+}
+
+export function downgradeUnsupportedMacroContextEvidence(parsed, toolHistory = [], pageContext = {}) {
+  if (!parsed || parsed.type !== "final" || !parsed.output || typeof parsed.output !== "object") {
+    return { parsed, downgraded: false };
+  }
+  const out = parsed.output;
+  const macro = out.macro_context;
+  const macroStatus = String(macro?.status || "").toLowerCase();
+  const hasMacroEvidence = hasMacroContextEvidence(toolHistory, pageContext);
+  const shouldDowngradeTopMacro = macro && typeof macro === "object" && ["observed", "used"].includes(macroStatus) && !hasMacroEvidence;
+  const hasUnsupportedDataMacroLedgers = JSON.stringify(out.data || []).match(/"source_type"\s*:\s*"(macro_context|industry_report|official_policy)"/i);
+  if (!shouldDowngradeTopMacro && !hasUnsupportedDataMacroLedgers) {
+    return { parsed, downgraded: false };
+  }
+
+  const downgradeType = hasMacroContextAttempt(toolHistory, pageContext) ? "blocked" : "assumption";
+  const message = downgradeType === "blocked"
+    ? "本轮宏观/行业来源有访问尝试但没有匹配到可用页面证据，已在进入 Critic 前降级为阻断；不能证明任何 SKU 或商品机会可卖。"
+    : "本轮没有匹配到真实宏观/行业页面证据，已在进入 Critic 前降级为待验证假设；不能证明任何 SKU 或商品机会可卖。";
+  let nextOut = cloneReportJson(out);
+
+  if (shouldDowngradeTopMacro) {
+    nextOut.macro_context = {
+      ...nextOut.macro_context,
+      status: downgradeType,
+      summary: nextOut.macro_context.summary || "本轮未取得可用宏观/行业来源，宏观背景仅能作为待验证经营语境。",
+      claim_boundary: nextOut.macro_context.claim_boundary || "宏观背景不能单独证明某个 SKU 或商品机会可卖。",
+      evidence_ledger: downgradeEvidenceLedgerEntries(nextOut.macro_context.evidence_ledger || [{
+        source_type: "macro_context",
+        source_ref: "宏观/行业来源待验证",
+        observed_value: "本轮未取得可用宏观/行业页面证据。",
+        used_for: "解释价格敏感、履约和品类背景",
+        confidence: "low",
+        limitation: "不能证明任何 SKU 或商品机会可卖。",
+      }], {
+        downgradeType,
+        sourceTypes: TOP_LEVEL_MACRO_CONTEXT_EVIDENCE_TYPES,
+        forceAllListedTypes: true,
+        toolHistory,
+        pageContext,
+        message,
+      }),
+    };
+    nextOut.external_source_plan = downgradeExternalMacroSourcePlan(nextOut.external_source_plan, downgradeType);
+    nextOut = ensureMacroContextBlockingGap(nextOut, downgradeType);
+  }
+
+  if (hasUnsupportedDataMacroLedgers) {
+    nextOut.data = downgradeMacroContextLedgersInValue(nextOut.data, {
+      downgradeType,
+      sourceTypes: MACRO_CONTEXT_EVIDENCE_TYPES,
+      forceAllListedTypes: false,
+      toolHistory,
+      pageContext,
+      message,
+    });
+  }
+
+  const downgraded = JSON.stringify(nextOut) !== JSON.stringify(out);
+  return {
+    parsed: downgraded ? { ...parsed, output: nextOut } : parsed,
+    downgraded,
+  };
+}
+
 export function normalizeFinalReportEvidenceLedger(parsed) {
   if (!parsed || parsed.type !== "final" || !parsed.output) {
     return { parsed, normalized: false };
@@ -273,16 +482,18 @@ export function sanitizeFinalReportForBusinessAudience(parsed) {
   };
 }
 
-export function sanitizeFinalReportBeforeCritic(parsed) {
+export function sanitizeFinalReportBeforeCritic(parsed, toolHistory = [], pageContext = {}) {
   const ledgerNormalized = normalizeFinalReportEvidenceLedger(parsed);
-  const ledgerParsed = ledgerNormalized.parsed;
+  const macroDowngraded = downgradeUnsupportedMacroContextEvidence(ledgerNormalized.parsed, toolHistory, pageContext);
+  const ledgerParsed = macroDowngraded.parsed;
   if (!hasTechnicalJargonInBusinessReport(ledgerParsed)) {
-    return { parsed: ledgerParsed, sanitized: false, normalized: ledgerNormalized.normalized };
+    return { parsed: ledgerParsed, sanitized: false, normalized: ledgerNormalized.normalized, macroDowngraded: macroDowngraded.downgraded };
   }
   return {
     parsed: sanitizeFinalReportForBusinessAudience(ledgerParsed),
     sanitized: true,
     normalized: ledgerNormalized.normalized,
+    macroDowngraded: macroDowngraded.downgraded,
   };
 }
 
@@ -2396,17 +2607,30 @@ ${(skillId || "").includes("tiktok_shop_monitor") ? `\n\n## ⚠️ TikTok 监控
           continue;
         }
       }
-      const preCriticSanitized = sanitizeFinalReportBeforeCritic(finalParsed);
-      if (preCriticSanitized.sanitized || preCriticSanitized.normalized) {
+      const preCriticSanitized = sanitizeFinalReportBeforeCritic(finalParsed, toolHistory, pageContext);
+      if (preCriticSanitized.sanitized || preCriticSanitized.normalized || preCriticSanitized.macroDowngraded) {
         finalParsed = preCriticSanitized.parsed;
         sendProgress({
-          type: preCriticSanitized.sanitized ? "report_hygiene_sanitized" : "evidence_ledger_normalized",
+          type: preCriticSanitized.sanitized
+            ? "report_hygiene_sanitized"
+            : preCriticSanitized.macroDowngraded
+              ? "macro_context_downgraded"
+              : "evidence_ledger_normalized",
           step,
           message: preCriticSanitized.sanitized
             ? "报告正文已在进入 Critic 前自动替换内部工具措辞，避免把执行过程暴露给业务用户。"
-            : "证据账本来源类型已在进入 Critic 前自动规范化，避免因枚举口径差异打回重做。",
+            : preCriticSanitized.macroDowngraded
+              ? "宏观/行业背景缺少真实页面证据，已在进入 Critic 前自动降级为待验证或阻断，避免把宏观判断误写成已验证结论。"
+              : "证据账本来源类型已在进入 Critic 前自动规范化，避免因枚举口径差异打回重做。",
         });
-        await checkpoint("running", { step, lastStage: preCriticSanitized.sanitized ? "pre_critic_sanitized" : "evidence_ledger_normalized" });
+        await checkpoint("running", {
+          step,
+          lastStage: preCriticSanitized.sanitized
+            ? "pre_critic_sanitized"
+            : preCriticSanitized.macroDowngraded
+              ? "macro_context_downgraded"
+              : "evidence_ledger_normalized",
+        });
       }
       let validationErrors = validateReport(finalParsed, userInstruction, skillId, toolHistory, pageContext);
       if (isTechnicalJargonOnlyFailure(validationErrors)) {
