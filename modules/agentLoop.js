@@ -848,6 +848,11 @@ export function validateOzonPlatformTrendReport(out = {}, toolHistory = [], page
           errors.push(`query_funnel.scored_queries 第 ${idx + 1} 项缺少数值评分 ${field}。`);
         }
       });
+      const scopeRelation = String(item?.scope_relation || "");
+      const futureSignal = Number(item?.future_signal);
+      if (["parent_proxy", "adjacent_proxy"].includes(scopeRelation) && Number.isFinite(futureSignal) && futureSignal > 1) {
+        errors.push(`query_funnel.scored_queries 第 ${idx + 1} 项是 ${scopeRelation}，future_signal 最高只能为 1。父级/相邻代理只能说明大方向或相邻需求，不能按细分品类趋势满分计入。`);
+      }
     });
   }
   const recommendedIds = Array.isArray(out.recommended_opportunities)

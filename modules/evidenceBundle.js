@@ -33,6 +33,71 @@ function compactPageData(pageData = {}) {
     })),
     pageHealth: pageData.pageHealth || {},
     pageEvidence: pageData.pageEvidence || {},
+    businessEvidenceStatus: pageData.businessEvidenceStatus || pageData.evidenceStatus || "",
+  };
+}
+
+function classifyBusinessEvidenceStatus({
+  url = "",
+  title = "",
+  evidenceOk = undefined,
+  loadState = "",
+  blockingGap = "",
+  blockingGaps = [],
+  pageEvidence = {},
+  pageData = {},
+} = {}) {
+  const text = [
+    title,
+    url,
+    loadState,
+    blockingGap,
+    ...(Array.isArray(blockingGaps) ? blockingGaps : []),
+    pageEvidence.evidenceType,
+    pageEvidence.source_type,
+    pageEvidence.businessEvidenceStatus,
+    pageEvidence.evidenceStatus,
+    pageData.title,
+    pageData.pageHealth?.reason,
+  ].filter(Boolean).join("\n");
+  if (/登录|登录墙|访问限制|验证|captcha|challenge|verify|passport|access denied|log in|login|sign in|войти|авторизация/i.test(text) ||
+    /^log in$/i.test(String(title || pageData.title || "").trim())) {
+    return {
+      label: "阻断",
+      status: "blocked_login",
+      ok: false,
+      reason: "页面显示登录/验证/访问限制，未取得可用于业务判断的数据。",
+    };
+  }
+  if (/not enough data|doesn.?t have enough data|数据不足|данных недостаточно|недостаточно данных|no results|нет результатов/i.test(text)) {
+    return {
+      label: "数据不足",
+      status: "loaded_no_data",
+      ok: false,
+      reason: "页面已加载但没有足够数据，不能作为需求或趋势结论证据。",
+    };
+  }
+  if (evidenceOk === false) {
+    return {
+      label: "待复核",
+      status: "pending_review",
+      ok: false,
+      reason: blockingGap || (Array.isArray(blockingGaps) ? blockingGaps.join("；") : "") || "页面证据质量不足，需复核。",
+    };
+  }
+  if (evidenceOk === true) {
+    return {
+      label: "可用",
+      status: "valid",
+      ok: true,
+      reason: "已取得可用于业务判断的页面证据。",
+    };
+  }
+  return {
+    label: "待复核",
+    status: "unknown",
+    ok: false,
+    reason: "尚未完成业务证据可用性判定。",
   };
 }
 
@@ -44,6 +109,7 @@ function compactResult(result = {}) {
     url: result.url || result.finalUrl || result.searchUrl || result.pageData?.url || "",
     title: result.title || result.pageData?.title || "",
     evidenceOk: result.evidenceOk,
+    businessEvidenceStatus: result.businessEvidenceStatus || result.evidenceStatus || "",
     loadState: result.loadState || result.readyReason || "",
     blockingGap: result.blockingGap || "",
     blockingGaps: result.blockingGaps || [],
@@ -127,11 +193,16 @@ export function collectPageEvidenceFromToolHistory(toolHistory = [], pageContext
   const evidence = [];
   const push = (item) => {
     if (!item || !isObject(item)) return;
+    const status = classifyBusinessEvidenceStatus(item);
     evidence.push({
       tool: item.tool || "",
       url: item.url || "",
       title: item.title || "",
       evidenceOk: item.evidenceOk,
+      businessEvidenceOk: status.ok,
+      businessEvidenceStatus: status.status,
+      businessEvidenceLabel: status.label,
+      businessEvidenceReason: status.reason,
       loadState: item.loadState || "",
       pageEvidence: item.pageEvidence || {},
       pageData: item.pageData || {},
@@ -154,6 +225,8 @@ export function collectPageEvidenceFromToolHistory(toolHistory = [], pageContext
       url: result.url || result.finalUrl || result.searchUrl || result.pageData?.url || "",
       title: result.title || result.pageData?.title || "",
       evidenceOk: result.evidenceOk,
+      blockingGap: result.blockingGap || "",
+      blockingGaps: result.blockingGaps || [],
       loadState: result.loadState || result.readyReason || "",
       pageEvidence: result.pageEvidence || result.pageData?.pageEvidence || {},
       pageData: compactPageData(result.pageData || {}),
@@ -164,6 +237,8 @@ export function collectPageEvidenceFromToolHistory(toolHistory = [], pageContext
         url: page.url || "",
         title: page.title || "",
         evidenceOk: page.ok,
+        blockingGap: page.blockingGap || "",
+        blockingGaps: page.blockingGaps || [],
         pageEvidence: page.pageEvidence || {},
         pageData: compactPageRecord(page),
       });

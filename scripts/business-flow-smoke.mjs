@@ -417,6 +417,15 @@ storage.savedResults.unshift({
         title: "Ozon search evidence",
         evidenceOk: true,
       },
+      {
+        tool: "search_in_browser",
+        url: "https://wordstat.yandex.com/?region=225&words=test",
+        title: "Log in",
+        evidenceOk: true,
+        businessEvidenceStatus: "blocked_login",
+        businessEvidenceLabel: "阻断",
+        pageEvidence: { source_type: "yandex_wordstat" },
+      },
     ],
     toolTimeline: [{ index: 1, tool: "collect_ozon_shop_pages", result: { evidenceOk: true } }],
   },
@@ -426,6 +435,21 @@ storage.savedResults.unshift({
       overview: "Ozon 松鼠喂食器跨境供应链审计",
       analysis: "已经通过 read_current_page 和 DOM 信息进入采购平台结果页，应先筛选候选卡片再打开详情页审计。",
       summary: "停止 search_in_browser 重复搜索，优先完成视觉初筛和详情页穿透。",
+      external_source_plan: {
+        layers: {
+          platform_trade: { sources: ["ozon"], status: "used", used_for: "站内供给验证", limitation: "不代表销量" },
+          search_demand: { sources: ["yandex_wordstat"], status: "blocked", used_for: "搜索需求验证", limitation: "登录墙阻断" },
+          cross_marketplace: { sources: ["wildberries"], status: "not_used", used_for: "跨平台价格验证", limitation: "本轮未打开" },
+          social_content: { sources: [], status: "not_used", used_for: "社媒种草验证", limitation: "本轮未使用" },
+          macro_context: { sources: [], status: "not_used", used_for: "宏观背景", limitation: "不能证明 SKU 可卖" },
+        },
+      },
+      macro_context: {
+        status: "not_used",
+        summary: "本轮未使用宏观资料。",
+        affects: ["价格敏感"],
+        claim_boundary: "宏观背景不能单独证明某个 SKU 或商品机会可卖。",
+      },
       data: [
         {
           plan_id: "SRC-001",
@@ -453,6 +477,8 @@ assert.match(storage.printHtml, /PingFang SC[\s\S]*Microsoft YaHei[\s\S]*Noto Sa
 assert.match(storage.printHtml, /@page\s*\{\s*size:\s*A4 portrait;/, "report center PDF should use the native A4 print template");
 assert.match(storage.printHtml, /正在生成原生数字版 PDF/, "report center PDF should use the native print-to-PDF bridge");
 assert.match(storage.printHtml, /Ozon 松鼠喂食器跨境供应链审计/, "report center PDF should preserve Chinese report content");
+assert.match(storage.printHtml, /外部信源分层计划[\s\S]*搜索需求信号[\s\S]*阻断[\s\S]*宏观与行业背景边界[\s\S]*不能单独证明某个 SKU 或商品机会可卖/, "report center PDF should render external source plan and macro context boundaries");
+assert.match(storage.printHtml, /wordstat\.yandex\.com\/\?words=test[\s\S]*阻断/, "PDF evidence appendix should keep search query params and show login-wall evidence as blocked");
 assert.match(storage.printHtml, /证据包摘要/, "report center PDF should append evidence bundle summary when available");
 assert.match(storage.printHtml, /截图证据/, "report center PDF appendix should include human-readable screenshot evidence labels");
 assert.match(storage.printHtml, /取证动作/, "report center PDF appendix should include human-readable evidence action labels");

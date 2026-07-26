@@ -1809,12 +1809,89 @@ function normalizeFinalOutput(value) {
   return current && typeof current === "object" ? current : { overview: String(current || "") };
 }
 
+function businessEnumLabel(value = "") {
+  const map = {
+    focus: "聚焦",
+    reserve: "保留观察",
+    reject: "淘汰",
+    broaden: "退宽语义",
+    synonym_switch: "同义词切换",
+    usable: "可用",
+    not_enough_data: "数据不足",
+    exact: "同范围",
+    parent_proxy: "父级代理",
+    adjacent_proxy: "相邻代理",
+    used: "已使用",
+    not_used: "未使用",
+    blocked: "阻断",
+    assumption: "待验证假设",
+    observed: "已观察",
+    partial: "部分完成",
+    completed: "完成",
+  };
+  return map[String(value || "")] || value;
+}
+
+function formatSourceList(value) {
+  if (Array.isArray(value)) return value.filter(Boolean).join("、") || "-";
+  return value ? String(value) : "-";
+}
+
+function renderExternalSourcePlanMarkdown(plan = null) {
+  if (!plan || typeof plan !== "object") return [];
+  const layers = plan.layers || plan.source_layers || {};
+  const layerNames = {
+    platform_trade: "平台交易/供给信号",
+    search_demand: "搜索需求信号",
+    cross_marketplace: "跨平台交易验证",
+    social_content: "社媒/内容信号",
+    macro_context: "宏观/行业背景",
+  };
+  const lines = ["### 外部信源分层计划"];
+  Object.entries(layerNames).forEach(([key, label]) => {
+    const layer = layers[key] || {};
+    if (!layer || typeof layer !== "object") {
+      lines.push(`- ${label}: 未声明`);
+      return;
+    }
+    const status = businessEnumLabel(layer.status || "not_used");
+    const sources = sanitizeBusinessReportMarkdown(formatSourceList(layer.sources || layer.source || []));
+    const usedFor = sanitizeBusinessReportMarkdown(layer.used_for || layer.purpose || "未说明用途");
+    const limitation = sanitizeBusinessReportMarkdown(layer.limitation || layer.limitations || "需结合证据账本判断强弱");
+    lines.push(`- ${label}: ${status} · 来源: ${sources} · 用途: ${usedFor} · 局限: ${limitation}`);
+  });
+  return lines;
+}
+
+function renderMacroContextMarkdown(macro = null) {
+  if (!macro || typeof macro !== "object") return [];
+  const lines = ["### 宏观与行业背景边界"];
+  if (macro.status) lines.push(`- 状态: ${businessEnumLabel(macro.status)}`);
+  if (macro.summary) lines.push(`- 背景摘要: ${sanitizeBusinessReportMarkdown(macro.summary)}`);
+  if (Array.isArray(macro.affects) && macro.affects.length) {
+    lines.push(`- 影响范围: ${sanitizeBusinessReportMarkdown(macro.affects.join("；"))}`);
+  }
+  if (macro.claim_boundary) {
+    lines.push(`- 结论边界: ${sanitizeBusinessReportMarkdown(macro.claim_boundary)}`);
+  } else {
+    lines.push("- 结论边界: 宏观背景只能解释价格敏感、履约和品类大方向，不能单独证明某个 SKU 或商品机会可卖。");
+  }
+  if (Array.isArray(macro.evidence_ledger) && macro.evidence_ledger.length) {
+    macro.evidence_ledger.slice(0, 4).forEach((entry) => {
+      lines.push(`- 宏观证据: ${sanitizeBusinessReportMarkdown(entry.source_ref || "-")} · ${sanitizeBusinessReportMarkdown(entry.observed_value || "")}`);
+    });
+  }
+  return lines;
+}
+
 function resultToReportMarkdown(result = {}) {
   const data = normalizeFinalOutput(result);
   const lines = [];
   if (data.overview) lines.push(`### ${plainReportHeading(data.overview, "分析概述")}`);
   if (data.analysis) lines.push(`**决策诊断与数据推演**:\n${sanitizeBusinessReportMarkdown(data.analysis)}`);
   if (data.summary) lines.push(`**下一步建议**:\n${sanitizeBusinessReportMarkdown(data.summary)}`);
+  lines.push(...renderExternalSourcePlanMarkdown(data.external_source_plan));
+  lines.push(...renderMacroContextMarkdown(data.macro_context));
   const queryFunnel = data.query_funnel;
   if (queryFunnel && typeof queryFunnel === "object") {
     lines.push("### 关键词发现与聚焦漏斗");
@@ -1827,12 +1904,15 @@ function resultToReportMarkdown(result = {}) {
     }
     if (Array.isArray(queryFunnel.scored_queries) && queryFunnel.scored_queries.length) {
       queryFunnel.scored_queries.slice(0, 6).forEach((item) => {
-        lines.push(`- ${sanitizeBusinessReportMarkdown(item.query_ru || "未命名查询")}: ${item.total_score ?? "-"}/10 · ${sanitizeBusinessReportMarkdown(item.decision || "reserve")} · ${sanitizeBusinessReportMarkdown(item.evidence || "待补证")}`);
+        const scope = item.scope_relation ? ` · ${businessEnumLabel(item.scope_relation)}` : "";
+        const future = item.future_signal !== undefined ? ` · 未来信号 ${item.future_signal}/2` : "";
+        lines.push(`- ${sanitizeBusinessReportMarkdown(item.query_ru || "未命名查询")}: ${item.total_score ?? "-"}/10 · ${businessEnumLabel(item.decision || "reserve")}${scope}${future} · ${sanitizeBusinessReportMarkdown(item.evidence || "待补证")}`);
       });
     }
     if (Array.isArray(queryFunnel.refinement_log) && queryFunnel.refinement_log.length) {
       queryFunnel.refinement_log.slice(0, 3).forEach((item) => {
-        lines.push(`- 查询调整: ${sanitizeBusinessReportMarkdown(item.from_query || "-")} -> ${sanitizeBusinessReportMarkdown(item.to_query || "-")} · ${sanitizeBusinessReportMarkdown(item.reason || "")} · ${sanitizeBusinessReportMarkdown(item.result || "")}`);
+        const scope = item.scope_relation ? ` · ${businessEnumLabel(item.scope_relation)}` : "";
+        lines.push(`- 查询调整: ${sanitizeBusinessReportMarkdown(item.from_query || "-")} -> ${sanitizeBusinessReportMarkdown(item.to_query || "-")} · ${businessEnumLabel(item.reason || "")}${scope} · ${businessEnumLabel(item.result || "")}`);
       });
     }
   }
@@ -1840,7 +1920,7 @@ function resultToReportMarkdown(result = {}) {
     lines.push("### 结构化行动项");
     data.data.slice(0, 12).forEach((item, index) => {
       if (!item || typeof item !== "object") return;
-      const title = plainReportHeading(item.plan_id || item.title || item.name || item.direction || `行动项 ${index + 1}`, `行动项 ${index + 1}`);
+      const title = plainReportHeading(item.keyword_or_category || item.plan_id || item.title || item.name || item.direction || item.opportunity_id || `行动项 ${index + 1}`, `行动项 ${index + 1}`);
       const actions = item.first_actions || item.next_steps || item.actionable_tasks || item.actions;
       const fields = [
         ["优先级", item.diagnosis_level || item.priority || item.severity],
@@ -3202,10 +3282,27 @@ function compactEvidenceUrl(url = "") {
   try {
     const parsed = new URL(text);
     const path = decodeURIComponent(parsed.pathname || "/");
-    return `${parsed.hostname}${path.length > 1 ? path : ""}`;
+    const keepParams = new URLSearchParams();
+    ["text", "q", "query", "search", "words"].forEach((key) => {
+      const value = parsed.searchParams.get(key);
+      if (value) keepParams.set(key, value);
+    });
+    const query = keepParams.toString();
+    return `${parsed.hostname}${path.length > 1 ? path : query ? "/" : ""}${query ? `?${decodeURIComponent(query)}` : ""}`;
   } catch (_) {
     return text.replace(/^artifact:\/\//i, "截图证据 ");
   }
+}
+
+function evidenceBusinessStatusLabel(item = {}) {
+  if (item.businessEvidenceLabel) return item.businessEvidenceLabel;
+  if (item.businessEvidenceStatus === "blocked_login") return "阻断";
+  if (item.businessEvidenceStatus === "loaded_no_data") return "数据不足";
+  if (item.businessEvidenceStatus === "loaded_insufficient_data") return "待复核";
+  if (item.businessEvidenceStatus === "valid") return "可用";
+  if (item.evidenceOk === false) return "待复核";
+  if (item.evidenceOk === true) return "可用";
+  return "待复核";
 }
 
 function evidenceResultSummary(item = {}) {
@@ -3998,7 +4095,7 @@ function evidenceBundleToPdfAppendixHtml(bundle = null) {
       <td>${escapeHtml(evidenceSourceLabel(item))}</td>
       <td>${escapeHtml(sanitizeBusinessReportMarkdown(item.title || "-"))}</td>
       <td><span class="evidence-url">${escapeHtml(compactEvidenceUrl(item.url || "-"))}</span></td>
-      <td>${escapeHtml(item.evidenceOk === false ? "待复核" : "可用")}</td>
+      <td>${escapeHtml(evidenceBusinessStatusLabel(item))}</td>
     </tr>
   `).join("");
   const toolRows = toolTimeline.slice(0, 20).map((item) => `

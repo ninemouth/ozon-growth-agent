@@ -68,6 +68,22 @@ const toolHistory = [
       blockingGaps: [],
     },
   },
+  {
+    tool: "search_in_browser",
+    arguments: { engine: "yandex_wordstat", query: "расческа для животных" },
+    result: {
+      ok: true,
+      evidenceOk: true,
+      searchUrl: "https://wordstat.yandex.com/?region=225&words=расческа%20для%20животных",
+      title: "Log in",
+      pageData: {
+        url: "https://wordstat.yandex.com/",
+        title: "Log in",
+        visibleText: "Log in to continue",
+        pageEvidence: { source_type: "yandex_wordstat" },
+      },
+    },
+  },
 ];
 
 const screenshotRefs = collectScreenshotRefsFromToolHistory(toolHistory);
@@ -90,6 +106,12 @@ const pageEvidence = collectPageEvidenceFromToolHistory(toolHistory, {
 assert.ok(pageEvidence.some((item) => item.tool === "initial_page_context"), "initial page context should be included");
 assert.ok(pageEvidence.some((item) => item.tool === "open_url" && item.pageData.productCardCount === 1), "tool pageData should be compacted");
 assert.ok(pageEvidence.some((item) => item.tool === "collect_ozon_shop_pages" && item.url.includes("/seller/example")), "crawled pages should be included");
+assert.ok(pageEvidence.some((item) =>
+  item.tool === "search_in_browser" &&
+  item.title === "Log in" &&
+  item.businessEvidenceStatus === "blocked_login" &&
+  item.businessEvidenceOk === false
+), "loaded login walls should be blocked business evidence, not marked usable");
 
 const bundle = buildEvidenceBundle({
   savedEntry: {

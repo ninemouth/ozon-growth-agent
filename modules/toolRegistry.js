@@ -453,9 +453,110 @@ function getGoogleTrendsEvidenceState(result = {}) {
   };
 }
 
+function getSearchEvidenceType(engine = "") {
+  const normalizedEngine = String(engine || "").toLowerCase();
+  const map = {
+    google: "google_search",
+    google_ru: "google_search",
+    google_trends: "google_trends",
+    yandex: "yandex_search",
+    yandex_wordstat: "yandex_wordstat",
+    yandex_market: "yandex_market",
+    ozon: "ozon_search",
+    wildberries: "wildberries_search",
+    avito: "avito_search",
+    megamarket: "marketplace_crosscheck",
+    vk_posts: "social_signal",
+    tgstat: "social_signal",
+    dzen: "social_signal",
+    yandex_news: "ru_news",
+    cbr: "macro_context",
+    rosstat: "macro_context",
+    akit: "industry_report",
+    yakov_partners: "industry_report",
+  };
+  return map[normalizedEngine] || "page_dom";
+}
+
+function getSearchPageEvidenceState(payload = {}, engine = "") {
+  const normalizedEngine = String(engine || "").toLowerCase();
+  const pageData = payload?.pageData || {};
+  const url = String(payload.url || payload.finalUrl || payload.searchUrl || pageData.url || "");
+  const title = String(payload.title || pageData.title || pageData.h1 || "");
+  const text = [
+    title,
+    pageData.h1,
+    pageData.visibleText,
+    pageData.metaDescription,
+    pageData.text,
+    pageData.bodyText,
+    url,
+  ].filter(Boolean).join("\n");
+  const health = pageData.pageHealth || {};
+  const productLinks = Array.isArray(pageData.productLinks) ? pageData.productLinks.length : 0;
+  const productCards = Array.isArray(pageData.productCards) ? pageData.productCards.length : 0;
+  const links = Array.isArray(pageData.links) ? pageData.links.length : 0;
+  const visibleTextLength = String(pageData.visibleText || pageData.text || pageData.bodyText || "").trim().length;
+  const loginWall = Boolean(
+    health.isLikelyBlocked ||
+    /captcha|challenge|verify|access denied|forbidden|robot check|подтвердите|проверка/i.test(text) ||
+    /passport|login|signin|sign-in|auth|captcha|challenge|verify/i.test(url) ||
+    (/^(log in|login|sign in|войти|авторизация)$/i.test(title.trim()) || /log in to|sign in to|войдите|авторизуйтесь/i.test(text)) ||
+    (normalizedEngine === "yandex_wordstat" && /log in|login|sign in|войти|авторизация|passport/i.test(text))
+  );
+  const explicitNoData = /not enough data|doesn.?t have enough data|данных недостаточно|недостаточно данных|数据不足|ничего не найдено|no results found|нет результатов/i.test(text);
+  const hasBusinessData = Boolean(
+    productLinks > 0 ||
+    productCards > 0 ||
+    links > 0 ||
+    visibleTextLength >= 160 ||
+    health.hasMeaningfulDom
+  );
+  if (loginWall) {
+    return {
+      evidenceOk: false,
+      evidenceStatus: "blocked_login",
+      blockingGap: "页面已打开，但显示登录/验证/访问限制，未取得可用于业务判断的数据。",
+    };
+  }
+  if (explicitNoData) {
+    return {
+      evidenceOk: false,
+      evidenceStatus: "loaded_no_data",
+      blockingGap: "页面已加载，但当前查询没有足够数据或没有可用结果，不能作为需求/趋势结论证据。",
+    };
+  }
+  if (!hasBusinessData) {
+    return {
+      evidenceOk: false,
+      evidenceStatus: "loaded_insufficient_data",
+      blockingGap: "页面已加载，但未提取到足够商品、链接或正文信息，不能作为业务结论证据。",
+    };
+  }
+  return {
+    evidenceOk: true,
+    evidenceStatus: "valid",
+    blockingGap: "",
+  };
+}
+
 function withSearchEvidenceStatus(payload, engine) {
   const normalizedEngine = String(engine || "").toLowerCase();
-  if (normalizedEngine !== "google_trends") return payload;
+  if (normalizedEngine !== "google_trends") {
+    const evidenceState = getSearchPageEvidenceState(payload, normalizedEngine);
+    return {
+      ...payload,
+      ok: evidenceState.evidenceOk,
+      evidenceOk: evidenceState.evidenceOk,
+      evidenceType: getSearchEvidenceType(normalizedEngine),
+      evidenceStatus: evidenceState.evidenceStatus,
+      businessEvidenceStatus: evidenceState.evidenceStatus,
+      blockingGap: payload.blockingGap || evidenceState.blockingGap,
+      message: payload.message || (evidenceState.evidenceOk
+        ? "已取得可用于业务判断的页面证据。"
+        : evidenceState.blockingGap),
+    };
+  }
   const trendsEvidenceState = getGoogleTrendsEvidenceState(payload);
   const evidenceOk = hasValidGoogleTrendsEvidence(payload);
   return {
@@ -465,6 +566,12 @@ function withSearchEvidenceStatus(payload, engine) {
     evidenceType: "google_trends",
     trendsEvidenceState,
     evidenceStatus: evidenceOk ? "valid" : "invalid_or_blocked",
+    businessEvidenceStatus: evidenceOk ? "valid" : trendsEvidenceState.hasExplicitNoData ? "loaded_no_data" : "loaded_insufficient_data",
+    blockingGap: payload.blockingGap || (evidenceOk
+      ? ""
+      : trendsEvidenceState.hasExplicitNoData
+        ? "Google Trends 页面已加载，但当前关键词数据不足，不能作为趋势/季节性结论证据。"
+        : "Google Trends 页面只看到壳页或模块未稳定加载，不能作为趋势/季节性结论证据。"),
     message: evidenceOk
       ? (payload.message || "Valid Google Trends RU evidence captured.")
       : trendsEvidenceState.hasExplicitNoData
@@ -476,6 +583,7 @@ function withSearchEvidenceStatus(payload, engine) {
 function searchEvidenceSatisfied(payload, engine) {
   const normalizedEngine = String(engine || "").toLowerCase();
   if (normalizedEngine === "google_trends") return hasValidGoogleTrendsEvidence(payload);
+  if (payload?.evidenceOk === false) return false;
   const pageData = payload?.pageData || {};
   return Boolean(
     (pageData.productLinks && pageData.productLinks.length > 0) ||

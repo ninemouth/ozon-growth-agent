@@ -256,4 +256,10 @@ const macroOnlyErrors = validateOzonPlatformTrendReport(
 );
 assert.match(macroOnlyErrors.join("\n"), /宏观或行业资料只能作为背景，不能单独证明商品机会可卖/);
 
+const parentProxyOverScoreReport = structuredClone(validPlatformTrendReport);
+parentProxyOverScoreReport.query_funnel.scored_queries[0].scope_relation = "parent_proxy";
+parentProxyOverScoreReport.query_funnel.scored_queries[0].future_signal = 2;
+const parentProxyErrors = validateOzonPlatformTrendReport(parentProxyOverScoreReport, platformTrendToolHistory, {});
+assert.match(parentProxyErrors.join("\n"), /parent_proxy[\s\S]*future_signal 最高只能为 1/);
+
 console.log("research-scope-smoke: ok");
